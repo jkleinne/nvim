@@ -70,7 +70,7 @@ require("lazy").setup({
       local servers = {
         "terraformls",
         "ansiblels", 
-        "tsserver", 
+        "ts_ls", 
         "yamlls",
         "pyright"
       }
