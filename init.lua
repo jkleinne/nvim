@@ -112,7 +112,7 @@ require("lazy").setup({
   -- Treesitter for better syntax highlighting and code parsing
   {
     "nvim-treesitter/nvim-treesitter",
-    run = ":TSUpdate"
+    run = ":TSUpdate",
     config = function()
       require("nvim-treesitter.configs").setup({
         highlight = { enable = true }, -- Enable syntax highlighting
