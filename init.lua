@@ -149,7 +149,6 @@ require("lazy").setup({
       })
     end,
   },
-
   -- Lualine for status line
   {
     "nvim-lualine/lualine.nvim",
@@ -159,6 +158,36 @@ require("lazy").setup({
         options = { theme = "auto" },
       })
     end,
+  },
+  {
+    "nvim-telescope/telescope.nvim",
+    requires = { {"nvim-lua/plenary.nvim"} },  
+    config = function()
+      local telescope = require("telescope")
+      telescope.setup({
+        defaults = {
+          vimgrep_arguments = {
+            'rg', -- Needs ripgrep installed, e.g. brew install ripgrep
+            '--color=never',
+            '--no-heading',
+            '--with-filename',
+            '--line-number',
+            '--column',
+            '--smart-case'
+          },
+          prompt_prefix = "🔍 ",
+          selection_caret = " ",
+          path_display = { "smart" },
+          file_ignore_patterns = {"node_modules", ".git/"}, 
+          mappings = {
+            i = {
+              ["<C-n>"] = require("telescope.actions").move_selection_next,
+              ["<C-p>"] = require("telescope.actions").move_selection_previous,
+            },
+          },
+        },
+      })
+    end
   },
 })
 
@@ -193,3 +222,9 @@ vim.opt.smartindent = true
 vim.g.mapleader = " "
 
 vim.api.nvim_set_keymap('n', '<leader>p', ':Neotree change_root_up<CR>', { noremap = true, silent = true })
+
+-- Keybindings for Telescope
+vim.api.nvim_set_keymap('n', '<leader>ff', '<cmd>Telescope find_files<cr>', { noremap = true, silent = true })
+vim.api.nvim_set_keymap('n', '<leader>fg', '<cmd>Telescope live_grep<cr>', { noremap = true, silent = true })
+vim.api.nvim_set_keymap('n', '<leader>fb', '<cmd>Telescope buffers<cr>', { noremap = true, silent = true })
+vim.api.nvim_set_keymap('n', '<leader>fh', '<cmd>Telescope help_tags<cr>', { noremap = true, silent = true })
