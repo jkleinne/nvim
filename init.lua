@@ -243,9 +243,6 @@ vim.opt.smartindent = true   -- Enable smart indentation
 -- Set the leader key to space
 vim.g.mapleader = " "
 
--- Keybinding to change the root directory in Neo-tree
-vim.api.nvim_set_keymap('n', '<leader>p', ':Neotree change_root_up<CR>', { noremap = true, silent = true })
-
 -- Keybindings for Telescope fuzzy finder
 vim.api.nvim_set_keymap('n', '<leader>ff', '<cmd>Telescope find_files<cr>', { noremap = true, silent = true })
 vim.api.nvim_set_keymap('n', '<leader>fg', '<cmd>Telescope live_grep<cr>', { noremap = true, silent = true })
