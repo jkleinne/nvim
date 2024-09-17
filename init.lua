@@ -36,7 +36,13 @@ require("lazy").setup({
   {
    "nvim-tree/nvim-web-devicons" 
   },
-  
+  {
+    'f-person/git-blame.nvim',
+    config = function()
+      vim.g.gitblame_enabled = 1  -- Enable git-blame.nvim by default
+      vim.g.gitblame_message_template = '<author> • <date> • [<sha>] <summary>'
+    end
+  }, 
   -- Autocompletion plugin with several dependencies
   {
     "hrsh7th/nvim-cmp",
