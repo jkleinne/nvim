@@ -20,3 +20,6 @@ vim.api.nvim_create_autocmd("VimEnter", {
 vim.opt.number = true        -- Enable line numbers
 vim.opt.expandtab = true     -- Use spaces instead of tabs
 vim.opt.smartindent = true   -- Enable smart indentation
+
+-- Set kubectl.nvim toggle mapping
+vim.keymap.set("n", "<leader>k", '<cmd>lua require("kubectl").toggle()<cr>', { noremap = true, silent = true })

@@ -19,5 +19,12 @@ return {
       enabled = true,
       message_template = "<author> • <date> • [<sha>] <summary>"
     }
+  },
+
+  {
+    "ramilito/kubectl.nvim",
+    config = function()
+      require("kubectl").setup()
+    end,
   }
 }
