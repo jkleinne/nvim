@@ -7,12 +7,11 @@ map("i", "jk", "<ESC>")
 
 -- Set kubectl.nvim toggle mapping
 vim.keymap.set("n", "<leader>k", '<cmd>lua require("kubectl").toggle()<cr>', { noremap = true, silent = true })
-
-local map = vim.api.nvim_set_keymap
-local opts = { noremap = true, silent = true }
-
 -- Map <leader>gtt to open a terminal and run lazygit
-map("n", "<leader>gtt", ":term lazygit<CR>i", opts)
+map("n", "<leader>gtt", ":term lazygit<CR>i", { noremap = true, silent = true })
+
+-- Map <leader>tc to open a terminal and run lazydocker
+map('n', '<leader>dc', ':term lazydocker<CR>i', { noremap = true, silent = true })
 
 -- Map <leader>tb to open an empty tab
 map('n', '<leader>tb', ':enew<CR>', { noremap = true, silent = true })
