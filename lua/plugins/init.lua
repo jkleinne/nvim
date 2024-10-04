@@ -26,5 +26,17 @@ return {
     config = function()
       require("kubectl").setup()
     end,
+  },
+
+   {
+    "nvim-treesitter/nvim-treesitter",
+    run = ":TSUpdate",
+    config = function()
+      require("nvim-treesitter.configs").setup({
+        highlight = { enable = true }, -- Enable syntax highlighting
+        indent = { enable = true },    -- Enable automatic indentation
+        ensure_installed = { "bash", "yaml", "json", "lua", "typescript", "javascript", "terraform" }, 
+      })
+    end,
   }
 }
