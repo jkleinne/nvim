@@ -21,7 +21,6 @@ vim.opt.number = true        -- Enable line numbers
 vim.opt.expandtab = true     -- Use spaces instead of tabs
 vim.opt.smartindent = true   -- Enable smart indentation
 
-vim.cmd [[
-  highlight TermCursor guifg=#ffffff guibg=#005f5f
-  highlight TermCursorNC guifg=#ffffff guibg=#005f5f
-]]
+-- Ensure the detault shell is zsh - .zshrc has a conditional to source .zshrc whenever a shell is spawned
+-- by Neovim to match the terminal style to the local style
+vim.opt.shell = "/bin/zsh"
