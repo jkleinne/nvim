@@ -13,3 +13,6 @@ local opts = { noremap = true, silent = true }
 
 -- Map <leader>gtt to open a terminal and run lazygit
 map("n", "<leader>gtt", ":term lazygit<CR>i", opts)
+
+-- Map <leader>tb to open an empty tab
+map('n', '<leader>tb', ':enew<CR>', { noremap = true, silent = true })
