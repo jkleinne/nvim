@@ -15,3 +15,6 @@ map('n', '<leader>dc', ':term lazydocker<CR>i', { noremap = true, silent = true 
 
 -- Map <leader>tb to open an empty tab
 map('n', '<leader>tb', ':enew<CR>', { noremap = true, silent = true })
+
+-- Map <leader>sq to open a terminal and run lazysql
+map('n', '<leader>sq', ':term lazysql<CR>i', { noremap = true, silent = true })
