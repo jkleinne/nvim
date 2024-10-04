@@ -20,3 +20,8 @@ vim.api.nvim_create_autocmd("VimEnter", {
 vim.opt.number = true        -- Enable line numbers
 vim.opt.expandtab = true     -- Use spaces instead of tabs
 vim.opt.smartindent = true   -- Enable smart indentation
+
+vim.cmd [[
+  highlight TermCursor guifg=#ffffff guibg=#005f5f
+  highlight TermCursorNC guifg=#ffffff guibg=#005f5f
+]]
