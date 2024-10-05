@@ -19,3 +19,12 @@ map('n', '<leader>tb', ':enew<CR>', default_opts)
 
 -- Map <leader>sq to open a terminal and run lazysql
 map('n', '<leader>sq', ':term lazysql<CR>i', default_opts)
+
+-- Map <leader>po to run "posting --collection <posting-collection-path>"
+map("n", "<leader>po", function()
+  vim.ui.input({ prompt = "Enter posting collection path: " }, function(input)
+    if input ~= nil and input ~= "" then
+      vim.cmd("term posting --collection " .. input)
+    end
+  end)
+end, default_opts)
