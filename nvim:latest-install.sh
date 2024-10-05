@@ -29,7 +29,9 @@ else
     echo "Neovim path already exists in ~/.bashrc"
 fi
 
-# Source the updated ~/.bashrc to apply changes immediately
+# Because of how scripts are executed in a subshell, this will not propagate to
+# the parent shell unless its explicitly specified to run the script in the current shell
+# e.g. source <script.sh> or . <script.sh>
 source ~/.bashrc
 
 # Verify Neovim installation
