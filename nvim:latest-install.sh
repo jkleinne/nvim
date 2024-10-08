@@ -8,6 +8,9 @@ NVIM_ARCHIVE="nvim-linux64.tar.gz"
 INSTALL_DIR="/opt/nvim-linux64"
 BIN_DIR="$INSTALL_DIR/bin"
 
+# Determine the directory where the script is located
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Download the latest Neovim release
 curl -LO "$NVIM_URL" 
 
@@ -40,4 +43,20 @@ if command -v nvim >/dev/null 2>&1; then
 else
     echo "Neovim installation failed."
     exit 1
+fi
+
+# Move the 'nvim' directory from the script's directory to ~/.config
+NVIM_CONFIG_SOURCE="$SCRIPT_DIR"
+NVIM_CONFIG_DEST="$HOME/.config/nvim"
+
+# Check if the source directory exists
+if [ -d "$NVIM_CONFIG_SOURCE" ]; then
+    # Create the destination directory if it doesn't exist
+    mkdir -p "$(dirname "$NVIM_CONFIG_DEST")"
+    
+    # Move the nvim directory
+    mv "$NVIM_CONFIG_SOURCE" "$NVIM_CONFIG_DEST"
+    echo "Moved 'nvim' configuration to ~/.config/nvim"
+else
+    echo "Source directory '$NVIM_CONFIG_SOURCE' does not exist. Skipping move."
 fi
