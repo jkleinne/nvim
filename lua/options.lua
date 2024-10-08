@@ -21,6 +21,10 @@ vim.opt.number = true        -- Enable line numbers
 vim.opt.expandtab = true     -- Use spaces instead of tabs
 vim.opt.smartindent = true   -- Enable smart indentation
 
--- Ensure the detault shell is zsh - .zshrc has a conditional to source .zshrc whenever a shell is spawned
--- by Neovim to match the terminal style to the local style
-vim.opt.shell = "/bin/zsh"
+-- Ensure the default shell is zsh if it's installed
+local zsh_path = vim.fn.exepath("zsh")
+if zsh_path ~= "" then
+  vim.opt.shell = zsh_path
+else
+  vim.opt.shell = "/bin/bash"
+end
