@@ -29,10 +29,10 @@ map('n', '<leader>po', function()
 end, default_opts)
 
 -- Keybindings for Telescope fuzzy finder
-map('n', '<leader>ff', '<cmd>Telescope find_files<cr>', default_opts)
-map('n', '<leader>fg', '<cmd>Telescope live_grep<cr>', default_opts)
-map('n', '<leader>fb', '<cmd>Telescope buffers<cr>', default_opts)
-map('n', '<leader>fh', '<cmd>Telescope help_tags<cr>', default_opts)
+map('n', '<leader>tf', '<cmd>Telescope find_files<cr>', default_opts)
+map('n', '<leader>tg', '<cmd>Telescope live_grep<cr>', default_opts)
+map('n', '<leader>tb', '<cmd>Telescope buffers<cr>', default_opts)
+map('n', '<leader>th', '<cmd>Telescope help_tags<cr>', default_opts)
 
 -- Neotree keybindings
 map('n', '<C-e>', ':Neotree toggle<CR>', default_opts)
