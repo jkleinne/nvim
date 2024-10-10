@@ -5,6 +5,8 @@ map('n', ';', ':', { desc = 'CMD enter command mode' })
 
 map('i', 'jk', '<ESC>')
 
+map('n', '<leader>x', ':bd!<CR>', default_opts)
+
 -- Set kubectl.nvim toggle mapping
 map('n', '<leader>k', '<cmd>lua require("kubectl").toggle()<cr>', default_opts)
 -- Map <leader>gtt to open a terminal and run lazygit
