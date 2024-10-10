@@ -8,6 +8,9 @@ vim.opt.smartindent = true
 vim.opt.tabstop = 2
 vim.opt.shiftwidth = 2
 
+-- Disable :intro page
+vim.opt.shortmess:append("I")
+
 -- Ensure the default shell is zsh if it's installed
 local zsh_path = vim.fn.exepath("zsh")
 if zsh_path ~= "" then
@@ -22,9 +25,9 @@ vim.cmd([[
 ]])
 
 -- Automatically reveal the current file in Neo-tree and force a change to its directory
-vim.cmd([[
-  autocmd VimEnter * Neotree source=filesystem reveal=true reveal_force_cwd=true
-]])
+-- vim.cmd([[
+--   autocmd VimEnter * Neotree source=filesystem reveal=true reveal_force_cwd=true
+-- ]])
 
 -- Automatically close Neovim if Neo-tree is the last open window
 vim.cmd([[

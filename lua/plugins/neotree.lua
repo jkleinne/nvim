@@ -19,11 +19,7 @@ return {
         filtered_items = {
           hide_dotfiles = false,
         },
-      },
-      window = {
-        position = "left",
-        line_numbers = false,
-      },
+      }
     })
   end,
 }
