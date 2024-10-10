@@ -19,7 +19,21 @@ return {
         filtered_items = {
           hide_dotfiles = false,
         },
-      }
+      },
+      git_status = {
+        symbols = {
+          added     = "✚",
+          deleted   = "✖",
+          modified  = "",
+          renamed   = "󰁕",
+          untracked = "",
+          ignored   = "",
+          unstaged  = "󰄱",
+          staged    = "",
+          conflict  = "",
+        },
+        align = "right",
+      },
     })
   end,
 }

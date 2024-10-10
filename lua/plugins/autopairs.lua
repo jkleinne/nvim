@@ -7,7 +7,7 @@ return {
   },
   opts = {
     fast_wrap = {}
-  }
+  },
   config = function()
     require("nvim-autopairs").setup {} 
   end,
