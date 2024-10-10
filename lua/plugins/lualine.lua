@@ -5,7 +5,7 @@ return {
   config = function()
     -- Automatically choose theme for Lualine
     require("lualine").setup({
-      options = { 
+      options = {
         theme = "auto",
         icons_enabled = true
       },

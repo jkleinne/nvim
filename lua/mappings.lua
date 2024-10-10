@@ -1,5 +1,5 @@
 local map = vim.keymap.set
-local default_opts =  { noremap = true, silent = true }
+local default_opts = { noremap = true, silent = true }
 
 map('n', '<leader>x', ':bd! <CR>', default_opts)
 

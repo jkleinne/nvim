@@ -21,6 +21,7 @@ require('lazy').setup(plugins, {
     missing = true
   },
   change_detection = {
-    enabled = true
+    enabled = true,
+    notify = true
   }
 })
