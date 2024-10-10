@@ -13,7 +13,7 @@ return {
         variables = {},
       },
     })
-        -- Apply the colorscheme after setup
+    -- Apply the colorscheme after setup
     vim.cmd("colorscheme tokyonight")
   end,
 }

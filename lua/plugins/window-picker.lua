@@ -20,30 +20,30 @@ return {
       },
       highlights = {
         statusline = {
-            focused = {
-                fg = '#ededed',
-                bg = '#9AAB99',
-                bold = true,
-            },
-            unfocused = {
-                fg = '#ededed',
-                bg = '#1b1b1b',
-                bold = true,
-            },
+          focused = {
+            fg = '#ededed',
+            bg = '#9AAB99',
+            bold = true,
+          },
+          unfocused = {
+            fg = '#ededed',
+            bg = '#1b1b1b',
+            bold = true,
+          },
         },
         winbar = {
-            focused = {
-                fg = '#ededed',
-                bg = '#9AAB99',
-                bold = true,
-            },
-            unfocused = {
-                fg = '#ededed',
-                bg = '#1b1b1b',
-                bold = true,
-            },
+          focused = {
+            fg = '#ededed',
+            bg = '#9AAB99',
+            bold = true,
+          },
+          unfocused = {
+            fg = '#ededed',
+            bg = '#1b1b1b',
+            bold = true,
+          },
         },
-    },
+      },
     })
   end,
 }
