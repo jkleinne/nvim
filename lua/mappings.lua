@@ -1,10 +1,7 @@
-require 'nvchad.mappings'
-
 local map = vim.keymap.set
-local default_opts =  { noremap = true, silent = true }
+local default_opts = { noremap = true, silent = true }
 
-map('n', ';', ':', { desc = 'CMD enter command mode' })
-map('i', 'jk', '<ESC>')
+map('n', '<leader>x', ':bd! <CR>', default_opts)
 
 -- Set kubectl.nvim toggle mapping
 map('n', '<leader>k', '<cmd>lua require("kubectl").toggle()<cr>', default_opts)
@@ -30,3 +27,12 @@ map('n', '<leader>po', function()
     end
   end)
 end, default_opts)
+
+-- Keybindings for Telescope fuzzy finder
+map('n', '<leader>ff', '<cmd>Telescope find_files<cr>', default_opts)
+map('n', '<leader>fg', '<cmd>Telescope live_grep<cr>', default_opts)
+map('n', '<leader>fb', '<cmd>Telescope buffers<cr>', default_opts)
+map('n', '<leader>fh', '<cmd>Telescope help_tags<cr>', default_opts)
+
+-- Neotree keybindings
+map('n', '<C-e>', ':Neotree toggle<CR>', default_opts)

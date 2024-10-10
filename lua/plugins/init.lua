@@ -1,42 +1,24 @@
-return {
-  {
-    "stevearc/conform.nvim",
-    -- event = 'BufWritePre', -- uncomment for format on save
-    opts = require "configs.conform",
-  },
+-- Function to load all Lua files in the 'plugins' directory
+local plugins = {}
 
-  {
-    "neovim/nvim-lspconfig",
-    config = function()
-      require "configs.lspconfig"
-    end,
-  },
+-- Get a list of all Lua files in the plugins directory
+local plugin_files = vim.fn.globpath(vim.fn.stdpath('config') .. '/lua/plugins', '*.lua', false, true)
 
-  {
-    'f-person/git-blame.nvim',
-    event = "VeryLazy",
-    opts = {
-      enabled = true,
-      message_template = "<author> • <date> • [<sha>] <summary>"
-    }
-  },
+for _, file in ipairs(plugin_files) do
+  -- Extract the filename without extension
+  local plugin_name = vim.fn.fnamemodify(file, ':t:r')
+  if plugin_name ~= 'init' then  -- Skip init.lua to prevent recursion
+      table.insert(plugins, require('plugins.' .. plugin_name))
+  end
+end
 
-  {
-    "ramilito/kubectl.nvim",
-    config = function()
-      require("kubectl").setup()
-    end,
+-- Setup lazy.nvim with the collected plugins
+require('lazy').setup(plugins, {
+  install = {
+    missing = true
   },
-
-   {
-    "nvim-treesitter/nvim-treesitter",
-    run = ":TSUpdate",
-    config = function()
-      require("nvim-treesitter.configs").setup({
-        highlight = { enable = true }, -- Enable syntax highlighting
-        indent = { enable = true },    -- Enable automatic indentation
-        ensure_installed = { "bash", "yaml", "json", "lua", "typescript", "javascript", "terraform" }, 
-      })
-    end,
+  change_detection = {
+    enabled = true,
+    notify = true
   }
-}
+})
