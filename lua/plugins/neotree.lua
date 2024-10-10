@@ -34,6 +34,12 @@ return {
         },
         align = "right",
       },
+      window = {
+        mappings = {
+          ["<cr>"] = "open_with_window_picker",
+          ["<2-LeftMouse>"] = "open_with_window_picker"
+        }
+      }
     })
   end,
 }
