@@ -14,9 +14,6 @@ end
 
 -- Setup lazy.nvim with the collected plugins
 require('lazy').setup(plugins, {
-  defaults = {
-    lazy = true
-  },
   install = {
     missing = true
   },

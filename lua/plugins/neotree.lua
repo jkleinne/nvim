@@ -6,7 +6,7 @@ return {
     "nvim-tree/nvim-web-devicons",
     "MunifTanjim/nui.nvim",
   },
-  lazy = false,
+  cmd = "Neotree",
   config = function()
     require("neo-tree").setup({
       filesystem = {

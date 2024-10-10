@@ -1,7 +1,7 @@
 return {
   "nvim-treesitter/nvim-treesitter",
   run = ":TSUpdate",
-  lazy = false,
+  event = "BufRead",
   config = function()
     require("nvim-treesitter.configs").setup({
       highlight = { enable = true },
@@ -14,4 +14,4 @@ return {
       auto_install = true
       })
   end,
-} 
+}

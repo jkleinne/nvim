@@ -1,6 +1,6 @@
 return {
   "ramilito/kubectl.nvim",
-  event = "VeryLazy",
+  lazy = true,
   config = function()
     require("kubectl").setup()
   end,
