@@ -2,6 +2,8 @@ return {
   "nvim-telescope/telescope.nvim",
   dependencies = {
     "nvim-lua/plenary.nvim",  -- Required dependency for Telescope
+    "L3MON4D3/LuaSnip",
+    "benfowler/telescope-luasnip.nvim"
   },
   cmd = "Telescope",  -- Lazy-load Telescope when the :Telescope command is used
   config = function()

@@ -33,6 +33,7 @@ map('n', '<leader>tf', '<cmd>Telescope find_files<cr>', default_opts)
 map('n', '<leader>tg', '<cmd>Telescope live_grep<cr>', default_opts)
 map('n', '<leader>tb', '<cmd>Telescope buffers<cr>', default_opts)
 map('n', '<leader>th', '<cmd>Telescope help_tags<cr>', default_opts)
+map('n', '<leader>ts', '<cmd>Telescope luasnip<cr>', default_opts)
 
 -- Neotree keybindings
 map('n', '<C-e>', ':Neotree toggle reveal=true reveal_force_cwd=true<CR>', default_opts)

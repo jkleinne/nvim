@@ -7,10 +7,16 @@ return {
     "hrsh7th/cmp-path",
     "hrsh7th/cmp-cmdline",
 
-    "L3MON4D3/LuaSnip",
+    {
+      "L3MON4D3/LuaSnip",
+      dependencies = { "rafamadriz/friendly-snippets" },
+      build = "make install_jsregexp"
+    },
     "saadparwaiz1/cmp_luasnip",
 
     "onsails/lspkind.nvim",
+
+    "rafamadriz/friendly-snippets",
   },
   config = function()
     local cmp = require("cmp")
@@ -91,5 +97,7 @@ return {
       history = true,
       updateevents = "TextChanged,TextChangedI",
     })
+
+    require("luasnip.loaders.from_vscode").lazy_load()
   end,
 }
