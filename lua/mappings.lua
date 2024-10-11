@@ -36,3 +36,10 @@ map('n', '<leader>th', '<cmd>Telescope help_tags<cr>', default_opts)
 
 -- Neotree keybindings
 map('n', '<C-e>', ':Neotree toggle<CR>', default_opts)
+
+-- Bufferline mappings
+map('n', '<TAB>', ':BufferLineCycleNext<CR>', default_opts)
+map('n', '<S-TAB>', ':BufferLineCyclePrev<CR>', default_opts)
+
+-- Scope mappings / tab management
+map('n', '<C-w>t', ':tabnew<CR>', default_opts)
