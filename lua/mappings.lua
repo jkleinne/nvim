@@ -43,3 +43,7 @@ map('n', '<S-TAB>', ':BufferLineCyclePrev<CR>', default_opts)
 
 -- Scope mappings / tab management
 map('n', '<C-w>t', ':tabnew<CR>', default_opts)
+
+-- Terminal splits mappings
+map('n', '<leader>h', ':belowright 20split | terminal<CR>', default_opts)
+map('n', '<leader>v', ':vsplit | wincmd l | terminal<CR>', default_opts)
