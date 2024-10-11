@@ -10,7 +10,7 @@ return {
 
     mason_lspconfig.setup({
       ensure_installed = {
-        "bashls", "dockerls", "docker_compose_language_service", 
+        "bashls", "dockerls", "docker_compose_language_service",
         "gopls", "ts_ls", "jsonls", "lua_ls", "yamlls"
       },
       automatic_installation = true,
@@ -19,7 +19,11 @@ return {
     local lspconfig = require("lspconfig")
     local cmp_nvim_lsp = require("cmp_nvim_lsp")
 
-    local servers = { "pyright", "ts_ls", "lua_ls", "gopls" }
+    local servers = { 
+      "pyright", "ts_ls", "lua_ls", "gopls", "yamlls", "ansiblels",
+      "bashls", "dockerls", "docker_compose_language_service", "jsonls",
+      "sqlls", "terraformls"
+    }
 
     local capabilities = cmp_nvim_lsp.default_capabilities()
 

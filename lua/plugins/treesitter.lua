@@ -7,7 +7,7 @@ return {
       highlight = { enable = true },
       indent = { enable = true },
       ensure_installed = {
-        "bash", "c", "cpp", "css", "dockerfile", "go", "html", "javascript",
+        "bash", "c", "cpp", "css", "dockerfile", "go", "hcl", "html", "javascript",
         "json", "lua", "markdown", "python", "rust", "typescript", "yaml",
         },
       -- Automatically install missing parsers when entering a buffer
