@@ -1,5 +1,6 @@
 local map = vim.keymap.set
 local default_opts = { noremap = true, silent = true }
+local initial_cwd = vim.fn.getcwd()
 
 map('n', '<leader>x', ':bd! <CR>', default_opts)
 
@@ -29,8 +30,8 @@ map('n', '<leader>po', function()
 end, default_opts)
 
 -- Keybindings for Telescope fuzzy finder
-map('n', '<leader>tf', '<cmd>Telescope find_files<cr>', default_opts)
-map('n', '<leader>tg', '<cmd>Telescope live_grep<cr>', default_opts)
+map('n', '<leader>tf', '<cmd>Telescope find_files cwd=' .. initial_cwd .. '<cr>', default_opts)
+map('n', '<leader>tg', '<cmd>Telescope live_grep  cwd=' .. initial_cwd .. '<cr>', default_opts)
 map('n', '<leader>tb', '<cmd>Telescope buffers<cr>', default_opts)
 map('n', '<leader>th', '<cmd>Telescope help_tags<cr>', default_opts)
 map('n', '<leader>ts', '<cmd>Telescope luasnip<cr>', default_opts)
