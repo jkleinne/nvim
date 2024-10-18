@@ -4,8 +4,8 @@
 My personal Neovim configuration setup for DevOps & Coding
 
 <p>
-  <img src="https://github.com/user-attachments/assets/a3edd9d6-c846-4a1a-9c00-d0d0233c13a0" width="49%" style="margin-right: 2%;" />
-  <img src="https://github.com/user-attachments/assets/53086726-22b9-4915-a4a5-346e619d283c" width="49%" />
+  <img src="https://github.com/user-attachments/assets/e557869c-8d8d-43fd-978f-aac7ea44ef08" width="49%" style="margin-right: 2%;" />
+  <img src="https://github.com/user-attachments/assets/17a71244-67b3-446e-af00-fcfa8fd7651e" width="49%" />
 </p>
 
 
