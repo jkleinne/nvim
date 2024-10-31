@@ -13,7 +13,7 @@ map('n', '<leader>gtt', ':term lazygit<CR>i', default_opts)
 map('n', '<leader>dc', ':term lazydocker<CR>i', default_opts)
 
 -- Map <leader>tb to open an empty tab
-map('n', '<leader>tb', ':enew<CR>', default_opts)
+map('n', '<leader>ta', ':enew<CR>', default_opts)
 
 -- Map <leader>sq to open a terminal and run lazysql
 map('n', '<leader>sq', ':term lazysql<CR>i', default_opts)
@@ -39,7 +39,7 @@ map('n', '<leader>ts', '<cmd>Telescope luasnip<cr>', default_opts)
 -- Neotree keybindings
 map('n', '<C-e>', ':Neotree toggle reveal=true reveal_force_cwd=true<CR>', default_opts)
 
--- Bufferline mappings
+-- Bufferline & buffer mappings
 map('n', '<TAB>', ':BufferLineCycleNext<CR>', default_opts)
 map('n', '<S-TAB>', ':BufferLineCyclePrev<CR>', default_opts)
 
