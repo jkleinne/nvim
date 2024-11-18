@@ -2,7 +2,7 @@ local map = vim.keymap.set
 local default_opts = { noremap = true, silent = true }
 local initial_cwd = vim.fn.getcwd()
 
-map('n', '<leader>x', ':bd! <CR>', default_opts)
+map('n', '<leader>x', ':Bdelete <CR>', default_opts)
 
 -- Set kubectl.nvim toggle mapping
 map('n', '<leader>k', '<cmd>lua require("kubectl").toggle()<cr>', default_opts)
