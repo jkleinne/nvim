@@ -21,8 +21,9 @@ map('n', '<leader>sq', ':term lazysql<CR>i', default_opts)
 -- Map <leader>po to run 'posting --collection <posting-collection-path>'
 map('n', '<leader>po', function()
   vim.ui.input({ prompt = 'Enter posting collection path: ' }, function(input)
-    if input ~= nil and input ~= '' then
-      vim.cmd('term posting --collection ' .. input)
+    if input and input ~= '' then
+      local safe_input = vim.fn.shellescape(input)
+      vim.cmd('term posting --collection ' .. safe_input)
     else
       vim.cmd('term posting')
     end

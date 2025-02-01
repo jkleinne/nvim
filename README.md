@@ -35,7 +35,7 @@ My personal Neovim configuration setup for DevOps & Coding
 ### Prerequisites
 
 - [Neovim](https://neovim.io/) (version 0.10 or higher)
-    - nvim-install.sh installs the latest Neovim version
+    - nvim-install.sh installs the latest Neovim version (Run as `. nvim-install.sh` so that it's sourced in the current shell and not a subshell)
 - [Git](https://git-scm.com/)
 
 ### Steps
