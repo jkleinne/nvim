@@ -2,9 +2,9 @@
 # Exit immediately if a command exits with a non-zero status
 set -e
 
-NVIM_URL="https://github.com/neovim/neovim/releases/latest/download/nvim-linux64.tar.gz"
-NVIM_ARCHIVE="nvim-linux64.tar.gz"
-INSTALL_DIR="/opt/nvim-linux64"
+NVIM_URL="https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz"
+NVIM_ARCHIVE="nvim-linux-x86_64.tar.gz"
+INSTALL_DIR="/opt/nvim-linux-x86_64"
 BIN_DIR="$INSTALL_DIR/bin"
 
 # Determine the directory where the script is located
