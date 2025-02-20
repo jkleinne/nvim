@@ -35,38 +35,36 @@ My personal Neovim configuration setup for DevOps & Coding
 ### Prerequisites
 
 - [Neovim](https://neovim.io/) (version 0.10 or higher)
-    - nvim-install.sh installs the latest Neovim version (Run as `. nvim-install.sh` so that it's sourced in the current shell and not a subshell)
+    - `nvim-install.sh` installs the latest Neovim version (Run as `. nvim-install.sh` so that it's sourced in the current shell and not a subshell)
 - [Git](https://git-scm.com/)
 
-### Steps
+### Dependencies
 
-1. **Clone the Repository**
+- [Node.js](https://nodejs.org/) for certain plugins
+- [ripgrep](https://github.com/BurntSushi/ripgrep) for Telescope
 
-   ```bash
-   git clone https://github.com/jkleinne/nvim
-   ```
+### Additional System Dependencies
 
-2. **Run the installation script**
+- **fortune**: Displays random quotes on the dashboard
+  - **Installation via Homebrew**:
+    ```bash
+    brew install fortune
+    ```
+  - **Manual Installation**:
+    - Refer to the [Fortune Installation Guide](https://invisible-island.net/fortune/) for other package managers
+- **Nerd Fonts**: Required for displaying icons in Neovim
+  - **Download and Installation**:
+    - Visit the [Nerd Fonts](https://www.nerdfonts.com/) website and download the font
+    - *I'm using the JetBrainsMono Nerd Font*
+    - **macOS**:
+      - Double-click the downloaded `.zip` file
+      - Open the font files and click "Install"
 
-   ```bash
-   cd nvim
-   . nvim-install.sh (source nvim-install.sh)
-   ```
+### Optional
 
-4. **Setup Language Servers**
-
-   Depending on the languages you use, you might need to install specific language servers. Refer to the [LSP Installation Guide](https://github.com/neovim/nvim-lspconfig#installation) and [Mason](https://github.com/williamboman/mason.nvim) for more details
-
-## Requirements
-
-- **Neovim**: Version 0.10 or higher
-- **Dependencies**:
-  - [Node.js](https://nodejs.org/) for certain plugins
-  - [ripgrep](https://github.com/BurntSushi/ripgrep) for Telescope
-  - **Optional**:
-    - [lazygit](https://github.com/jesseduffield/lazygit) git in a TUI
-    - [lazydocker](https://github.com/jesseduffield/lazydocker) docker in a TUI
-    - [lazysql](https://github.com/jorgerojas26/lazysql) sql client in a TUI
+- [lazygit](https://github.com/jesseduffield/lazygit) Git in a TUI
+- [lazydocker](https://github.com/jesseduffield/lazydocker) Docker in a TUI
+- [lazysql](https://github.com/jorgerojas26/lazysql) SQL client in a TUI
 
 *Run `:checkhealth` to see what is missing if you get any errors/warnings when opening `neovim`*
 
@@ -113,6 +111,7 @@ The configuration files are organized as follows:
 ├── nvim-install.sh         # Installation script for setting up Neovim
 └── ... (etc)
 ```
+
 ### Example: `settings.lua`
 
 ```lua
@@ -160,4 +159,3 @@ map('n', '<leader>v', ':vsplit | wincmd l | terminal<CR>', default_opts)
 ## License
 
 This project is licensed under the [MIT License](LICENSE)
-
