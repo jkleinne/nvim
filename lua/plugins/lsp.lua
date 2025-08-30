@@ -33,6 +33,15 @@ return {
 
     local keymap = vim.keymap.set
 
+    keymap('n', 'gl', vim.diagnostic.open_float, opts)
+    keymap('n', '[d', vim.diagnostic.goto_prev, opts)
+    keymap('n', ']d', vim.diagnostic.goto_next, opts)
+    keymap('n', '<leader>q', vim.diagnostic.setloclist, opts)
+
+    keymap('n', 'gd', vim.lsp.buf.definition, opts)
+    keymap('n', 'K', vim.lsp.buf.hover, opts)
+    keymap('n', 'gi', vim.lsp.buf.implementation, opts)
+
     keymap('n', 'gd', vim.lsp.buf.definition, opts)
     keymap('n', 'K', vim.lsp.buf.hover, opts)
     keymap('n', 'gi', vim.lsp.buf.implementation, opts)
