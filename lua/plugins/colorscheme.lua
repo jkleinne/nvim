@@ -30,6 +30,7 @@ return {
         dark = "mocha",
       },
       integrations = {
+        bufferline = true,
         indent_blankline = {
           enabled = true,
           scope_color = 'lavender',

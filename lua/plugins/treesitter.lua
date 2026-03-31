@@ -1,18 +1,17 @@
 return {
   "nvim-treesitter/nvim-treesitter",
-  priority = 1000,
-  run = ":TSUpdate",
+  enabled = false, -- disabled: query_predicates conflict with Neovim 0.12 built-in treesitter
+  build = ":TSUpdate",
   event = "BufRead",
   config = function()
     require("nvim-treesitter.configs").setup({
-      highlight = { enable = true },
-      indent = { enable = true },
       ensure_installed = {
         "bash", "c", "cpp", "css", "dockerfile", "go", "hcl", "html", "javascript",
-        "json", "lua", "markdown", "python", "rust", "typescript", "yaml",
-        },
-      -- Automatically install missing parsers when entering a buffer
-      auto_install = true
-      })
+        "json", "lua", "markdown", "markdown_inline", "python", "rust", "typescript", "yaml",
+      },
+      auto_install = true,
+      highlight = { enable = false },
+      indent = { enable = false },
+    })
   end,
 }
