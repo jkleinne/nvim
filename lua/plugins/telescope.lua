@@ -1,27 +1,29 @@
 return {
   "nvim-telescope/telescope.nvim",
   dependencies = {
-    "nvim-lua/plenary.nvim",  -- Required dependency for Telescope
+    "nvim-lua/plenary.nvim",
     "L3MON4D3/LuaSnip",
-    "benfowler/telescope-luasnip.nvim"
+    "benfowler/telescope-luasnip.nvim",
+    { "nvim-telescope/telescope-fzf-native.nvim", build = "make" },
   },
-  cmd = "Telescope",  -- Lazy-load Telescope when the :Telescope command is used
+  cmd = "Telescope",
   config = function()
-    require("telescope").setup({
+    local telescope = require("telescope")
+    telescope.setup({
       defaults = {
         vimgrep_arguments = {
-          'rg', -- Use ripgrep for searching (needs to be installed, e.g., brew install ripgrep)
-          '--color=never',
-          '--no-heading',
-          '--with-filename',
-          '--line-number',
-          '--column',
-          '--smart-case',
+          "rg",
+          "--color=never",
+          "--no-heading",
+          "--with-filename",
+          "--line-number",
+          "--column",
+          "--smart-case",
         },
-        prompt_prefix = "🔍 ",  -- Icon for the search prompt
-        selection_caret = " ", -- Icon for the selected item
-        path_display = { "smart" }, -- Smart path display
-        file_ignore_patterns = { "node_modules", ".git/" }, -- Ignore certain directories
+        prompt_prefix = "🔍 ",
+        selection_caret = " ",
+        path_display = { "smart" },
+        file_ignore_patterns = { "node_modules", ".git/" },
       },
       pickers = {
         find_files = {
@@ -32,5 +34,7 @@ return {
         },
       },
     })
+    telescope.load_extension("fzf")
+    telescope.load_extension("luasnip")
   end,
 }

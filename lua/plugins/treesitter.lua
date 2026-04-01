@@ -1,6 +1,5 @@
 return {
   "nvim-treesitter/nvim-treesitter",
-  enabled = false, -- disabled: query_predicates conflict with Neovim 0.12 built-in treesitter
   build = ":TSUpdate",
   event = "BufRead",
   config = function()
@@ -10,7 +9,7 @@ return {
         "json", "lua", "markdown", "markdown_inline", "python", "rust", "typescript", "yaml",
       },
       auto_install = true,
-      highlight = { enable = false },
+      highlight = { enable = false }, -- use built-in vim.treesitter.start() instead
       indent = { enable = false },
     })
   end,

@@ -1,13 +1,23 @@
 -- Set leader key to space
 vim.g.mapleader = " "
 
--- Set general Neovim options
+-- General options
 vim.opt.number = true
+vim.opt.relativenumber = true
+vim.opt.signcolumn = "yes"
+vim.opt.cursorline = true
+vim.opt.scrolloff = 8
+vim.opt.undofile = true
+vim.opt.ignorecase = true
+vim.opt.smartcase = true
+vim.opt.clipboard = "unnamedplus"
+vim.opt.splitright = true
+vim.opt.splitbelow = true
+vim.opt.updatetime = 250
 vim.opt.expandtab = true
 vim.opt.smartindent = true
 vim.opt.tabstop = 2
 vim.opt.shiftwidth = 2
-vim.opt.termguicolors = true
 
 -- Disable :intro page
 vim.opt.shortmess:append("I")
@@ -20,26 +30,36 @@ else
   vim.opt.shell = "/bin/bash"
 end
 
--- Automatically set the local working directory to the current file's directory
-vim.cmd([[
-  autocmd BufEnter * silent! lcd %:p:h
-]])
-
--- Automatically reveal the current file in Neo-tree and force a change to its directory
--- vim.cmd([[
---   autocmd VimEnter * Neotree source=filesystem reveal=true reveal_force_cwd=true
--- ]])
+-- Enable built-in treesitter highlighting
+vim.api.nvim_create_autocmd("FileType", {
+  callback = function()
+    pcall(vim.treesitter.start)
+  end,
+})
 
 -- Automatically close Neovim if Neo-tree is the last open window
-vim.cmd([[
-  autocmd BufEnter * ++nested if winnr('$') == 1 && &filetype == 'neo-tree' | quit | endif
-]])
+vim.api.nvim_create_autocmd("BufEnter", {
+  nested = true,
+  callback = function()
+    if vim.fn.winnr("$") == 1 and vim.bo.filetype == "neo-tree" then
+      vim.cmd.quit()
+    end
+  end,
+})
 
 -- Disable line numbers on terminal buffers
-vim.cmd([[
-  autocmd TermOpen * setlocal nonumber norelativenumber
-]])
+vim.api.nvim_create_autocmd("TermOpen", {
+  callback = function()
+    vim.opt_local.number = false
+    vim.opt_local.relativenumber = false
+  end,
+})
 
-vim.cmd([[
-  autocmd FileType neo-tree setlocal nonumber norelativenumber
-]])
+-- Disable line numbers for neo-tree
+vim.api.nvim_create_autocmd("FileType", {
+  pattern = "neo-tree",
+  callback = function()
+    vim.opt_local.number = false
+    vim.opt_local.relativenumber = false
+  end,
+})

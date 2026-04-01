@@ -1,5 +1,15 @@
 return {
   "folke/which-key.nvim",
-  keys = { "<leader>", "<c-r>", "<c-w>", '"', "'", "`", "c", "v", "g" },
-  event = "VeryLazy"
+  event = "VeryLazy",
+  config = function()
+    local wk = require("which-key")
+    wk.setup()
+    wk.add({
+      { "<leader>c", group = "Code" },
+      { "<leader>g", group = "Git" },
+      { "<leader>t", group = "Telescope" },
+      { "<leader>w", group = "Workspace" },
+      { "<leader>x", group = "Trouble" },
+    })
+  end,
 }
