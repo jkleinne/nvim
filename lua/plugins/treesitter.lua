@@ -1,6 +1,6 @@
 return {
   "nvim-treesitter/nvim-treesitter",
-  enabled = false, -- disabled: query_predicates conflict with Neovim 0.12 built-in treesitter
+  enabled = false, -- query_predicates conflict with Neovim 0.12 built-in treesitter
   build = ":TSUpdate",
   event = "BufRead",
   config = function()
