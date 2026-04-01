@@ -1,4 +1,4 @@
-![Neovim](https://img.shields.io/badge/Neovim-v0.10.0-blue.svg)
+![Neovim](https://img.shields.io/badge/Neovim-v0.12.0-blue.svg)
 ![License](https://img.shields.io/badge/license-MIT-green.svg)
 
 My personal Neovim configuration
@@ -24,11 +24,13 @@ My personal Neovim configuration
 - **Easily Extendable and Configurable**: Modular and simple directory structure.
 - **Intelligent Autocompletion**: Powered by `nvim-cmp` and `LuaSnip`.
 - **Git Integration**: Visualize git changes with `gitsigns` and TUI access via `lazygit`.
-- **Language Support**: Extensive LSP configuration with `mason` and `nvim-lspconfig` (Go, TypeScript, YAML, Docker, etc.).
-- **File Management**: `Neo-tree` as the file explorer and `Telescope` for fuzzy finding.
-- **Syntax Highlighting**: Treesitter integration for robust syntax awareness.
+- **Language Support**: Extensive LSP configuration with `mason` and `nvim-lspconfig` (Go, TypeScript, Python, YAML, Docker, Terraform, etc.).
+- **Formatting and Linting**: `conform.nvim` for formatters with LSP fallback, `nvim-lint` for additional linting (hadolint, shellcheck, yamllint, golangci-lint, ruff, tflint).
+- **File Management**: `Neo-tree` as the file explorer and `Telescope` with fzf-native for fuzzy finding.
+- **Syntax Highlighting**: Built-in Neovim 0.12 treesitter highlighting via `vim.treesitter.start()`.
+- **Navigation**: `flash.nvim` for labeled jump navigation, `nvim-surround` for surround operations.
 - **DevOps Tools**: Kubernetes integration via `kubectl.nvim` and TUI access to Docker (`lazydocker`), SQL (`lazysql`), and API clients (`posting`).
-- **Modern UI**: Catppuccin theme, `lualine`, and a modernized command palette/messaging system with `noice.nvim`.
+- **Modern UI**: Catppuccin theme, `lualine`, `trouble.nvim` for diagnostics, and a modernized command palette/messaging system with `noice.nvim`.
 
 ## Requirements
 
@@ -36,12 +38,12 @@ To use this configuration, you must have the following installed.
 
 ### Core Dependencies
 
-- [Neovim](https://neovim.io/) (version 0.10 or higher)
+- [Neovim](https://neovim.io/) (version 0.12 or higher)
 - [Git](https://git-scm.com/)
 
 ### System Tools and Build Essentials
 
-Required for fuzzy finding, installation, and compiling plugins (Treesitter parsers and LuaSnip components).
+Required for fuzzy finding, installation, and compiling plugins (telescope-fzf-native and LuaSnip components).
 
 - [ripgrep](https://github.com/BurntSushi/ripgrep) (`rg`): Required by Telescope for live grep.
 - **C Compiler** (`gcc` or `clang`)
@@ -65,6 +67,21 @@ Required for Language Server Protocols managed by Mason.
 
   - [Node.js](https://nodejs.org/) and `npm` (for `ts_ls`, `jsonls`, `yamlls`, etc.)
   - [Go](https://go.dev/) (for `gopls`)
+
+### Formatters and Linters
+
+Managed by `conform.nvim` and `nvim-lint`. Install the ones relevant to your workflow:
+
+```bash
+# Formatters
+brew install stylua shfmt
+npm install -g prettier
+pip install black
+
+# Linters
+brew install hadolint shellcheck yamllint tflint golangci-lint
+pip install ruff
+```
 
 ### Visuals and UI
 
@@ -105,7 +122,7 @@ mv ~/.cache/nvim ~/.cache/nvim_backup
 
 #### Method A: Manual Installation
 
-1.  Ensure Neovim 0.10+ is installed (e.g., `brew install neovim` or via your OS package manager).
+1.  Ensure Neovim 0.12+ is installed (e.g., `brew install neovim` or via your OS package manager).
 2.  Clone the repository directly into your Neovim configuration directory:
     ```bash
     git clone https://github.com/jkleinne/nvim ~/.config/nvim
@@ -132,7 +149,7 @@ The `nvim-install.sh` script automates the installation of the latest Neovim bin
 
 ### 3. First Launch and Verification
 
-Open Neovim. The `lazy.nvim` plugin manager will automatically start installing the plugins, including compiling Treesitter parsers and LuaSnip components.
+Open Neovim. The `lazy.nvim` plugin manager will automatically start installing the plugins, including compiling telescope-fzf-native and LuaSnip components.
 
 ```bash
 nvim
@@ -176,6 +193,8 @@ The leader key is set to `Space`.
 | `<TAB>` | Cycle to the next buffer |
 | `<S-TAB>` | Cycle to the previous buffer |
 | `<leader>x` | Close the current buffer (Bdelete) |
+| `s` | Flash jump (labeled jump to any visible location) |
+| `S` | Flash treesitter jump (select treesitter nodes) |
 
 ### Search (Telescope)
 
@@ -219,26 +238,50 @@ These are active when an LSP server is attached to a buffer.
 | `<C-k>` | Signature help |
 | `<leader>rn` | Rename symbol |
 | `<leader>ca` | Code actions |
-| `<leader>f` | Format buffer (async) |
+| `<leader>f` | Format buffer (conform.nvim with LSP fallback) |
 | `gl` | Open floating diagnostics |
 | `[d` | Go to previous diagnostic |
 | `]d` | Go to next diagnostic |
 
+### Diagnostics (Trouble)
+
+| Keybinding | Description |
+| :--- | :--- |
+| `<leader>xx` | Toggle workspace diagnostics |
+| `<leader>xd` | Toggle buffer diagnostics |
+| `<leader>xl` | Toggle location list |
+| `<leader>xq` | Toggle quickfix list |
+
+### Editing
+
+| Keybinding | Description |
+| :--- | :--- |
+| `gcc` | Toggle line comment (built-in) |
+| `gc` | Toggle comment (visual mode, built-in) |
+| `cs"'` | Change surrounding `"` to `'` (nvim-surround) |
+| `ds(` | Delete surrounding `(` (nvim-surround) |
+| `ysiw]` | Add `[]` around word (nvim-surround) |
+
 ## Plugins
 
-Here is a list of some of the key plugins included in this configuration:
+Here is a list of the key plugins included in this configuration:
 
   - **[alpha-nvim](https://github.com/goolord/alpha-nvim)**: Startup screen.
   - **[bufferline.nvim](https://github.com/akinsho/bufferline.nvim)**: Manage open buffers as tabs.
   - **[catppuccin/nvim](https://github.com/catppuccin/nvim)**: Soothing pastel theme (Mocha flavor).
-  - **[nvim-cmp](https://github.com/hrsh7th/nvim-cmp)**: Autocompletion engine.
+  - **[conform.nvim](https://github.com/stevearc/conform.nvim)**: Formatter runner with LSP fallback.
+  - **[flash.nvim](https://github.com/folke/flash.nvim)**: Labeled jump navigation.
   - **[gitsigns.nvim](https://github.com/lewis6991/gitsigns.nvim)**: Git decorations in the gutter.
   - **[kubectl.nvim](https://github.com/Ramilito/kubectl.nvim)**: Kubernetes integration.
   - **[mason.nvim](https://github.com/williamboman/mason.nvim)**: Manage LSPs, linters, and formatters.
   - **[neo-tree.nvim](https://github.com/nvim-neo-tree/neo-tree.nvim)**: File explorer.
   - **[noice.nvim](https://github.com/folke/noice.nvim)**: Modernizes the UI for messages, cmdline, and popups.
-  - **[telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)**: Fuzzy finder.
-  - **[nvim-treesitter](https://github.com/nvim-treesitter/nvim-treesitter)**: Enhanced syntax highlighting.
+  - **[nvim-cmp](https://github.com/hrsh7th/nvim-cmp)**: Autocompletion engine.
+  - **[nvim-lint](https://github.com/mfussenegger/nvim-lint)**: Async linting for Dockerfile, shell, YAML, Go, Python, Terraform.
+  - **[nvim-surround](https://github.com/kylechui/nvim-surround)**: Surround operations (change, delete, add).
+  - **[telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)**: Fuzzy finder with fzf-native sorting.
+  - **[todo-comments.nvim](https://github.com/folke/todo-comments.nvim)**: Highlight and search TODO/FIXME/HACK comments.
+  - **[trouble.nvim](https://github.com/folke/trouble.nvim)**: Diagnostics and quickfix UI.
   - **[which-key.nvim](https://github.com/folke/which-key.nvim)**: Displays a popup with possible keybindings.
 
 *For a complete list, refer to the `lua/plugins` folder in the repository.*
@@ -249,6 +292,8 @@ Here is a list of some of the key plugins included in this configuration:
   - **Keybindings**: Update or add new keybindings in the `lua/mappings.lua` file.
   - **Plugins**: Add or remove plugins in the `lua/plugins/` directory. `lazy.nvim` will manage them automatically upon restart.
   - **Language Servers**: Configure additional LSPs or change settings in `lua/plugins/lsp.lua`, or install interactively using `:Mason`.
+  - **Formatters**: Configure formatters per filetype in `lua/plugins/conform.lua`.
+  - **Linters**: Configure linters per filetype in `lua/plugins/lint.lua`.
 
 ## License
 
