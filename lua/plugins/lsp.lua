@@ -50,9 +50,6 @@ return {
         keymap('n', '<leader>rn', vim.lsp.buf.rename, opts)
         keymap('n', '<leader>ca', vim.lsp.buf.code_action, opts)
         keymap('n', 'gr', vim.lsp.buf.references, opts)
-        keymap('n', '<leader>f', function()
-          vim.lsp.buf.format { async = true }
-        end, opts)
       end,
     })
 
