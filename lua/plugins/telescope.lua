@@ -8,8 +8,8 @@ return {
   },
   cmd = "Telescope",
   config = function()
-    local telescope = require("telescope")
-    telescope.setup({
+    local telescope = require "telescope"
+    telescope.setup {
       defaults = {
         vimgrep_arguments = {
           "rg",
@@ -33,8 +33,8 @@ return {
           only_sort_text = true,
         },
       },
-    })
-    telescope.load_extension("fzf")
-    telescope.load_extension("luasnip")
+    }
+    telescope.load_extension "fzf"
+    telescope.load_extension "luasnip"
   end,
 }

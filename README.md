@@ -22,7 +22,7 @@ My personal Neovim configuration
 ## Features
 
 - **Easily Extendable and Configurable**: Modular and simple directory structure.
-- **Intelligent Autocompletion**: Powered by `nvim-cmp` and `LuaSnip`.
+- **Intelligent Autocompletion**: Powered by `blink.cmp` (Rust fuzzy matching) and `LuaSnip`.
 - **Git Integration**: Visualize git changes with `gitsigns` and TUI access via `lazygit`.
 - **Language Support**: Extensive LSP configuration with `mason` and `nvim-lspconfig` (Go, TypeScript, Python, YAML, Docker, Terraform, etc.).
 - **Formatting and Linting**: `conform.nvim` for formatters with LSP fallback, `nvim-lint` for additional linting (hadolint, shellcheck, yamllint, golangci-lint, ruff, tflint).
@@ -79,7 +79,7 @@ npm install -g prettier
 pip install black
 
 # Linters
-brew install hadolint shellcheck yamllint tflint golangci-lint
+brew install selene hadolint shellcheck yamllint tflint golangci-lint
 pip install ruff
 ```
 
@@ -214,6 +214,7 @@ The leader key is set to `Space`.
 | `<leader>ta` | Open a new empty buffer (`:enew`) |
 | `<leader>h` | Open a terminal in a horizontal split below |
 | `<leader>v` | Open a terminal in a vertical split to the right |
+| `<Esc><Esc>` | Exit terminal mode (double-tap; single Esc preserved for TUIs) |
 
 ### TUI & Tool Integrations
 
@@ -273,10 +274,10 @@ Here is a list of the key plugins included in this configuration:
   - **[flash.nvim](https://github.com/folke/flash.nvim)**: Labeled jump navigation.
   - **[gitsigns.nvim](https://github.com/lewis6991/gitsigns.nvim)**: Git decorations in the gutter.
   - **[kubectl.nvim](https://github.com/Ramilito/kubectl.nvim)**: Kubernetes integration.
-  - **[mason.nvim](https://github.com/williamboman/mason.nvim)**: Manage LSPs, linters, and formatters.
+  - **[mason.nvim](https://github.com/mason-org/mason.nvim)**: Manage LSPs, linters, and formatters.
   - **[neo-tree.nvim](https://github.com/nvim-neo-tree/neo-tree.nvim)**: File explorer.
   - **[noice.nvim](https://github.com/folke/noice.nvim)**: Modernizes the UI for messages, cmdline, and popups.
-  - **[nvim-cmp](https://github.com/hrsh7th/nvim-cmp)**: Autocompletion engine.
+  - **[blink.cmp](https://github.com/saghen/blink.cmp)**: Autocompletion engine with Rust fuzzy matcher.
   - **[nvim-lint](https://github.com/mfussenegger/nvim-lint)**: Async linting for Dockerfile, shell, YAML, Go, Python, Terraform.
   - **[nvim-surround](https://github.com/kylechui/nvim-surround)**: Surround operations (change, delete, add).
   - **[telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)**: Fuzzy finder with fzf-native sorting.

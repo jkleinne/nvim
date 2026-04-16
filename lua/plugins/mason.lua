@@ -1,8 +1,8 @@
 return {
-  "williamboman/mason.nvim",
+  "mason-org/mason.nvim",
   build = ":MasonUpdate",
   config = function()
-    require("mason").setup({
+    require("mason").setup {
       ui = {
         border = "rounded",
         icons = {
@@ -11,6 +11,6 @@ return {
           package_uninstalled = "✗",
         },
       },
-    })
+    }
   end,
 }

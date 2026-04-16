@@ -1,25 +1,28 @@
+-- Enable Lua bytecode cache (Neovim 0.9+) for faster startup
+vim.loader.enable()
+
 -- Path to lazy.nvim plugin manager
-local lazypath = vim.fn.stdpath("data") .. "/lazy/lazy.nvim"
+local lazypath = vim.fn.stdpath "data" .. "/lazy/lazy.nvim"
 -- Clones lazy.nvim from the repository if not already installed
 if not vim.uv.fs_stat(lazypath) then
-  vim.fn.system({
+  vim.fn.system {
     "git",
     "clone",
     "--filter=blob:none",
     "https://github.com/folke/lazy.nvim.git",
     "--branch=stable",
     lazypath,
-  })
+  }
 end
 
 -- Add lazy.nvim to runtime path
 vim.opt.rtp:prepend(lazypath)
 
 -- Load general settings
-require('settings')
+require "settings"
 
 -- Load key mappings
-require('mappings')
+require "mappings"
 
 -- Initialize plugins
-require('plugins')
+require "plugins"

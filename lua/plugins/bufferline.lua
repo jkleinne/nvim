@@ -1,14 +1,14 @@
 return {
-  'akinsho/bufferline.nvim',
+  "akinsho/bufferline.nvim",
   version = "*",
-  dependencies = 'nvim-tree/nvim-web-devicons',
-  after = 'catppuccin',
+  dependencies = "nvim-tree/nvim-web-devicons",
+  after = "catppuccin",
   config = function()
-    require("bufferline").setup{
+    require("bufferline").setup {
       options = {
         themable = true,
         separator_style = "padded_slope",
-      }
+      },
     }
   end,
 }
