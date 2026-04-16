@@ -178,7 +178,7 @@ The configuration files are organized as follows:
 │   ├── settings.lua        # General settings and options
 ├── init.lua                # Main entry point
 ├── lazy-lock.json          # Lock file for lazy.nvim
-├── nvim-install.sh         # Installation script (Linux)
+├── nvim-install.sh         # Bootstrap script (macOS, Linux)
 └── ...
 ```
 
