@@ -6,7 +6,7 @@ return {
     {
       "<leader>f",
       function()
-        require("conform").format { async = true, lsp_fallback = true }
+        require("conform").format { async = true, lsp_format = "fallback" }
       end,
       desc = "Format buffer",
     },
@@ -26,6 +26,10 @@ return {
       terraform = { "terraform_fmt" },
       hcl = { "terraform_fmt" },
       sh = { "shfmt" },
+    },
+    format_on_save = {
+      timeout_ms = 500,
+      lsp_format = "fallback",
     },
   },
 }
