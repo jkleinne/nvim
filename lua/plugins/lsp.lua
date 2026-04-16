@@ -1,6 +1,6 @@
 return {
   "neovim/nvim-lspconfig",
-  event = "BufReadPre",
+  event = { "BufReadPre", "BufNewFile" },
   dependencies = {
     "mason-org/mason.nvim",
     "mason-org/mason-lspconfig.nvim",
@@ -48,7 +48,7 @@ return {
 
     mason_lspconfig.setup {
       ensure_installed = servers,
-      automatic_enable = { exclude = { "stylua" } },
+      automatic_enable = true,
     }
 
     -- Set keymaps when an LSP attaches to a buffer
