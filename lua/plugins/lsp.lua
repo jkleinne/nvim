@@ -6,39 +6,30 @@ return {
     "williamboman/mason-lspconfig.nvim",
   },
   config = function()
+    local servers = {
+      "ansiblels",
+      "bashls",
+      "docker_compose_language_service",
+      "dockerls",
+      "gopls",
+      "jsonls",
+      "lua_ls",
+      "pyright",
+      "sqlls",
+      "terraformls",
+      "ts_ls",
+      "yamlls",
+    }
+
     local mason_lspconfig = require "mason-lspconfig"
 
     mason_lspconfig.setup {
-      ensure_installed = {
-        "bashls",
-        "dockerls",
-        "docker_compose_language_service",
-        "gopls",
-        "ts_ls",
-        "jsonls",
-        "lua_ls",
-        "yamlls",
-      },
+      ensure_installed = servers,
       automatic_installation = true,
     }
 
     local cmp_nvim_lsp = require "cmp_nvim_lsp"
     local capabilities = cmp_nvim_lsp.default_capabilities()
-
-    local servers = {
-      "pyright",
-      "ts_ls",
-      "lua_ls",
-      "gopls",
-      "yamlls",
-      "ansiblels",
-      "bashls",
-      "dockerls",
-      "docker_compose_language_service",
-      "jsonls",
-      "sqlls",
-      "terraformls",
-    }
 
     -- Set keymaps when an LSP attaches to a buffer
     vim.api.nvim_create_autocmd("LspAttach", {
