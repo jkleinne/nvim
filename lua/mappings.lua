@@ -2,23 +2,19 @@ local map = vim.keymap.set
 local default_opts = { noremap = true, silent = true }
 local initial_cwd = vim.fn.getcwd()
 
-map("n", "<leader>x", ":Bdelete <CR>", default_opts)
+local function opts(desc)
+  return vim.tbl_extend("force", default_opts, { desc = desc })
+end
 
--- Set kubectl.nvim toggle mapping
-map("n", "<leader>k", '<cmd>lua require("kubectl").toggle()<cr>', default_opts)
--- Map <leader>gtt to open a terminal and run lazygit
-map("n", "<leader>gtt", ":term lazygit<CR>i", default_opts)
+map("n", "<leader>bd", ":Bdelete<CR>", opts "Delete buffer")
 
--- Map <leader>dc to open a terminal and run lazydocker
-map("n", "<leader>dc", ":term lazydocker<CR>i", default_opts)
+map("n", "<leader>k", '<cmd>lua require("kubectl").toggle()<cr>', opts "Toggle kubectl")
 
--- Map <leader>ta to open an empty buffer
-map("n", "<leader>ta", ":enew<CR>", default_opts)
+map("n", "<leader>gtt", ":term lazygit<CR>i", opts "Lazygit")
+map("n", "<leader>dc", ":term lazydocker<CR>i", opts "Lazydocker")
+map("n", "<leader>ta", ":enew<CR>", opts "New empty buffer")
+map("n", "<leader>sq", ":term lazysql<CR>i", opts "Lazysql")
 
--- Map <leader>sq to open a terminal and run lazysql
-map("n", "<leader>sq", ":term lazysql<CR>i", default_opts)
-
--- Map <leader>po to run 'posting --collection <posting-collection-path>'
 map("n", "<leader>po", function()
   vim.ui.input({ prompt = "Enter posting collection path: " }, function(input)
     if input and input ~= "" then
@@ -28,29 +24,25 @@ map("n", "<leader>po", function()
       vim.cmd "term posting"
     end
   end)
-end, default_opts)
+end, opts "Posting HTTP client")
 
--- Keybindings for Telescope fuzzy finder
-map("n", "<leader>tf", "<cmd>Telescope find_files cwd=" .. initial_cwd .. "<cr>", default_opts)
-map("n", "<leader>tg", "<cmd>Telescope live_grep  cwd=" .. initial_cwd .. "<cr>", default_opts)
-map("n", "<leader>tb", "<cmd>Telescope buffers<cr>", default_opts)
-map("n", "<leader>th", "<cmd>Telescope help_tags<cr>", default_opts)
-map("n", "<leader>ts", "<cmd>Telescope luasnip<cr>", default_opts)
+map("n", "<leader>tf", "<cmd>Telescope find_files cwd=" .. initial_cwd .. "<cr>", opts "Find files")
+map("n", "<leader>tg", "<cmd>Telescope live_grep cwd=" .. initial_cwd .. "<cr>", opts "Live grep")
+map("n", "<leader>tb", "<cmd>Telescope buffers<cr>", opts "Buffers")
+map("n", "<leader>th", "<cmd>Telescope help_tags<cr>", opts "Help tags")
+map("n", "<leader>ts", "<cmd>Telescope luasnip<cr>", opts "Snippets")
 
--- Neotree keybindings
-map("n", "<C-e>", ":Neotree toggle reveal=true reveal_force_cwd=true<CR>", default_opts)
+map("n", "<TAB>", ":BufferLineCycleNext<CR>", opts "Next buffer")
+map("n", "<S-TAB>", ":BufferLineCyclePrev<CR>", opts "Previous buffer")
 
--- Bufferline & buffer mappings
-map("n", "<TAB>", ":BufferLineCycleNext<CR>", default_opts)
-map("n", "<S-TAB>", ":BufferLineCyclePrev<CR>", default_opts)
+map("n", "<C-w>t", ":tabnew<CR>", opts "New tab")
 
--- Scope mappings / tab management
-map("n", "<C-w>t", ":tabnew<CR>", default_opts)
+map("n", "<leader>h", ":belowright 20split | terminal<CR>", opts "Horizontal terminal split")
+map("n", "<leader>v", ":vsplit | wincmd l | terminal<CR>", opts "Vertical terminal split")
 
--- Terminal splits mappings
-map("n", "<leader>h", ":belowright 20split | terminal<CR>", default_opts)
-map("n", "<leader>v", ":vsplit | wincmd l | terminal<CR>", default_opts)
-
--- Terminal mode: double-Esc returns to normal mode
--- (single Esc preserved for TUI apps like lazygit, fzf, posting)
-map("t", "<Esc><Esc>", "<C-\\><C-n>", default_opts)
+-- Double-Esc to exit terminal mode; single Esc stays bound to TUI apps (lazygit, fzf, posting)
+map("t", "<Esc><Esc>", "<C-\\><C-n>", opts "Exit terminal mode")
+map("t", "<C-h>", "<C-\\><C-n><C-w>h", opts "Move to left window")
+map("t", "<C-j>", "<C-\\><C-n><C-w>j", opts "Move to lower window")
+map("t", "<C-k>", "<C-\\><C-n><C-w>k", opts "Move to upper window")
+map("t", "<C-l>", "<C-\\><C-n><C-w>l", opts "Move to right window")
