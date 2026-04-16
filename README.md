@@ -213,7 +213,7 @@ The leader key is set to `Space`.
 | Keybinding | Description |
 | :--- | :--- |
 | `<C-w>t` | Open a new tab |
-| `<leader>ta` | Open a new empty buffer (`:enew`) |
+| `<leader>bn` | Open a new empty buffer (`:enew`) |
 | `<leader>h` | Open a terminal in a horizontal split below |
 | `<leader>v` | Open a terminal in a vertical split to the right |
 | `<Esc><Esc>` | Exit terminal mode (double-tap; single Esc preserved for TUIs) |
