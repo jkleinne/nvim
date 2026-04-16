@@ -308,7 +308,9 @@ install_hard() {
   done
 
   if [[ ${#missing[@]} -eq 0 ]]; then
-    success "$label (already installed)"
+    for pkg in "$@"; do
+      success "$pkg (already installed)"
+    done
     return
   fi
 
