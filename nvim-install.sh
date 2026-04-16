@@ -277,6 +277,16 @@ install_neovim() {
 # Dependency installation helpers
 # ---------------------------------------------------------------------------
 
+pkg_is_installed() {
+  case "$PKG_MGR" in
+    brew)    brew list --formula "$1" &>/dev/null ;;
+    apt-get) dpkg -s "$1" &>/dev/null 2>&1 ;;
+    dnf)     rpm -q "$1" &>/dev/null ;;
+    pacman)  pacman -Q "$1" &>/dev/null ;;
+    apk)     apk info -e "$1" &>/dev/null ;;
+  esac
+}
+
 pkg_install() {
   case "$PKG_MGR" in
     brew)    brew install "$@" ;;
@@ -289,8 +299,21 @@ pkg_install() {
 
 install_hard() {
   local label="$1"; shift
+
+  local missing=()
+  for pkg in "$@"; do
+    if ! pkg_is_installed "$pkg"; then
+      missing+=("$pkg")
+    fi
+  done
+
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    success "$label (already installed)"
+    return
+  fi
+
   info "Installing $label..."
-  if ! pkg_install "$@"; then
+  if ! pkg_install "${missing[@]}"; then
     error "Failed to install $label. Cannot continue."
     exit 1
   fi
