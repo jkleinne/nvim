@@ -38,7 +38,14 @@ return {
       ghost_text = { enabled = true },
     },
     sources = {
-      default = { "lsp", "snippets", "buffer", "path" },
+      default = { "lazydev", "lsp", "snippets", "buffer", "path" },
+      providers = {
+        lazydev = {
+          name = "LazyDev",
+          module = "lazydev.integrations.blink",
+          score_offset = 100,
+        },
+      },
     },
     cmdline = {
       enabled = true,
