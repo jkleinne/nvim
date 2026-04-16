@@ -531,7 +531,10 @@ setup_config() {
     backup="${NVIM_CONFIG_DIR}.bak.$(date +%s)"
     warn "Existing config at $NVIM_CONFIG_DIR is not this repo."
     info "Backing up to $backup"
-    mv "$NVIM_CONFIG_DIR" "$backup"
+    if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
+      error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
+      exit 1
+    fi
     success "Backed up existing config"
   fi
 
@@ -556,8 +559,14 @@ setup_config() {
   fi
 
   info "Cloning config to $NVIM_CONFIG_DIR..."
-  mkdir -p "$(dirname "$NVIM_CONFIG_DIR")"
-  git clone "$NVIM_REPO" "$NVIM_CONFIG_DIR"
+  if ! mkdir -p "$(dirname "$NVIM_CONFIG_DIR")"; then
+    error "Cannot create parent directory for $NVIM_CONFIG_DIR"
+    exit 1
+  fi
+  if ! git clone "$NVIM_REPO" "$NVIM_CONFIG_DIR"; then
+    error "Failed to clone config repo to $NVIM_CONFIG_DIR"
+    exit 1
+  fi
   success "Config cloned to $NVIM_CONFIG_DIR"
 }
 
