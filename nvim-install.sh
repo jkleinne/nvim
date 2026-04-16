@@ -633,6 +633,65 @@ setup_path() {
 }
 
 # ---------------------------------------------------------------------------
+# Verification and summary
+# ---------------------------------------------------------------------------
+
+verify_install() {
+  section "Verification"
+
+  if ! command -v nvim >/dev/null 2>&1; then
+    error "nvim not found on PATH after installation."
+    if [[ "$NEED_PATH_SETUP" == true ]]; then
+      error "You may need to open a new terminal or source your shell config."
+    fi
+    exit 1
+  fi
+
+  local installed_version
+  installed_version="$(get_nvim_version)"
+  if ! version_gte "$installed_version" "$MIN_NVIM_VERSION"; then
+    error "Neovim $installed_version is installed, but $MIN_NVIM_VERSION+ is required."
+    exit 1
+  fi
+  success "Neovim $installed_version on PATH"
+
+  if nvim --headless "+qa" 2>/dev/null; then
+    success "Config loads cleanly"
+  else
+    warn "Config reported errors (expected on first run before plugins sync)"
+    warn "Launch nvim interactively to complete plugin installation"
+  fi
+}
+
+print_summary() {
+  local installed_version
+  installed_version="$(get_nvim_version 2>/dev/null || echo "unknown")"
+
+  printf '\n'
+  printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
+  printf '%s\n' "${BOLD}${GREEN}  Neovim Bootstrap Complete${RESET}"
+  printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
+  printf '  %-18s %s\n' "Version:" "$installed_version"
+  printf '  %-18s %s\n' "Install method:" "$NVIM_INSTALL_METHOD"
+  printf '  %-18s %s\n' "Config:" "$NVIM_CONFIG_DIR"
+
+  if [[ "$NEED_PATH_SETUP" == true ]]; then
+    printf '  %-18s %s\n' "PATH updated:" "yes (restart shell to apply)"
+  fi
+
+  if [[ ${#WARNINGS[@]} -gt 0 ]]; then
+    printf '\n  %s\n' "${YELLOW}${BOLD}Warnings:${RESET}"
+    for w in "${WARNINGS[@]}"; do
+      printf '    %s %s\n' "${YELLOW}!${RESET}" "$w"
+    done
+  fi
+
+  printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
+  printf '\n'
+  info "Launch nvim to complete plugin installation."
+}
+
+# ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 
@@ -677,6 +736,8 @@ main() {
   install_deps
   setup_config
   setup_path
+  verify_install
+  print_summary
 }
 
 main "$@"

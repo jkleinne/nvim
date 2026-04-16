@@ -122,30 +122,31 @@ mv ~/.cache/nvim ~/.cache/nvim_backup
 
 #### Method A: Manual Installation
 
-1.  Ensure Neovim 0.12+ is installed (e.g., `brew install neovim` or via your OS package manager).
+1.  Install Neovim 0.12+ (e.g., `brew install neovim` or via your OS package manager).
 2.  Clone the repository directly into your Neovim configuration directory:
     ```bash
     git clone https://github.com/jkleinne/nvim ~/.config/nvim
     ```
 
-#### Method B: Using the Install Script (Recommended)
+#### Method B: Bootstrap Script (Recommended)
 
-The `nvim-install.sh` script automates the installation of the latest Neovim binary and moves the configuration into place.
+The `nvim-install.sh` script detects your platform and installs Neovim, build tools, runtimes (Node, Go), formatters, linters, TUI tools, and clones the configuration.
 
-**Warning:** This script requires `sudo` privileges, installs Neovim to `/opt/`, and updates `~/.bashrc`.
+**Supported platforms:** macOS (Homebrew), Debian/Ubuntu (apt), Fedora/RHEL (dnf), Arch Linux (pacman), Alpine (apk).
 
-1.  Clone the repository to a temporary location:
-    ```bash
-    git clone https://github.com/jkleinne/nvim 
-    cd nvim
-    ```
-2.  Run the installation script. You **must source it** (using `.`) so that the PATH updates apply to your current shell:
-    ```bash
-    . ./nvim-install.sh
-    ```
-    The script will download Neovim, install it, and move the configuration files from the temporary location to `~/.config/nvim`.
+```bash
+git clone https://github.com/jkleinne/nvim ~/.config/nvim
+cd ~/.config/nvim
+./nvim-install.sh
+```
 
-*Note: If you primarily use Zsh (which this configuration prefers in `settings.lua`), you will need to manually add the Neovim binary path (`/opt/nvim-linux-x86_64/bin`) to your `~/.zshrc`.*
+The script will:
+- Install Neovim 0.12+ (prefers your system package manager, falls back to the GitHub release tarball)
+- Install build dependencies, runtimes, formatters, linters, and TUI tools
+- Detect your shell and update PATH if needed (bash, zsh, fish)
+- Skip anything already installed
+
+Run `./nvim-install.sh --help` for details.
 
 ### 3. First Launch and Verification
 
