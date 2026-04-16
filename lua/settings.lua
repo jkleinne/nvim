@@ -20,10 +20,10 @@ vim.opt.tabstop = 2
 vim.opt.shiftwidth = 2
 
 -- Disable :intro page
-vim.opt.shortmess:append("I")
+vim.opt.shortmess:append "I"
 
 -- Ensure the default shell is zsh if it's installed
-local zsh_path = vim.fn.exepath("zsh")
+local zsh_path = vim.fn.exepath "zsh"
 if zsh_path ~= "" then
   vim.opt.shell = zsh_path
 else
@@ -41,7 +41,7 @@ vim.api.nvim_create_autocmd("FileType", {
 vim.api.nvim_create_autocmd("BufEnter", {
   nested = true,
   callback = function()
-    if vim.fn.winnr("$") == 1 and vim.bo.filetype == "neo-tree" then
+    if vim.fn.winnr "$" == 1 and vim.bo.filetype == "neo-tree" then
       vim.cmd.quit()
     end
   end,

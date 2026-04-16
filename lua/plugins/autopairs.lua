@@ -3,10 +3,10 @@ return {
   event = "InsertEnter", -- Load when entering Insert mode
   dependencies = {
     "nvim-lua/plenary.nvim",
-    "MunifTanjim/nui.nvim"
+    "MunifTanjim/nui.nvim",
   },
   opts = {
-    fast_wrap = {}
+    fast_wrap = {},
   },
   config = function()
     require("nvim-autopairs").setup {}

@@ -6,23 +6,38 @@ return {
     "williamboman/mason-lspconfig.nvim",
   },
   config = function()
-    local mason_lspconfig = require("mason-lspconfig")
+    local mason_lspconfig = require "mason-lspconfig"
 
-    mason_lspconfig.setup({
+    mason_lspconfig.setup {
       ensure_installed = {
-        "bashls", "dockerls", "docker_compose_language_service",
-        "gopls", "ts_ls", "jsonls", "lua_ls", "yamlls"
+        "bashls",
+        "dockerls",
+        "docker_compose_language_service",
+        "gopls",
+        "ts_ls",
+        "jsonls",
+        "lua_ls",
+        "yamlls",
       },
       automatic_installation = true,
-    })
+    }
 
-    local cmp_nvim_lsp = require("cmp_nvim_lsp")
+    local cmp_nvim_lsp = require "cmp_nvim_lsp"
     local capabilities = cmp_nvim_lsp.default_capabilities()
 
     local servers = {
-      "pyright", "ts_ls", "lua_ls", "gopls", "yamlls", "ansiblels",
-      "bashls", "dockerls", "docker_compose_language_service", "jsonls",
-      "sqlls", "terraformls"
+      "pyright",
+      "ts_ls",
+      "lua_ls",
+      "gopls",
+      "yamlls",
+      "ansiblels",
+      "bashls",
+      "dockerls",
+      "docker_compose_language_service",
+      "jsonls",
+      "sqlls",
+      "terraformls",
     }
 
     -- Set keymaps when an LSP attaches to a buffer
@@ -32,34 +47,34 @@ return {
         local opts = { noremap = true, silent = true, buffer = bufnr }
         local keymap = vim.keymap.set
 
-        keymap('n', 'gl', vim.diagnostic.open_float, opts)
-        keymap('n', '[d', vim.diagnostic.goto_prev, opts)
-        keymap('n', ']d', vim.diagnostic.goto_next, opts)
-        keymap('n', '<leader>q', vim.diagnostic.setloclist, opts)
+        keymap("n", "gl", vim.diagnostic.open_float, opts)
+        keymap("n", "[d", vim.diagnostic.goto_prev, opts)
+        keymap("n", "]d", vim.diagnostic.goto_next, opts)
+        keymap("n", "<leader>q", vim.diagnostic.setloclist, opts)
 
-        keymap('n', 'gd', vim.lsp.buf.definition, opts)
-        keymap('n', 'K', vim.lsp.buf.hover, opts)
-        keymap('n', 'gi', vim.lsp.buf.implementation, opts)
-        keymap('n', '<C-k>', vim.lsp.buf.signature_help, opts)
-        keymap('n', '<leader>wa', vim.lsp.buf.add_workspace_folder, opts)
-        keymap('n', '<leader>wr', vim.lsp.buf.remove_workspace_folder, opts)
-        keymap('n', '<leader>wl', function()
+        keymap("n", "gd", vim.lsp.buf.definition, opts)
+        keymap("n", "K", vim.lsp.buf.hover, opts)
+        keymap("n", "gi", vim.lsp.buf.implementation, opts)
+        keymap("n", "<C-k>", vim.lsp.buf.signature_help, opts)
+        keymap("n", "<leader>wa", vim.lsp.buf.add_workspace_folder, opts)
+        keymap("n", "<leader>wr", vim.lsp.buf.remove_workspace_folder, opts)
+        keymap("n", "<leader>wl", function()
           print(vim.inspect(vim.lsp.buf.list_workspace_folders()))
         end, opts)
-        keymap('n', '<leader>D', vim.lsp.buf.type_definition, opts)
-        keymap('n', '<leader>rn', vim.lsp.buf.rename, opts)
-        keymap('n', '<leader>ca', vim.lsp.buf.code_action, opts)
-        keymap('n', 'gr', vim.lsp.buf.references, opts)
+        keymap("n", "<leader>D", vim.lsp.buf.type_definition, opts)
+        keymap("n", "<leader>rn", vim.lsp.buf.rename, opts)
+        keymap("n", "<leader>ca", vim.lsp.buf.code_action, opts)
+        keymap("n", "gr", vim.lsp.buf.references, opts)
       end,
     })
 
     -- Global defaults for all servers
-    vim.lsp.config('*', {
+    vim.lsp.config("*", {
       capabilities = capabilities,
     })
 
     -- Server-specific settings
-    vim.lsp.config('lua_ls', {
+    vim.lsp.config("lua_ls", {
       settings = {
         Lua = {
           diagnostics = {

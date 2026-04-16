@@ -1,8 +1,8 @@
 return {
   "goolord/alpha-nvim",
   config = function()
-    local alpha = require("alpha")
-    local dashboard = require("alpha.themes.dashboard")
+    local alpha = require "alpha"
+    local dashboard = require "alpha.themes.dashboard"
     dashboard.section.header.val = {
       [[                                                                       ]],
       [[  ██████   █████                   █████   █████  ███                  ]],
@@ -14,7 +14,7 @@ return {
       [[  █████  ░░█████░░██████ ░░██████     ░░███      █████ █████░███ █████ ]],
       [[ ░░░░░    ░░░░░  ░░░░░░   ░░░░░░       ░░░      ░░░░░ ░░░░░ ░░░ ░░░░░  ]],
       [[                                                                       ]],
-      [[                     λ it be like that sometimes λ                     ]]
+      [[                     λ it be like that sometimes λ                     ]],
     }
 
     dashboard.section.buttons.val = {
@@ -24,18 +24,18 @@ return {
       dashboard.button("u", "  Update plugins", ":Lazy sync<CR>"),
       dashboard.button("r", "  Recently opened files", "<cmd>Telescope oldfiles<CR>"),
       dashboard.button("l", "  Open last session", "<cmd>RestoreSession<CR>"),
-      dashboard.button("q", "󰈆  Quit", ":qa<CR>")
+      dashboard.button("q", "󰈆  Quit", ":qa<CR>"),
     }
 
-    local handle, err = io.popen("fortune -s")
+    local handle, err = io.popen "fortune -s"
     if err or handle == nil then
       dashboard.section.footer.val = "May the truth be found."
       alpha.setup(dashboard.opts)
       return
     end
-    local fortune = handle:read("*a")
+    local fortune = handle:read "*a"
     handle:close()
     dashboard.section.footer.val = fortune
     alpha.setup(dashboard.opts)
-  end
+  end,
 }

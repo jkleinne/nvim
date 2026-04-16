@@ -8,7 +8,7 @@ return {
   },
   lazy = false,
   config = function()
-    require("neo-tree").setup({
+    require("neo-tree").setup {
       filesystem = {
         follow_current_file = {
           enabled = true,
@@ -22,24 +22,24 @@ return {
       },
       git_status = {
         symbols = {
-          added     = "✚",
-          deleted   = "✖",
-          modified  = "",
-          renamed   = "󰁕",
+          added = "✚",
+          deleted = "✖",
+          modified = "",
+          renamed = "󰁕",
           untracked = "",
-          ignored   = "",
-          unstaged  = "󰄱",
-          staged    = "",
-          conflict  = "",
+          ignored = "",
+          unstaged = "󰄱",
+          staged = "",
+          conflict = "",
         },
         align = "right",
       },
       window = {
         mappings = {
           ["<cr>"] = "open_with_window_picker",
-          ["<2-LeftMouse>"] = "open_with_window_picker"
-        }
-      }
-    })
+          ["<2-LeftMouse>"] = "open_with_window_picker",
+        },
+      },
+    }
   end,
 }

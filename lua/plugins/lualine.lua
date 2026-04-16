@@ -4,11 +4,11 @@ return {
   event = "VeryLazy",
   config = function()
     -- Automatically choose theme for Lualine
-    require("lualine").setup({
+    require("lualine").setup {
       options = {
         theme = "auto",
-        icons_enabled = true
+        icons_enabled = true,
       },
-    })
+    }
   end,
 }
