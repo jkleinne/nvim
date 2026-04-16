@@ -2,8 +2,8 @@ return {
   "neovim/nvim-lspconfig",
   event = "BufReadPre",
   dependencies = {
-    "williamboman/mason.nvim",
-    "williamboman/mason-lspconfig.nvim",
+    "mason-org/mason.nvim",
+    "mason-org/mason-lspconfig.nvim",
   },
   config = function()
     local servers = {
@@ -25,7 +25,7 @@ return {
 
     mason_lspconfig.setup {
       ensure_installed = servers,
-      automatic_installation = true,
+      automatic_enable = true,
     }
 
     local capabilities = require("blink.cmp").get_lsp_capabilities()
@@ -84,8 +84,5 @@ return {
         },
       },
     })
-
-    -- Enable all servers
-    vim.lsp.enable(servers)
   end,
 }
