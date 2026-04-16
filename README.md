@@ -25,12 +25,13 @@ My personal Neovim configuration
 - **Intelligent Autocompletion**: Powered by `blink.cmp` (Rust fuzzy matching) and `LuaSnip`.
 - **Git Integration**: Visualize git changes with `gitsigns` and TUI access via `lazygit`.
 - **Language Support**: Extensive LSP configuration with `mason` and `nvim-lspconfig` (Go, TypeScript, Python, YAML, Docker, Terraform, etc.).
-- **Formatting and Linting**: `conform.nvim` for formatters with LSP fallback, `nvim-lint` for additional linting (hadolint, shellcheck, yamllint, golangci-lint, ruff, tflint).
+- **Formatting and Linting**: `conform.nvim` for formatters with LSP fallback and format-on-save, `nvim-lint` for additional linting (hadolint, shellcheck, yamllint, golangci-lint, ruff, tflint).
 - **File Management**: `Neo-tree` as the file explorer and `Telescope` with fzf-native for fuzzy finding.
 - **Syntax Highlighting**: Built-in Neovim 0.12 treesitter highlighting via `vim.treesitter.start()`.
 - **Navigation**: `flash.nvim` for labeled jump navigation, `nvim-surround` for surround operations.
 - **DevOps Tools**: Kubernetes integration via `kubectl.nvim` and TUI access to Docker (`lazydocker`), SQL (`lazysql`), and API clients (`posting`).
 - **Modern UI**: Catppuccin theme, `lualine`, `trouble.nvim` for diagnostics, and a modernized command palette/messaging system with `noice.nvim`.
+- **Session Management**: `auto-session` persists sessions on exit; restore from the alpha dashboard's `l` button (no auto-restore on startup so the dashboard always shows first).
 
 ## Requirements
 
@@ -193,7 +194,7 @@ The leader key is set to `Space`.
 | `<C-e>` | Toggle Neo-tree file explorer |
 | `<TAB>` | Cycle to the next buffer |
 | `<S-TAB>` | Cycle to the previous buffer |
-| `<leader>x` | Close the current buffer (Bdelete) |
+| `<leader>bd` | Close the current buffer (Bdelete) |
 | `s` | Flash jump (labeled jump to any visible location) |
 | `S` | Flash treesitter jump (select treesitter nodes) |
 
@@ -216,6 +217,7 @@ The leader key is set to `Space`.
 | `<leader>h` | Open a terminal in a horizontal split below |
 | `<leader>v` | Open a terminal in a vertical split to the right |
 | `<Esc><Esc>` | Exit terminal mode (double-tap; single Esc preserved for TUIs) |
+| `<C-h>` / `<C-j>` / `<C-k>` / `<C-l>` | From terminal mode, jump to the left/lower/upper/right window |
 
 ### TUI & Tool Integrations
 
@@ -269,16 +271,18 @@ These are active when an LSP server is attached to a buffer.
 Here is a list of the key plugins included in this configuration:
 
   - **[alpha-nvim](https://github.com/goolord/alpha-nvim)**: Startup screen.
+  - **[auto-session](https://github.com/rmagatti/auto-session)**: Saves sessions on exit; restore on demand from the alpha dashboard (`l`).
+  - **[blink.cmp](https://github.com/saghen/blink.cmp)**: Autocompletion engine with Rust fuzzy matcher.
   - **[bufferline.nvim](https://github.com/akinsho/bufferline.nvim)**: Manage open buffers as tabs.
   - **[catppuccin/nvim](https://github.com/catppuccin/nvim)**: Soothing pastel theme (Mocha flavor).
-  - **[conform.nvim](https://github.com/stevearc/conform.nvim)**: Formatter runner with LSP fallback.
+  - **[conform.nvim](https://github.com/stevearc/conform.nvim)**: Formatter runner with LSP fallback and format-on-save.
   - **[flash.nvim](https://github.com/folke/flash.nvim)**: Labeled jump navigation.
   - **[gitsigns.nvim](https://github.com/lewis6991/gitsigns.nvim)**: Git decorations in the gutter.
   - **[kubectl.nvim](https://github.com/Ramilito/kubectl.nvim)**: Kubernetes integration.
+  - **[lazydev.nvim](https://github.com/folke/lazydev.nvim)**: Lazy-loaded Neovim API type information and completions for `lua_ls`.
   - **[mason.nvim](https://github.com/mason-org/mason.nvim)**: Manage LSPs, linters, and formatters.
   - **[neo-tree.nvim](https://github.com/nvim-neo-tree/neo-tree.nvim)**: File explorer.
   - **[noice.nvim](https://github.com/folke/noice.nvim)**: Modernizes the UI for messages, cmdline, and popups.
-  - **[blink.cmp](https://github.com/saghen/blink.cmp)**: Autocompletion engine with Rust fuzzy matcher.
   - **[nvim-lint](https://github.com/mfussenegger/nvim-lint)**: Async linting for Dockerfile, shell, YAML, Go, Python, Terraform.
   - **[nvim-surround](https://github.com/kylechui/nvim-surround)**: Surround operations (change, delete, add).
   - **[telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)**: Fuzzy finder with fzf-native sorting.
