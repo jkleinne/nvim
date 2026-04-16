@@ -10,15 +10,22 @@ return {
         dark = "mocha",
       },
       integrations = {
+        alpha = true,
         bufferline = true,
+        flash = true,
+        gitsigns = true,
         indent_blankline = {
           enabled = true,
           scope_color = "lavender",
           colored_indent_levels = false,
         },
+        lsp_trouble = true,
+        mason = true,
         neotree = true,
-        window_picker = true,
+        noice = true,
+        telescope = { enabled = true },
         which_key = true,
+        window_picker = true,
       },
     }
 
