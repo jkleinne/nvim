@@ -6,7 +6,10 @@ return {
     "nvim-tree/nvim-web-devicons",
     "MunifTanjim/nui.nvim",
   },
-  lazy = false,
+  cmd = "Neotree",
+  keys = {
+    { "<C-e>", "<cmd>Neotree toggle reveal=true reveal_force_cwd=true<CR>", desc = "Toggle file explorer" },
+  },
   config = function()
     require("neo-tree").setup {
       filesystem = {
@@ -24,13 +27,13 @@ return {
         symbols = {
           added = "✚",
           deleted = "✖",
-          modified = "",
+          modified = "",
           renamed = "󰁕",
-          untracked = "",
-          ignored = "",
+          untracked = "",
+          ignored = "",
           unstaged = "󰄱",
-          staged = "",
-          conflict = "",
+          staged = "",
+          conflict = "",
         },
         align = "right",
       },
