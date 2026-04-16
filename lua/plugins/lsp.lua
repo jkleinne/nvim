@@ -28,8 +28,7 @@ return {
       automatic_installation = true,
     }
 
-    local cmp_nvim_lsp = require "cmp_nvim_lsp"
-    local capabilities = cmp_nvim_lsp.default_capabilities()
+    local capabilities = require("blink.cmp").get_lsp_capabilities()
 
     -- Set keymaps when an LSP attaches to a buffer
     vim.api.nvim_create_autocmd("LspAttach", {
