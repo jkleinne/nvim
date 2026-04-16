@@ -274,6 +274,244 @@ install_neovim() {
 }
 
 # ---------------------------------------------------------------------------
+# Dependency installation helpers
+# ---------------------------------------------------------------------------
+
+pkg_install() {
+  case "$PKG_MGR" in
+    brew)    brew install "$@" ;;
+    apt-get) sudo apt-get install -y "$@" ;;
+    dnf)     sudo dnf install -y "$@" ;;
+    pacman)  sudo pacman -S --noconfirm "$@" ;;
+    apk)     sudo apk add "$@" ;;
+  esac
+}
+
+install_hard() {
+  local label="$1"; shift
+  info "Installing $label..."
+  if ! pkg_install "$@"; then
+    error "Failed to install $label. Cannot continue."
+    exit 1
+  fi
+  success "$label"
+}
+
+install_soft() {
+  local name="$1"; shift
+  if command -v "$name" >/dev/null 2>&1; then
+    success "$name (already installed)"
+    return
+  fi
+  if "$@"; then
+    success "$name"
+  else
+    warn "$name: install failed, skipping"
+  fi
+}
+
+# ---------------------------------------------------------------------------
+# Dependency categories
+# ---------------------------------------------------------------------------
+
+install_build_tools() {
+  section "Build Tools"
+
+  if [[ "$OS" == "darwin" ]]; then
+    if xcode-select -p >/dev/null 2>&1; then
+      success "Xcode Command Line Tools (already installed)"
+    else
+      info "Installing Xcode Command Line Tools..."
+      xcode-select --install 2>/dev/null || true
+      warn "Xcode CLT installer launched. Re-run this script after installation completes."
+      exit 0
+    fi
+    return
+  fi
+
+  case "$PKG_MGR" in
+    apt-get)
+      install_hard "build tools" build-essential curl tar gzip
+      ;;
+    dnf)
+      install_hard "build tools" gcc make curl tar gzip
+      ;;
+    pacman)
+      install_hard "build tools" base-devel curl
+      ;;
+    apk)
+      install_hard "build tools" build-base curl tar
+      ;;
+  esac
+}
+
+install_core_tools() {
+  section "Core Tools"
+  install_hard "core tools" ripgrep git
+}
+
+install_runtimes() {
+  section "Runtimes"
+
+  case "$PKG_MGR" in
+    brew)
+      install_hard "runtimes" node go
+      ;;
+    apt-get)
+      install_hard "runtimes" nodejs npm golang
+      ;;
+    dnf)
+      install_hard "runtimes" nodejs npm golang
+      ;;
+    pacman)
+      install_hard "runtimes" nodejs npm go
+      ;;
+    apk)
+      install_hard "runtimes" nodejs npm go
+      ;;
+  esac
+}
+
+install_formatters() {
+  section "Formatters"
+
+  case "$PKG_MGR" in
+    brew)
+      install_soft stylua brew install stylua
+      install_soft shfmt brew install shfmt
+      install_soft prettier brew install prettier
+      install_soft black brew install black
+      ;;
+    pacman)
+      install_soft stylua sudo pacman -S --noconfirm stylua
+      install_soft shfmt sudo pacman -S --noconfirm shfmt
+      install_soft prettier npm install -g prettier
+      install_soft black pip install --user black
+      ;;
+    *)
+      install_soft prettier npm install -g prettier
+      install_soft black pip install --user black
+      if command -v go >/dev/null 2>&1; then
+        install_soft shfmt go install mvdan.cc/sh/v3/cmd/shfmt@latest
+      else
+        warn "shfmt: requires Go (skipping)"
+      fi
+      if command -v cargo >/dev/null 2>&1; then
+        install_soft stylua cargo install stylua
+      else
+        warn "stylua: no cargo on PATH, install manually from https://github.com/JohnnyMorganz/StyLua/releases"
+      fi
+      ;;
+  esac
+}
+
+install_linters() {
+  section "Linters"
+
+  case "$PKG_MGR" in
+    brew)
+      local linters=(selene hadolint shellcheck yamllint tflint golangci-lint ruff)
+      for l in "${linters[@]}"; do
+        install_soft "$l" brew install "$l"
+      done
+      ;;
+    pacman)
+      install_soft shellcheck sudo pacman -S --noconfirm shellcheck
+      install_soft yamllint pip install --user yamllint
+      install_soft ruff pip install --user ruff
+      if command -v go >/dev/null 2>&1; then
+        install_soft golangci-lint go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      fi
+      if command -v cargo >/dev/null 2>&1; then
+        install_soft selene cargo install selene
+      fi
+      warn "hadolint, tflint: install manually (not in pacman repos)"
+      ;;
+    *)
+      case "$PKG_MGR" in
+        apt-get) install_soft shellcheck sudo apt-get install -y shellcheck ;;
+        dnf)     install_soft shellcheck sudo dnf install -y shellcheck ;;
+        apk)     install_soft shellcheck sudo apk add shellcheck ;;
+      esac
+      install_soft yamllint pip install --user yamllint
+      install_soft ruff pip install --user ruff
+      if command -v go >/dev/null 2>&1; then
+        install_soft golangci-lint go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      fi
+      warn "selene, hadolint, tflint: install manually (not in distro repos)"
+      ;;
+  esac
+}
+
+install_tui_tools() {
+  section "TUI Tools"
+
+  case "$PKG_MGR" in
+    brew)
+      install_soft lazygit brew install lazygit
+      install_soft lazydocker brew install lazydocker
+      install_soft lazysql brew install lazysql
+      install_soft fortune brew install fortune
+      if command -v pipx >/dev/null 2>&1; then
+        install_soft posting pipx install posting
+      else
+        install_soft posting pip install --user posting
+      fi
+      ;;
+    pacman)
+      install_soft lazygit sudo pacman -S --noconfirm lazygit
+      if command -v go >/dev/null 2>&1; then
+        install_soft lazydocker go install github.com/jesseduffield/lazydocker@latest
+        install_soft lazysql go install github.com/jorgerojas26/lazysql@latest
+      fi
+      install_soft fortune sudo pacman -S --noconfirm fortune-mod
+      if command -v pipx >/dev/null 2>&1; then
+        install_soft posting pipx install posting
+      else
+        install_soft posting pip install --user posting
+      fi
+      ;;
+    *)
+      if command -v go >/dev/null 2>&1; then
+        install_soft lazygit go install github.com/jesseduffield/lazygit@latest
+        install_soft lazydocker go install github.com/jesseduffield/lazydocker@latest
+        install_soft lazysql go install github.com/jorgerojas26/lazysql@latest
+      else
+        warn "lazygit, lazydocker, lazysql: requires Go (skipping)"
+      fi
+      case "$PKG_MGR" in
+        apt-get) install_soft fortune sudo apt-get install -y fortune-mod ;;
+        dnf)     install_soft fortune sudo dnf install -y fortune-mod ;;
+        apk)     install_soft fortune sudo apk add fortune-mod ;;
+      esac
+      if command -v pipx >/dev/null 2>&1; then
+        install_soft posting pipx install posting
+      else
+        install_soft posting pip install --user posting
+      fi
+      ;;
+  esac
+}
+
+# ---------------------------------------------------------------------------
+# Dependency orchestrator
+# ---------------------------------------------------------------------------
+
+install_deps() {
+  if [[ "$PKG_MGR" == "apt-get" ]]; then
+    info "Updating package lists..."
+    sudo apt-get update -qq
+  fi
+
+  install_build_tools
+  install_core_tools
+  install_runtimes
+  install_formatters
+  install_linters
+  install_tui_tools
+}
+
+# ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 
@@ -315,6 +553,7 @@ main() {
   detect_shell
   confirm_proceed
   install_neovim
+  install_deps
 }
 
 main "$@"
