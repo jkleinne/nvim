@@ -1,64 +1,96 @@
-#!/bin/bash
-# Exit immediately if a command exits with a non-zero status
-set -e
+#!/usr/bin/env bash
+# shellcheck disable=SC2034  # forward-declared constants; used in subsequent tasks
+set -euo pipefail
 
-NVIM_URL="https://github.com/neovim/neovim/releases/latest/download/nvim-linux-x86_64.tar.gz"
-NVIM_ARCHIVE="nvim-linux-x86_64.tar.gz"
-INSTALL_DIR="/opt/nvim-linux-x86_64"
-BIN_DIR="$INSTALL_DIR/bin"
+readonly MIN_NVIM_VERSION="0.12.0"
+readonly NVIM_REPO="https://github.com/jkleinne/nvim.git"
+readonly NVIM_REPO_HTTPS="https://github.com/jkleinne/nvim"
+readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
+readonly NVIM_INSTALL_DIR="/opt/nvim"
+readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
 
-# Determine the directory where the script is located
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_TMPDIR=""
+WARNINGS=()
+NEED_PATH_SETUP=false
+NVIM_INSTALL_METHOD=""
 
-echo "Downloading Neovim from ${NVIM_URL}..."
-curl -LO "$NVIM_URL"
+# ---------------------------------------------------------------------------
+# Color / output helpers
+# ---------------------------------------------------------------------------
 
-echo
-echo "WARNING: This script will remove any existing Neovim installations located at /opt/nvim and ${INSTALL_DIR}."
-read -p "Do you wish to continue? [y/N] " confirmation
-if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
-  echo "Installation cancelled."
-  exit 1
-fi
+setup_colors() {
+  if [[ -t 1 ]] && [[ -z "${NO_COLOR:-}" ]] && [[ "${TERM:-}" != "dumb" ]]; then
+    BOLD="$(tput bold 2>/dev/null || printf '')"
+    RESET="$(tput sgr0 2>/dev/null || printf '')"
+    RED="$(tput setaf 1 2>/dev/null || printf '')"
+    GREEN="$(tput setaf 2 2>/dev/null || printf '')"
+    YELLOW="$(tput setaf 3 2>/dev/null || printf '')"
+    BLUE="$(tput setaf 4 2>/dev/null || printf '')"
+  else
+    BOLD="" RESET="" RED="" GREEN="" YELLOW="" BLUE=""
+  fi
+}
 
-echo "Removing existing Neovim installations..."
-sudo rm -rf /opt/nvim
-sudo rm -rf "$INSTALL_DIR"
+info()    { printf '%s\n' "${BLUE}${BOLD}==>${RESET} ${BOLD}$1${RESET}"; }
+success() { printf '%s\n' "${GREEN}${BOLD} ok${RESET} $1"; }
+warn()    { printf '%s\n' "${YELLOW}${BOLD}  !${RESET} $1"; WARNINGS+=("$1"); }
+error()   { printf '%s\n' "${RED}${BOLD}  x${RESET} $1" >&2; }
+section() {
+  printf '\n%s\n' "${BOLD}${BLUE}--- $1 ---${RESET}"
+}
 
-echo "Extracting the downloaded archive to /opt..."
-sudo tar -C /opt -xzf "$NVIM_ARCHIVE"
+# ---------------------------------------------------------------------------
+# Temp directory management and cleanup
+# ---------------------------------------------------------------------------
 
-echo "Cleaning up the downloaded archive..."
-rm "$NVIM_ARCHIVE"
+cleanup() {
+  if [[ -n "${SCRIPT_TMPDIR:-}" ]] && [[ -d "$SCRIPT_TMPDIR" ]]; then
+    rm -rf "$SCRIPT_TMPDIR"
+  fi
+}
 
-# Add Neovim to the PATH in ~/.bashrc if it's not already there
-if ! grep -q "$BIN_DIR" ~/.bashrc; then
-    echo "export PATH=\"\$PATH:${BIN_DIR}\"" >> ~/.bashrc
-    echo "Added Neovim to PATH in ~/.bashrc"
-else
-    echo "Neovim path already exists in ~/.bashrc"
-fi
+create_tmpdir() {
+  SCRIPT_TMPDIR="$(mktemp -d)"
+}
 
-# Source ~/.bashrc to update the PATH for the current session
-# (Note: This may not propagate to the parent shell.)
-source ~/.bashrc
+trap cleanup EXIT INT TERM
 
-# Verify Neovim installation
-if command -v nvim >/dev/null 2>&1; then
-    echo "Neovim installed successfully. Version: $(nvim --version | head -n1)"
-else
-    echo "Neovim installation failed."
-    exit 1
-fi
+# ---------------------------------------------------------------------------
+# Usage
+# ---------------------------------------------------------------------------
 
-# Move the 'nvim' directory from the script's directory to ~/.config if it exists
-NVIM_CONFIG_SOURCE="$SCRIPT_DIR"
-NVIM_CONFIG_DEST="$HOME/.config/nvim"
+usage() {
+  cat <<'EOF'
+Usage: nvim-install.sh [--help]
 
-if [ -d "$NVIM_CONFIG_SOURCE" ]; then
-    mkdir -p "$(dirname "$NVIM_CONFIG_DEST")"
-    mv "$NVIM_CONFIG_SOURCE" "$NVIM_CONFIG_DEST"
-    echo "Moved 'nvim' configuration to ~/.config/nvim"
-else
-    echo "Source directory '$NVIM_CONFIG_SOURCE' does not exist. Skipping move."
-fi
+Cross-platform bootstrap script for Neovim 0.12+ with full dev environment.
+
+Installs Neovim, build tools, runtimes (Node, Go), formatters, linters,
+and TUI tools. Clones the Neovim configuration to ~/.config/nvim.
+
+Supported platforms:
+  macOS        (Homebrew)
+  Debian/Ubuntu (apt)
+  Fedora/RHEL  (dnf)
+  Arch Linux   (pacman)
+  Alpine       (apk)
+EOF
+}
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
+main() {
+  setup_colors
+
+  if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
+    usage
+    exit 0
+  fi
+
+  info "Neovim bootstrap starting"
+}
+
+main "$@"
