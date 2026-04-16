@@ -135,6 +135,27 @@ detect_shell() {
   esac
 }
 
+version_gte() {
+  local have="$1" need="$2"
+  local have_major have_minor have_patch
+  local need_major need_minor need_patch
+
+  IFS='.' read -r have_major have_minor have_patch <<< "$have"
+  IFS='.' read -r need_major need_minor need_patch <<< "$need"
+
+  have_patch="${have_patch:-0}"
+  need_patch="${need_patch:-0}"
+
+  local have_num=$(( have_major * 1000000 + have_minor * 1000 + have_patch ))
+  local need_num=$(( need_major * 1000000 + need_minor * 1000 + need_patch ))
+
+  (( have_num >= need_num ))
+}
+
+get_nvim_version() {
+  nvim --version 2>/dev/null | head -n1 | sed 's/^NVIM v//'
+}
+
 confirm_proceed() {
   section "Bootstrap Plan"
   printf '  %-18s %s\n' "OS:" "$OS"
@@ -154,6 +175,102 @@ confirm_proceed() {
     info "Cancelled."
     exit 0
   fi
+}
+
+# ---------------------------------------------------------------------------
+# Neovim installation
+# ---------------------------------------------------------------------------
+
+pkg_install_neovim() {
+  case "$PKG_MGR" in
+    brew)    brew install neovim ;;
+    apt-get) sudo apt-get update -qq && sudo apt-get install -y neovim ;;
+    dnf)     sudo dnf install -y neovim ;;
+    pacman)  sudo pacman -S --noconfirm neovim ;;
+    apk)     sudo apk add neovim ;;
+  esac
+}
+
+install_neovim_tarball() {
+  local os_name="$OS"
+  if [[ "$OS" == "darwin" ]]; then
+    os_name="macos"
+  fi
+  local filename="nvim-${os_name}-${ARCH}.tar.gz"
+  local url="${NVIM_RELEASE_BASE}/${filename}"
+
+  create_tmpdir
+  local tarball="${SCRIPT_TMPDIR}/${filename}"
+
+  # Neovim releases do not publish SHA256 checksum files.
+  # HTTPS from github.com is the trust anchor (same as Homebrew formulae downloads).
+  info "Downloading Neovim from GitHub releases..."
+  if ! curl -fSL --progress-bar -o "$tarball" "$url"; then
+    error "Failed to download Neovim from $url"
+    exit 1
+  fi
+
+  if [[ ! -s "$tarball" ]]; then
+    error "Downloaded file is empty: $tarball"
+    exit 1
+  fi
+
+  success "Downloaded $(du -h "$tarball" | cut -f1 | xargs)"
+
+  if [[ -d "$NVIM_INSTALL_DIR" ]]; then
+    warn "Existing installation at $NVIM_INSTALL_DIR will be replaced."
+    local confirm_remove
+    read -rp "  Remove $NVIM_INSTALL_DIR? [y/N] " confirm_remove
+    if [[ ! "$confirm_remove" =~ ^[Yy]$ ]]; then
+      error "Cannot install without removing existing directory."
+      exit 1
+    fi
+    sudo rm -rf "$NVIM_INSTALL_DIR"
+  fi
+
+  info "Extracting to $NVIM_INSTALL_DIR (requires sudo)..."
+  sudo mkdir -p "$NVIM_INSTALL_DIR"
+  sudo tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
+
+  if [[ -w "/usr/local/bin" ]] || sudo test -w "/usr/local/bin"; then
+    sudo ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" /usr/local/bin/nvim
+    success "Symlinked nvim to /usr/local/bin/nvim"
+  else
+    NEED_PATH_SETUP=true
+  fi
+
+  NVIM_INSTALL_METHOD="tarball"
+}
+
+install_neovim() {
+  section "Neovim"
+
+  if command -v nvim >/dev/null 2>&1; then
+    local current_version
+    current_version="$(get_nvim_version)"
+    if version_gte "$current_version" "$MIN_NVIM_VERSION"; then
+      success "Neovim $current_version already installed (>= $MIN_NVIM_VERSION)"
+      NVIM_INSTALL_METHOD="existing"
+      return
+    fi
+    warn "Neovim $current_version found, but $MIN_NVIM_VERSION+ is required."
+  fi
+
+  info "Installing Neovim via $PKG_MGR..."
+  if pkg_install_neovim; then
+    local pkg_version
+    pkg_version="$(get_nvim_version)"
+    if version_gte "$pkg_version" "$MIN_NVIM_VERSION"; then
+      success "Neovim $pkg_version installed via $PKG_MGR"
+      NVIM_INSTALL_METHOD="$PKG_MGR"
+      return
+    fi
+    warn "Package manager installed Neovim $pkg_version, but $MIN_NVIM_VERSION+ is required."
+  else
+    warn "Package manager install failed. Falling back to GitHub release."
+  fi
+
+  install_neovim_tarball
 }
 
 # ---------------------------------------------------------------------------
@@ -197,6 +314,7 @@ main() {
   detect_pkg_manager
   detect_shell
   confirm_proceed
+  install_neovim
 }
 
 main "$@"
