@@ -14,6 +14,10 @@ SCRIPT_TMPDIR=""
 WARNINGS=()
 NEED_PATH_SETUP=false
 NVIM_INSTALL_METHOD=""
+OS=""
+ARCH=""
+PKG_MGR=""
+USER_SHELL=""
 
 # ---------------------------------------------------------------------------
 # Color / output helpers
@@ -57,6 +61,102 @@ create_tmpdir() {
 trap cleanup EXIT INT TERM
 
 # ---------------------------------------------------------------------------
+# Platform detection
+# ---------------------------------------------------------------------------
+
+detect_os() {
+  local kernel
+  kernel="$(uname -s)"
+  case "$kernel" in
+    Darwin) OS="darwin" ;;
+    Linux)  OS="linux" ;;
+    *)
+      error "Unsupported operating system: $kernel"
+      error "This script supports macOS and Linux."
+      exit 1
+      ;;
+  esac
+}
+
+detect_arch() {
+  local machine
+  machine="$(uname -m)"
+
+  if [[ "$OS" == "darwin" ]]; then
+    if sysctl -n hw.optional.arm64 2>/dev/null | grep -q '1'; then
+      ARCH="arm64"
+      return
+    fi
+  fi
+
+  case "$machine" in
+    x86_64 | amd64) ARCH="x86_64" ;;
+    arm64 | aarch64) ARCH="arm64" ;;
+    *)
+      error "Unsupported architecture: $machine"
+      exit 1
+      ;;
+  esac
+}
+
+detect_pkg_manager() {
+  if [[ "$OS" == "darwin" ]]; then
+    if command -v brew >/dev/null 2>&1; then
+      PKG_MGR="brew"
+    else
+      error "Homebrew is required on macOS but was not found."
+      error "Install it from https://brew.sh and re-run this script."
+      exit 1
+    fi
+    return
+  fi
+
+  local mgr
+  for mgr in apt-get dnf pacman apk; do
+    if command -v "$mgr" >/dev/null 2>&1; then
+      PKG_MGR="$mgr"
+      return
+    fi
+  done
+
+  error "No supported package manager found."
+  error "Supported: apt-get (Debian/Ubuntu), dnf (Fedora/RHEL), pacman (Arch), apk (Alpine)."
+  exit 1
+}
+
+detect_shell() {
+  local shell_name
+  shell_name="$(basename "${SHELL:-/bin/sh}")"
+  case "$shell_name" in
+    bash) USER_SHELL="bash" ;;
+    zsh)  USER_SHELL="zsh" ;;
+    fish) USER_SHELL="fish" ;;
+    *)    USER_SHELL="posix" ;;
+  esac
+}
+
+confirm_proceed() {
+  section "Bootstrap Plan"
+  printf '  %-18s %s\n' "OS:" "$OS"
+  printf '  %-18s %s\n' "Architecture:" "$ARCH"
+  printf '  %-18s %s\n' "Package manager:" "$PKG_MGR"
+  printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
+  printf '\n'
+  info "This script will:"
+  printf '  %s\n' "1. Install Neovim 0.12+ (prefer $PKG_MGR, tarball fallback)"
+  printf '  %s\n' "2. Install build tools, runtimes, formatters, linters, TUI tools"
+  printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
+  printf '\n'
+
+  local confirmation
+  read -rp "Proceed? [y/N] " confirmation
+  if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
+    info "Cancelled."
+    exit 0
+  fi
+}
+
+# ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 
@@ -91,6 +191,12 @@ main() {
   fi
 
   info "Neovim bootstrap starting"
+
+  detect_os
+  detect_arch
+  detect_pkg_manager
+  detect_shell
+  confirm_proceed
 }
 
 main "$@"
