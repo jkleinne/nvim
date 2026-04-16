@@ -512,6 +512,118 @@ install_deps() {
 }
 
 # ---------------------------------------------------------------------------
+# Config setup
+# ---------------------------------------------------------------------------
+
+setup_config() {
+  section "Configuration"
+
+  if [[ -d "$NVIM_CONFIG_DIR" ]]; then
+    local existing_remote
+    existing_remote="$(git -C "$NVIM_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")"
+
+    if [[ "$existing_remote" == "$NVIM_REPO" ]] || [[ "$existing_remote" == "$NVIM_REPO_HTTPS" ]]; then
+      success "Config already present at $NVIM_CONFIG_DIR"
+      return
+    fi
+
+    local backup
+    backup="${NVIM_CONFIG_DIR}.bak.$(date +%s)"
+    warn "Existing config at $NVIM_CONFIG_DIR is not this repo."
+    info "Backing up to $backup"
+    mv "$NVIM_CONFIG_DIR" "$backup"
+    success "Backed up existing config"
+  fi
+
+  local script_remote
+  script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
+
+  if [[ "$script_remote" == "$NVIM_REPO" ]] || [[ "$script_remote" == "$NVIM_REPO_HTTPS" ]]; then
+    local resolved_script_dir
+    resolved_script_dir="$(cd "$SCRIPT_DIR" && pwd -P)"
+    local resolved_config_dir
+    resolved_config_dir="$(cd "$NVIM_CONFIG_DIR" 2>/dev/null && pwd -P || echo "$NVIM_CONFIG_DIR")"
+
+    if [[ "$resolved_script_dir" == "$resolved_config_dir" ]]; then
+      success "Running from $NVIM_CONFIG_DIR, no clone needed"
+      return
+    fi
+
+    info "This script is inside a clone of the config repo at $SCRIPT_DIR."
+    info "Clone it to $NVIM_CONFIG_DIR or move it there manually."
+    warn "Skipping automatic config setup to avoid the old self-move bug."
+    return
+  fi
+
+  info "Cloning config to $NVIM_CONFIG_DIR..."
+  mkdir -p "$(dirname "$NVIM_CONFIG_DIR")"
+  git clone "$NVIM_REPO" "$NVIM_CONFIG_DIR"
+  success "Config cloned to $NVIM_CONFIG_DIR"
+}
+
+# ---------------------------------------------------------------------------
+# PATH setup (tarball installs only)
+# ---------------------------------------------------------------------------
+
+setup_path() {
+  if [[ "$NEED_PATH_SETUP" != true ]]; then
+    return
+  fi
+
+  section "PATH"
+
+  local nvim_bin="${NVIM_INSTALL_DIR}/bin"
+  local rc_file=""
+  local path_line=""
+
+  case "$USER_SHELL" in
+    bash)
+      if [[ "$OS" == "darwin" ]] && [[ -f "$HOME/.bash_profile" ]]; then
+        rc_file="$HOME/.bash_profile"
+      else
+        rc_file="$HOME/.bashrc"
+      fi
+      path_line="export PATH=\"\$PATH:${nvim_bin}\""
+      ;;
+    zsh)
+      rc_file="${ZDOTDIR:-$HOME}/.zshenv"
+      path_line="export PATH=\"\$PATH:${nvim_bin}\""
+      ;;
+    fish)
+      rc_file="${HOME}/.config/fish/config.fish"
+      path_line="fish_add_path ${nvim_bin}"
+      ;;
+    posix)
+      rc_file="$HOME/.profile"
+      path_line="export PATH=\"\$PATH:${nvim_bin}\""
+      ;;
+  esac
+
+  if [[ -z "$rc_file" ]]; then
+    warn "Could not determine rc file for shell: $USER_SHELL"
+    info "Add this to your shell config manually:"
+    printf '  %s\n' "$path_line"
+    return
+  fi
+
+  if [[ "$rc_file" != "$HOME/.profile" ]] && [[ ! -f "$rc_file" ]]; then
+    warn "$rc_file does not exist."
+    info "Add this to your shell config manually:"
+    printf '  %s\n' "$path_line"
+    return
+  fi
+
+  if grep -qF "$nvim_bin" "$rc_file" 2>/dev/null; then
+    success "PATH entry already in $rc_file"
+    return
+  fi
+
+  printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$path_line" >> "$rc_file"
+  success "Added PATH entry to $rc_file"
+  info "Run 'source $rc_file' or open a new terminal to apply."
+}
+
+# ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 
@@ -554,6 +666,8 @@ main() {
   confirm_proceed
   install_neovim
   install_deps
+  setup_config
+  setup_path
 }
 
 main "$@"
