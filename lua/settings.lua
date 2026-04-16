@@ -63,3 +63,20 @@ vim.api.nvim_create_autocmd("FileType", {
     vim.opt_local.relativenumber = false
   end,
 })
+
+-- Briefly highlight yanked text
+vim.api.nvim_create_autocmd("TextYankPost", {
+  callback = function()
+    vim.hl.on_yank()
+  end,
+})
+
+-- Diagnostic display
+vim.diagnostic.config {
+  virtual_text = { spacing = 4 },
+  signs = true,
+  underline = true,
+  update_in_insert = false,
+  severity_sort = true,
+  float = { border = "rounded", source = true },
+}
