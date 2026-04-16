@@ -29,6 +29,7 @@ return {
 
     local handle, err = io.popen "fortune -s"
     if err or handle == nil then
+      vim.notify("alpha: fortune unavailable (" .. (err or "no handle") .. ")", vim.log.levels.DEBUG)
       dashboard.section.footer.val = "May the truth be found."
       alpha.setup(dashboard.opts)
       return
