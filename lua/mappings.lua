@@ -9,10 +9,10 @@ map("n", "<leader>k", '<cmd>lua require("kubectl").toggle()<cr>', default_opts)
 -- Map <leader>gtt to open a terminal and run lazygit
 map("n", "<leader>gtt", ":term lazygit<CR>i", default_opts)
 
--- Map <leader>tc to open a terminal and run lazydocker
+-- Map <leader>dc to open a terminal and run lazydocker
 map("n", "<leader>dc", ":term lazydocker<CR>i", default_opts)
 
--- Map <leader>tb to open an empty tab
+-- Map <leader>ta to open an empty buffer
 map("n", "<leader>ta", ":enew<CR>", default_opts)
 
 -- Map <leader>sq to open a terminal and run lazysql

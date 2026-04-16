@@ -21,14 +21,35 @@ return {
       "yamlls",
     }
 
+    local capabilities = require("blink.cmp").get_lsp_capabilities()
+
+    vim.lsp.config("*", {
+      capabilities = capabilities,
+    })
+
+    vim.lsp.config("lua_ls", {
+      settings = {
+        Lua = {
+          diagnostics = {
+            globals = { "vim" },
+          },
+          workspace = {
+            library = vim.api.nvim_get_runtime_file("", true),
+            checkThirdParty = false,
+          },
+          telemetry = {
+            enable = false,
+          },
+        },
+      },
+    })
+
     local mason_lspconfig = require "mason-lspconfig"
 
     mason_lspconfig.setup {
       ensure_installed = servers,
       automatic_enable = true,
     }
-
-    local capabilities = require("blink.cmp").get_lsp_capabilities()
 
     -- Set keymaps when an LSP attaches to a buffer
     vim.api.nvim_create_autocmd("LspAttach", {
@@ -60,29 +81,6 @@ return {
         keymap("n", "<leader>ca", vim.lsp.buf.code_action, opts)
         keymap("n", "gr", vim.lsp.buf.references, opts)
       end,
-    })
-
-    -- Global defaults for all servers
-    vim.lsp.config("*", {
-      capabilities = capabilities,
-    })
-
-    -- Server-specific settings
-    vim.lsp.config("lua_ls", {
-      settings = {
-        Lua = {
-          diagnostics = {
-            globals = { "vim" },
-          },
-          workspace = {
-            library = vim.api.nvim_get_runtime_file("", true),
-            checkThirdParty = false,
-          },
-          telemetry = {
-            enable = false,
-          },
-        },
-      },
     })
   end,
 }

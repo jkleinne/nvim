@@ -5,10 +5,9 @@ return {
     "nvim-lua/plenary.nvim",
     "MunifTanjim/nui.nvim",
   },
-  opts = {
-    fast_wrap = {},
-  },
   config = function()
-    require("nvim-autopairs").setup {}
+    require("nvim-autopairs").setup {
+      fast_wrap = {},
+    }
   end,
 }
