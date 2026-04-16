@@ -143,13 +143,13 @@ version_gte() {
   IFS='.' read -r have_major have_minor have_patch <<< "$have"
   IFS='.' read -r need_major need_minor need_patch <<< "$need"
 
-  have_patch="${have_patch:-0}"
-  need_patch="${need_patch:-0}"
+  have_patch="${have_patch:-0}"; have_patch="${have_patch%%[-+]*}"
+  need_patch="${need_patch:-0}"; need_patch="${need_patch%%[-+]*}"
 
   local have_num=$(( have_major * 1000000 + have_minor * 1000 + have_patch ))
   local need_num=$(( need_major * 1000000 + need_minor * 1000 + need_patch ))
 
-  (( have_num >= need_num ))
+  [[ $have_num -ge $need_num ]]
 }
 
 get_nvim_version() {
