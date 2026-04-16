@@ -50,3 +50,7 @@ map("n", "<C-w>t", ":tabnew<CR>", default_opts)
 -- Terminal splits mappings
 map("n", "<leader>h", ":belowright 20split | terminal<CR>", default_opts)
 map("n", "<leader>v", ":vsplit | wincmd l | terminal<CR>", default_opts)
+
+-- Terminal mode: double-Esc returns to normal mode
+-- (single Esc preserved for TUI apps like lazygit, fzf, posting)
+map("t", "<Esc><Esc>", "<C-\\><C-n>", default_opts)
