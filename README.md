@@ -240,12 +240,17 @@ These are active when an LSP server is attached to a buffer.
 | `gi` | Go to implementation |
 | `gr` | Go to references |
 | `<C-k>` | Signature help |
+| `<leader>D` | Go to type definition |
 | `<leader>rn` | Rename symbol |
 | `<leader>ca` | Code actions |
 | `<leader>f` | Format buffer (conform.nvim with LSP fallback) |
 | `gl` | Open floating diagnostics |
 | `[d` | Go to previous diagnostic |
 | `]d` | Go to next diagnostic |
+| `<leader>q` | Send diagnostics to location list |
+| `<leader>wa` | Add workspace folder |
+| `<leader>wr` | Remove workspace folder |
+| `<leader>wl` | List workspace folders |
 
 ### Diagnostics (Trouble)
 
