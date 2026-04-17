@@ -44,7 +44,7 @@ return {
 
     mason_lspconfig.setup {
       ensure_installed = servers,
-      automatic_enable = { exclude = { "stylua" } },
+      automatic_enable = true,
     }
 
     -- Set keymaps when an LSP attaches to a buffer
