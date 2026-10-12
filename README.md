@@ -39,7 +39,7 @@ This configuration targets **Arch Linux**. Other Linux distributions work on a b
 
 ### Arch Linux
 
-One command installs everything. The bootstrap script ([Method B](#method-b-bootstrap-script-recommended)) runs it for you, except the Nerd Font; if you install manually ([Method A](#method-a-manual-installation)), run it yourself. Everything except `hadolint` is in the official repositories. On an X11 session, replace `wl-clipboard` with `xclip` in the command:
+One pacman command installs everything except `hadolint` (see below). The bootstrap script ([Method B](#method-b-bootstrap-script-recommended)) installs the same packages for you, except the Nerd Font, and picks the clipboard tool from your session; if you install manually ([Method A](#method-a-manual-installation)), run the command yourself. On an X11 session, replace `wl-clipboard` with `xclip` in the command:
 
 ```bash
 sudo pacman -S --needed neovim git ripgrep base-devel curl unzip wl-clipboard nodejs go \
@@ -71,7 +71,7 @@ Missing formatters, linters, and Node-based servers are skipped quietly inside N
 
 ### Upgrading from an older version of this config
 
-Older versions installed `ansible-language-server`, `dockerfile-language-server`, `docker-compose-language-service`, and `sqlls` through Mason. Mason still enables anything it has installed, so remove them. `:MasonUninstall` errors on a package that is not installed, so run this inside Neovim instead; it removes only the ones that are present:
+Older versions installed `ansible-language-server`, `dockerfile-language-server`, `docker-compose-language-service`, and `sqlls` through Mason. Mason still enables anything it has installed, so remove them. `:MasonUninstall` errors on a package that is not installed, so run this inside Neovim instead; it removes only the ones that are present (restart Neovim afterwards):
 
 ```
 :lua for _, n in ipairs { "ansible-language-server", "dockerfile-language-server", "docker-compose-language-service", "sqlls" } do local p = require("mason-registry").get_package(n) if p:is_installed() then p:uninstall() end end
@@ -104,7 +104,7 @@ mv ~/.cache/nvim ~/.cache/nvim_backup
 
 #### Method B: Bootstrap Script (Recommended)
 
-The `nvim-install.sh` script detects your distribution and installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), the Node-based language servers (Arch only), formatters, linters, TUI tools, and clones the configuration. On Arch it installs the same packages as the command under [Requirements](#requirements), except the Nerd Font. Run it as your normal user; it calls `sudo` when it needs to.
+The `nvim-install.sh` script detects your distribution and installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), the Node-based language servers (Arch only), formatters, linters, TUI tools, and clones the configuration. On Arch it installs the same packages as the command under [Requirements](#requirements), except the Nerd Font (install it with `sudo pacman -S ttf-jetbrains-mono-nerd`). Run it as your normal user; it calls `sudo` when it needs to.
 
 **Supported platforms:** Arch Linux (pacman) is first-class. Debian/Ubuntu (apt), Fedora/RHEL (dnf), and Alpine (apk) are best-effort.
 
