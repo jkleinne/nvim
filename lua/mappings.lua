@@ -8,24 +8,9 @@ end
 
 map("n", "<leader>bd", ":Bdelete<CR>", keymap_opts "Delete buffer")
 
-map("n", "<leader>k", '<cmd>lua require("kubectl").toggle()<cr>', keymap_opts "Toggle kubectl")
-
 map("n", "<leader>gtt", ":term lazygit<CR>i", keymap_opts "Lazygit")
 map("n", "<leader>dc", ":term lazydocker<CR>i", keymap_opts "Lazydocker")
 map("n", "<leader>bn", ":enew<CR>", keymap_opts "New empty buffer")
-map("n", "<leader>sq", ":term lazysql<CR>i", keymap_opts "Lazysql")
-
-map("n", "<leader>po", function()
-  vim.ui.input({ prompt = "Enter posting collection path: " }, function(input)
-    local trimmed = input and vim.trim(input) or ""
-    if trimmed ~= "" then
-      local safe_input = vim.fn.shellescape(trimmed)
-      vim.cmd("term posting --collection " .. safe_input)
-    else
-      vim.cmd "term posting"
-    end
-  end)
-end, keymap_opts "Posting HTTP client")
 
 map("n", "<leader>tf", "<cmd>Telescope find_files cwd=" .. initial_cwd .. "<cr>", keymap_opts "Find files")
 map("n", "<leader>tg", "<cmd>Telescope live_grep cwd=" .. initial_cwd .. "<cr>", keymap_opts "Live grep")
@@ -41,7 +26,7 @@ map("n", "<C-w>t", ":tabnew<CR>", keymap_opts "New tab")
 map("n", "<leader>h", ":belowright 20split | terminal<CR>", keymap_opts "Horizontal terminal split")
 map("n", "<leader>v", ":vsplit | wincmd l | terminal<CR>", keymap_opts "Vertical terminal split")
 
--- Double-Esc to exit terminal mode; single Esc stays bound to TUI apps (lazygit, fzf, posting)
+-- Double-Esc to exit terminal mode; single Esc stays bound to TUI apps (lazygit, fzf)
 map("t", "<Esc><Esc>", "<C-\\><C-n>", keymap_opts "Exit terminal mode")
 map("t", "<C-h>", "<C-\\><C-n><C-w>h", keymap_opts "Move to left window")
 map("t", "<C-j>", "<C-\\><C-n><C-w>j", keymap_opts "Move to lower window")
