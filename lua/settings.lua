@@ -30,6 +30,16 @@ else
   vim.opt.shell = "/bin/bash"
 end
 
+-- Detect Docker Compose files so docker_language_server and yamlls attach
+vim.filetype.add {
+  filename = {
+    ["docker-compose.yml"] = "yaml.docker-compose",
+    ["docker-compose.yaml"] = "yaml.docker-compose",
+    ["compose.yml"] = "yaml.docker-compose",
+    ["compose.yaml"] = "yaml.docker-compose",
+  },
+}
+
 -- Enable built-in treesitter highlighting
 vim.api.nvim_create_autocmd("FileType", {
   callback = function()
