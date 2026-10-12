@@ -174,6 +174,19 @@ exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$CLONE_GIT_BIN/git"
 
+# git whose clone does what CLONE_GIT_BIN's does and then creates $HOME/.config/nvim with a file
+# "stray" in it, standing in for a config dir that appears while the clone runs
+APPEAR_GIT_BIN="$TMP/bin-git-appear"
+mkdir -p "$APPEAR_GIT_BIN"
+cat >"$APPEAR_GIT_BIN/git" <<EOF
+#!/bin/sh
+"$CLONE_GIT_BIN/git" "\$@" || exit
+if [ "\$1" = clone ]; then
+  mkdir -p "\$HOME/.config/nvim" && : >"\$HOME/.config/nvim/stray"
+fi
+EOF
+chmod +x "$APPEAR_GIT_BIN/git"
+
 # Package manager binaries for detection tests; they refuse to run
 PKG_BIN="$TMP/bin-pkgmgr"
 mkdir -p "$PKG_BIN"
@@ -879,6 +892,11 @@ done
 #   success: the clone replaces the config, and the old one sits in one backup
 #   fresh: no ~/.config at all; the clone lands without a prompt or a backup
 #   clone-failure: nothing moves
+#   mktemp-fails: ~/.config is not writable (mode 555), so the staging dir cannot be made; the run
+#     stops before the clone with the foreign config in place and no backup (skipped for a user who
+#     can write there anyway, as root can)
+#   target-appears: fresh, but ~/.config/nvim appears, not empty, while the clone runs; the real mv
+#     refuses to replace it or move the clone inside it, so the run stops and leaves it as it was
 #   backup-move-fails, final-move-fails: the run stops with the foreign config in place and no backup
 #   restore-fails: the clone's move and the move back both fail; the run stops and names the backup,
 #     which holds the foreign config
@@ -891,8 +909,16 @@ t18_case() {
     sandbox "T18-$id" "$git_bin"
     CLONE_LOG="$TMP/T18-$id-clone.log"
     export CLONE_LOG
-    if [[ "$id" != fresh ]]; then
-      foreign_config_fixture "$HOME/.config/nvim"
+    case "$id" in
+      fresh | target-appears) ;;
+      *) foreign_config_fixture "$HOME/.config/nvim" ;;
+    esac
+    if [[ "$id" == mktemp-fails ]]; then
+      chmod 555 "$HOME/.config"
+      if [[ -w "$HOME/.config" ]]; then
+        echo "WRITABLE ANYWAY"
+        exit 0
+      fi
     fi
     mkdir -p "$HOME/plain"
     cp "$SCRIPT" "$HOME/plain/nvim-install.sh"
@@ -923,31 +949,47 @@ t18_case() {
     echo DONE
   ) </dev/null 2>&1
 }
-for id in success fresh clone-failure backup-move-fails final-move-fails restore-fails; do
+for id in success fresh clone-failure mktemp-fails target-appears backup-move-fails final-move-fails \
+  restore-fails; do
   case "$id" in
-    success | fresh) out="$(t18_case "$id" "$CLONE_GIT_BIN")" ;;
+    success | fresh | mktemp-fails) out="$(t18_case "$id" "$CLONE_GIT_BIN")" ;;
     clone-failure) out="$(t18_case "$id" "$GIT_BIN")" ;;
+    target-appears) out="$(t18_case "$id" "$APPEAR_GIT_BIN")" ;;
     backup-move-fails) out="$(t18_case "$id" "$CLONE_GIT_BIN" backup)" ;;
     final-move-fails) out="$(t18_case "$id" "$CLONE_GIT_BIN" final)" ;;
     restore-fails) out="$(t18_case "$id" "$CLONE_GIT_BIN" "final restore")" ;;
   esac
   rc=$?
   t18_dir="$TMP/home-T18-$id/.config"
+  if [[ "$id" == mktemp-fails ]]; then
+    # Writable again, so the checks below and the suite's cleanup can read and remove it
+    [[ ! -d "$t18_dir" ]] || chmod 755 "$t18_dir"
+    if grep -qxF "WRITABLE ANYWAY" <<<"$out"; then
+      echo "SKIP T18-config-move-yes $id (this user can write to a mode 555 directory, as root can)"
+      continue
+    fi
+  fi
   backups="$(compgen -G "$t18_dir/nvim.bak.*" || true)"
   others="$(find "$t18_dir" -mindepth 1 -maxdepth 1 ! -name nvim ! -name 'nvim.bak.*' 2>/dev/null)"
   problems=""
   done_ok $rc "$out" || problems+="[rc=$rc] "
   [[ -z "$others" ]] || problems+="[left in $t18_dir: $(tr '\n' ' ' <<<"$others")] "
   [[ -z "$backups" || "$(wc -l <<<"$backups")" -eq 1 ]] || problems+="[several backups: $(tr '\n' ' ' <<<"$backups")] "
-  if [[ "$id" != clone-failure ]]; then
-    want_url="$(sed -n 's/^NVIM_REPO=//p' <<<"$out")"
-    clone_argv=()
-    if [[ -f "$TMP/T18-$id-clone.log" ]]; then
-      mapfile -t clone_argv <"$TMP/T18-$id-clone.log"
-    fi
-    [[ -n "$want_url" && ${#clone_argv[@]} -eq 3 && "${clone_argv[1]}" == "$want_url" ]] \
-      || problems+="[clone arguments '${clone_argv[*]}', want 'clone $want_url <dir>'] "
-  fi
+  case "$id" in
+    clone-failure) ;;
+    mktemp-fails)
+      [[ ! -e "$TMP/T18-$id-clone.log" ]] || problems+="[clone ran: $(tr '\n' ' ' <"$TMP/T18-$id-clone.log")] "
+      ;;
+    *)
+      want_url="$(sed -n 's/^NVIM_REPO=//p' <<<"$out")"
+      clone_argv=()
+      if [[ -f "$TMP/T18-$id-clone.log" ]]; then
+        mapfile -t clone_argv <"$TMP/T18-$id-clone.log"
+      fi
+      [[ -n "$want_url" && ${#clone_argv[@]} -eq 3 && "${clone_argv[1]}" == "$want_url" ]] \
+        || problems+="[clone arguments '${clone_argv[*]}', want 'clone $want_url <dir>'] "
+      ;;
+  esac
   case "$id" in
     success | fresh)
       grep -qxF "setup_config rc=0" <<<"$out" || problems+="[setup_config failed] "
@@ -964,6 +1006,12 @@ for id in success fresh clone-failure backup-move-fails final-move-fails restore
     fresh)
       [[ -z "$backups" ]] || problems+="[backup made: $backups] "
       ;;
+    target-appears)
+      grep -qF "Failed to move the clone" <<<"$out" || problems+="[no 'Failed to move the clone' message] "
+      [[ -f "$t18_dir/nvim/stray" ]] || problems+="[$t18_dir/nvim/stray is gone] "
+      [[ ! -e "$t18_dir/nvim/nvim" ]] || problems+="[the clone landed inside, at $t18_dir/nvim/nvim] "
+      [[ -z "$backups" ]] || problems+="[backup made: $backups] "
+      ;;
     restore-fails)
       if [[ -n "$backups" ]]; then
         problems+="$(foreign_config_intact "$backups")"
@@ -975,6 +1023,7 @@ for id in success fresh clone-failure backup-move-fails final-move-fails restore
     *)
       case "$id" in
         clone-failure) message="was not changed" ;;
+        mktemp-fails) message="Cannot create a staging directory" ;;
         backup-move-fails) message="Failed to back up" ;;
         final-move-fails) message="back in place" ;;
       esac
@@ -1034,9 +1083,10 @@ result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 # T20: the system servers in lua/plugins/lsp.lua (first string of each system_servers entry), the
 # installer, and the README agree: (a) the best-effort warn_manual list names the same binaries,
 # (b) the pacman list has one package per server, (c) the README's pacman command under Requirements
-# installs every package of that list, and on an Arch host (b0) every package of that list exists in
-# the sync databases (pacman -Si), and (d) with all of them installed, they ship /usr/bin/<binary> for
-# every server (pacman -Qlq). Both pacman queries are read-only and need no root.
+# installs every package of that list, and on an Arch host (b0) every package the script installs on
+# pacman, not only these, exists in the sync databases (pacman -Si), and (d) with all of them
+# installed, they ship /usr/bin/<binary> for every server (pacman -Qlq). Both pacman queries are
+# read-only and need no root.
 mapfile -t lsp_bins < <(sed -n '/local system_servers = {/,/^[[:space:]]*}/p' "$ROOT/lua/plugins/lsp.lua" \
   | sed -n 's/^[^"]*"\([^"]*\)".*/\1/p' | sort)
 # install_language_servers with its continuation lines joined
@@ -1062,8 +1112,34 @@ expect_none T20-server-list-sync "$problems"
 if [[ "$host_mgr" != pacman ]] || ! command -v pacman >/dev/null 2>&1; then
   echo "SKIP T20-server-list-sync (b0) and (d) (not an Arch host)"
 else
+  # The script's own pacman package names, taken by running it rather than parsing its source:
+  # install_deps with PKG_MGR=pacman and install_pkgs stubbed to print its packages, install_clipboard
+  # again with only an X11 display (the first run had Wayland's), and neovim, which install_neovim
+  # passes to pkg_install
+  out="$( (
+    sandbox T20-pacman-pkgs ""
+    load_script
+    PKG_MGR=pacman PKG_TIER=first-class
+    must_override install_pkgs
+    install_pkgs() {
+      shift 2
+      printf 'PKG %s\n' "$@"
+    }
+    WAYLAND_DISPLAY=wayland-0 install_deps
+    unset WAYLAND_DISPLAY
+    DISPLAY=:0 install_clipboard
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  mapfile -t t20_all_pkgs < <(sed -n 's/^PKG //p' <<<"$out" | sort -u)
+  t20_all_pkgs+=(neovim)
   problems=""
-  for pkg in "${pacman_pkgs[@]}"; do
+  done_ok $rc "$out" || problems+="[collecting the package names failed: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  # A collection that missed a branch (the server list, or either display) fails here
+  for pkg in "${pacman_pkgs[@]}" wl-clipboard xclip; do
+    [[ " ${t20_all_pkgs[*]} " == *" $pkg "* ]] || problems+="[$pkg not among the collected names] "
+  done
+  for pkg in "${t20_all_pkgs[@]}"; do
     pacman -Si "$pkg" >/dev/null 2>&1 || problems+="[pacman -Si $pkg: not in the sync databases] "
   done
   expect_none "T20-server-list-sync (b0)" "$problems"
@@ -1087,9 +1163,15 @@ fi
 # the config ahead of Neovim's first launch in verify_install. A driver runs main with every step
 # stubbed to log its name (install_deps also marks a sudo ticket taken by the script), while the real
 # forget_sudo_credentials and cleanup run against the recording sudo, which logs to the same file.
+# T22b: the same run with a sudo whose -k fails (sudo -k fails where sudo is not setuid) still goes
+# on to setup_config and verify_install and exits 0, under the errexit main runs with.
 cat >"$TMP/T22-driver.sh" <<'EOF'
 # Sources the script under test ($1), stubs main's steps to log their names to $EVENT_LOG, runs main
 source "$1"
+if [[ $- != *e* ]]; then
+  echo "errexit is off after sourcing the script; main would not run as it does for real"
+  exit 1
+fi
 for step in detect_os detect_arch detect_pkg_manager detect_shell confirm_proceed install_neovim \
   install_deps setup_config setup_path verify_install print_summary; do
   if ! declare -F "$step" >/dev/null; then
@@ -1111,29 +1193,33 @@ verify_install() { log_step verify_install; }
 print_summary() { log_step print_summary; }
 main
 EOF
-t22_events="$TMP/T22-events.log"
-out="$( (
-  sandbox T22 "$RECORD_BIN"
-  SUDO_LOG="$TMP/T22-sudo.log" EVENT_LOG="$t22_events"
-  export SUDO_LOG EVENT_LOG
-  : >"$EVENT_LOG"
-  bash "$TMP/T22-driver.sh" "$SCRIPT"
-  echo "driver rc=$?"
-) </dev/null 2>&1)"
 t22_line() { grep -nxF -- "$1" "$t22_events" | head -n1 | cut -d: -f1; }
-t22_deps="$(t22_line install_deps)"
-t22_k="$(t22_line 'sudo -k')"
-t22_config="$(t22_line setup_config)"
-t22_verify="$(t22_line verify_install)"
-t22_other_sudo="$(grep -E '^sudo ' "$t22_events" | grep -vxF 'sudo -k')"
-problems=""
-grep -qxF "driver rc=0" <<<"$out" || problems+="[$(tail -n2 <<<"$out" | tr '\n' ' ')] "
-[[ -n "$t22_deps" && -n "$t22_k" && -n "$t22_config" && -n "$t22_verify" ]] \
-  && ((t22_deps < t22_k && t22_k < t22_config && t22_config < t22_verify)) \
-  || problems+="[order: install_deps=${t22_deps:-none} first sudo -k=${t22_k:-none} setup_config=${t22_config:-none} verify_install=${t22_verify:-none}] "
-[[ -z "$t22_other_sudo" ]] || problems+="[sudo other than -k: $(tr '\n' ';' <<<"$t22_other_sudo")] "
-[[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$t22_events")"
-expect_none T22-main-order "$problems"
+# Test name, then the sudo arguments the recording sudo fails on (none for T22)
+for tc in "T22-main-order:" "T22b-forget-tolerates-failure:-k"; do
+  t22_name="${tc%%:*}"
+  t22_events="$TMP/$t22_name-events.log"
+  out="$( (
+    sandbox "$t22_name" "$RECORD_BIN"
+    SUDO_LOG="$TMP/$t22_name-sudo.log" EVENT_LOG="$t22_events" SUDO_FAIL_ON="${tc#*:}"
+    export SUDO_LOG EVENT_LOG SUDO_FAIL_ON
+    : >"$EVENT_LOG"
+    bash "$TMP/T22-driver.sh" "$SCRIPT"
+    echo "driver rc=$?"
+  ) </dev/null 2>&1)"
+  t22_deps="$(t22_line install_deps)"
+  t22_k="$(t22_line 'sudo -k')"
+  t22_config="$(t22_line setup_config)"
+  t22_verify="$(t22_line verify_install)"
+  t22_other_sudo="$(grep -E '^sudo ' "$t22_events" | grep -vxF 'sudo -k')"
+  problems=""
+  grep -qxF "driver rc=0" <<<"$out" || problems+="[$(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  [[ -n "$t22_deps" && -n "$t22_k" && -n "$t22_config" && -n "$t22_verify" ]] \
+    && ((t22_deps < t22_k && t22_k < t22_config && t22_config < t22_verify)) \
+    || problems+="[order: install_deps=${t22_deps:-none} first sudo -k=${t22_k:-none} setup_config=${t22_config:-none} verify_install=${t22_verify:-none}] "
+  [[ -z "$t22_other_sudo" ]] || problems+="[sudo other than -k: $(tr '\n' ';' <<<"$t22_other_sudo")] "
+  [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$t22_events")"
+  expect_none "$t22_name" "$problems"
+done
 
 # T23: a run that stops on an error after pkg_ready_once took the sudo ticket (here a failed required
 # install) still drops it: a driver with main's EXIT trap runs the install against the recording sudo,

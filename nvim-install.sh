@@ -493,7 +493,9 @@ drop_sudo_ticket() {
 # the tickets they created, because this script itself starts third-party build code.
 forget_sudo_credentials() {
   if command -v sudo >/dev/null 2>&1; then
-    sudo -k
+    # sudo -k can fail where sudo is not setuid (some containers, nosuid mounts); such a host has no
+    # ticket to drop, and the run must go on to the config clone
+    sudo -k 2>/dev/null || true
   fi
 }
 

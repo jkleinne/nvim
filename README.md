@@ -129,7 +129,7 @@ The script will:
 
 Run `./nvim-install.sh --help` for details.
 
-The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it needs network: Neovim's first launch installs the plugins into scratch directories), and `REQUIRE_ALL=1` to fail instead of skipping when the root-guard test cannot run (it needs `fakeroot` or `unshare -r`). The LSP and linter settings that keep repo code from running are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
+The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it needs network: Neovim's first launch installs the plugins into scratch directories), and `REQUIRE_ALL=1` to fail instead of skipping when the root-guard test cannot run (it needs `fakeroot` or `unshare -r`). The LSP and linter settings that keep repo code from running and tools from downloading anything are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
 
 ### 3. First Launch and Verification
 
