@@ -31,5 +31,7 @@ return {
       timeout_ms = 500,
       lsp_format = "fallback",
     },
+    -- Missing formatters stay quiet; nvim-install.sh reports them
+    notify_no_formatters = false,
   },
 }
