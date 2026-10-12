@@ -580,6 +580,27 @@ case("L9e-config-resets-notice", function()
   end
 end)
 
+-- A line for the root with a file's content hash (neither "directory" nor "!") does not answer it:
+-- vim.secure.read would prompt there, so it gets the notice instead. vim.secure.trust writes only
+-- "directory" or "!" for a directory, so the line is written by hand.
+case("L9f-stale-hash-unanswered", function()
+  vim.env.PATH = bins.terraform
+  local events = stub_trust(true)
+  load_spec "lsp"
+  local dir, buf = project "L9f"
+  vim.fn.mkdir(vim.fn.stdpath "state", "p")
+  vim.fn.writefile({ string.rep("0123456789abcdef", 4) .. " " .. vim.uv.fs_realpath(dir) }, trust_file())
+  local dirs = root_dirs(vim.lsp.config.terraformls.root_dir, buf)
+  local problems = {}
+  want(problems, #dirs == 0, "on_dir calls " .. show(dirs))
+  want(
+    problems,
+    #events == 1 and is_trust_notice(events[1], dir),
+    "want only an INFO notice naming " .. dir .. " and :TerraformTrust; got " .. show(events)
+  )
+  return joined(problems)
+end)
+
 -- L10: :TerraformTrust allows the current buffer's root in the trust database and re-runs the
 -- FileType pass of vim.lsp.enable, so terraform-ls starts there
 case("L10-terraform-trust-command", function()

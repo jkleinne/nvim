@@ -35,9 +35,10 @@ end
 -- Roots told about this session, so each gets the notice once
 local notified_roots = {}
 
--- Whether the trust database has a line for dir (format: runtime/lua/vim/secure.lua). This decides
--- only whether vim.secure.read may be called, since it prompts for unanswered paths; an unreadable
--- or reformatted database counts as unanswered, which keeps terraform-ls off (fail closed).
+-- Whether the trust database has a line for dir whose hash is "directory" or "!" (format:
+-- runtime/lua/vim/secure.lua). This decides only whether vim.secure.read may be called, since it
+-- prompts for unanswered paths; an unreadable or reformatted database counts as unanswered, which
+-- keeps terraform-ls off (fail closed).
 local function trust_answered(dir)
   local path = vim.uv.fs_realpath(dir)
   if not path then
@@ -49,8 +50,8 @@ local function trust_answered(dir)
   end
   local answered = false
   for line in f:lines() do
-    local _, file = line:match "^(%S+) (.+)$"
-    if file == path then
+    local hash, file = line:match "^(%S+) (.+)$"
+    if file == path and (hash == "directory" or hash == "!") then
       answered = true
       break
     end
