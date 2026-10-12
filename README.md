@@ -121,13 +121,15 @@ The script will:
 - Install Neovim 0.12+ (prefers your system package manager, falls back to the GitHub release tarball)
 - Ask before moving an existing config that is not this repo aside, and move it only after the clone succeeds
 - Install build dependencies, a clipboard tool, runtimes, formatters, linters, TUI tools, and on Arch the Node-based language servers
+- On best-effort platforms, install the user-level tools their repos lack (`go install`, `uv tool install`) last, after it has dropped its sudo credentials
+- Forget cached sudo credentials, including ones from before the run (such as a `sudo pacman -S` you just ran), before it clones the config and launches Neovim, which installs plugins and runs their build steps
 - Detect your shell and update PATH if needed (bash, zsh, fish)
 - Skip anything already installed
 - Stop if a required package (build tools, core tools, runtimes) fails, and list optional tools it could not install in the summary at the end (best-effort platforms get manual steps there)
 
 Run `./nvim-install.sh --help` for details.
 
-The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it needs network: Neovim's first launch installs the plugins into scratch directories). The LSP and linter settings that keep repo code from running are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
+The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it needs network: Neovim's first launch installs the plugins into scratch directories), and `REQUIRE_ALL=1` to fail instead of skipping when the root-guard test cannot run (it needs `fakeroot` or `unshare -r`). The LSP and linter settings that keep repo code from running are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
 
 ### 3. First Launch and Verification
 

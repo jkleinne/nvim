@@ -20,6 +20,7 @@ ARCH=""
 PKG_MGR=""
 PKG_TIER=""
 PKG_READY=false
+SUDO_USED=false
 USER_SHELL=""
 
 # ---------------------------------------------------------------------------
@@ -64,6 +65,10 @@ cleanup() {
   fi
   if [[ -n "${CLONE_STAGING:-}" ]] && [[ -d "$CLONE_STAGING" ]]; then
     rm -rf "$CLONE_STAGING"
+  fi
+  # Runs on every exit, errors and signals included, so a sudo ticket this script took never outlives it
+  if [[ "${SUDO_USED:-}" == true ]]; then
+    sudo -k 2>/dev/null || true
   fi
 }
 
@@ -321,6 +326,7 @@ pkg_ready_once() {
     error "sudo authentication failed."
     exit 1
   fi
+  SUDO_USED=true
   case "$PKG_MGR" in
     pacman)
       info "Upgrading the system first (pacman -Syu)..."
@@ -472,10 +478,21 @@ warn_if_not_on_path() {
   warn "$dir is not on PATH; add this to your shell config: $(path_append_line "$dir")"
 }
 
-# Forget cached sudo credentials once package installs are done, so code that runs later
-# (go install, uv tool install, Neovim's first launch installing plugins) never inherits them
+# Forget the sudo ticket this script took for package installs, once they are done, so the go install
+# and uv tool install runs that follow never inherit it
 drop_sudo_ticket() {
-  if [[ "$PKG_READY" == true ]]; then
+  if [[ "$SUDO_USED" == true ]]; then
+    sudo -k
+    SUDO_USED=false
+  fi
+}
+
+# The next steps clone the config and launch Neovim, which installs plugins and runs their build steps,
+# so drop any cached sudo credentials, including ones from before this run (for example the README's
+# own 'sudo pacman -S' step); sudo -k never prompts. This is stricter than installers that drop only
+# the tickets they created, because this script itself starts third-party build code.
+forget_sudo_credentials() {
+  if command -v sudo >/dev/null 2>&1; then
     sudo -k
   fi
 }
@@ -488,7 +505,6 @@ install_user_tool() {
   if [[ -x "$bin_dir/$name" ]]; then
     success "$name (already installed in $bin_dir)"
   else
-    drop_sudo_ticket
     install_soft "$name" "$@"
   fi
   if [[ -x "$bin_dir/$name" ]]; then
@@ -607,9 +623,6 @@ install_formatters() {
       install_pkgs optional "formatters" stylua shfmt prettier python-black go-tools terraform
       ;;
     *)
-      install_python_tool black
-      install_go_tool shfmt mvdan.cc/sh/v3/cmd/shfmt@latest
-      install_go_tool goimports golang.org/x/tools/cmd/goimports@latest
       warn_manual stylua prettier terraform
       ;;
   esac
@@ -621,24 +634,25 @@ install_linters() {
   case "$PKG_MGR" in
     pacman)
       install_pkgs optional "linters" selene shellcheck yamllint tflint golangci-lint ruff
-      if ! command -v hadolint >/dev/null 2>&1; then
-        warn "hadolint: not in the official repos; review the PKGBUILD and run 'yay -S hadolint-bin', or run ':MasonInstall hadolint' in Neovim"
-      fi
+      ;;
+    dnf)
+      install_pkgs optional "shellcheck" ShellCheck
+      warn_manual selene tflint
       ;;
     *)
-      case "$PKG_MGR" in
-        dnf) install_pkgs optional "shellcheck" ShellCheck ;;
-        *)   install_pkgs optional "shellcheck" shellcheck ;;
-      esac
-      install_python_tool yamllint
-      install_python_tool ruff
-      install_go_tool golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+      install_pkgs optional "shellcheck" shellcheck
       warn_manual selene tflint
-      if ! command -v hadolint >/dev/null 2>&1; then
-        warn "hadolint: install manually, or run ':MasonInstall hadolint' in Neovim"
-      fi
       ;;
   esac
+
+  if command -v hadolint >/dev/null 2>&1; then
+    return
+  fi
+  if [[ "$PKG_TIER" == first-class ]]; then
+    warn "hadolint: not in the official repos; review the PKGBUILD and run 'yay -S hadolint-bin', or run ':MasonInstall hadolint' in Neovim"
+  else
+    warn "hadolint: install manually, or run ':MasonInstall hadolint' in Neovim"
+  fi
 }
 
 install_tui_tools() {
@@ -648,21 +662,40 @@ install_tui_tools() {
     pacman)
       install_pkgs optional "TUI tools" lazygit lazydocker fortune-mod
       ;;
+    apk)
+      install_pkgs optional "fortune" fortune
+      ;;
     *)
-      install_go_tool lazygit github.com/jesseduffield/lazygit@latest
-      install_go_tool lazydocker github.com/jesseduffield/lazydocker@latest
-      case "$PKG_MGR" in
-        apk) install_pkgs optional "fortune" fortune ;;
-        *)   install_pkgs optional "fortune" fortune-mod ;;
-      esac
+      install_pkgs optional "fortune" fortune-mod
       ;;
   esac
+}
+
+# Best-effort distros: the formatters, linters, and TUI tools their repos lack, from uv tool install
+# and go install (latest upstream). They fetch and build code from the network, so install_deps runs
+# them last, after dropping the sudo ticket.
+install_user_tools() {
+  if [[ "$PKG_TIER" == first-class ]]; then
+    return
+  fi
+
+  section "User Tools"
+  install_python_tool black
+  install_python_tool yamllint
+  install_python_tool ruff
+  install_go_tool shfmt mvdan.cc/sh/v3/cmd/shfmt@latest
+  install_go_tool goimports golang.org/x/tools/cmd/goimports@latest
+  install_go_tool golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+  install_go_tool lazygit github.com/jesseduffield/lazygit@latest
+  install_go_tool lazydocker github.com/jesseduffield/lazydocker@latest
 }
 
 # ---------------------------------------------------------------------------
 # Dependency orchestrator
 # ---------------------------------------------------------------------------
 
+# Two phases, so sudo is asked for once and dropped once, before any go or uv code runs: every system
+# package first, then the user-level tools
 install_deps() {
   install_build_tools
   install_core_tools
@@ -672,6 +705,8 @@ install_deps() {
   install_formatters
   install_linters
   install_tui_tools
+  drop_sudo_ticket
+  install_user_tools
 }
 
 # ---------------------------------------------------------------------------
@@ -708,7 +743,11 @@ clone_config() {
   fi
   # A sibling of the config dir, so the final mv is a rename on the same filesystem; cleanup()
   # removes it if the run is interrupted
-  CLONE_STAGING="$(mktemp -d "$(dirname "$NVIM_CONFIG_DIR")/.nvim-clone.XXXXXX")"
+  if ! CLONE_STAGING="$(mktemp -d "$(dirname "$NVIM_CONFIG_DIR")/.nvim-clone.XXXXXX")"; then
+    error "Cannot create a staging directory next to $NVIM_CONFIG_DIR"
+    CLONE_STAGING=""
+    exit 1
+  fi
   if ! git clone "$NVIM_REPO" "$CLONE_STAGING/nvim"; then
     discard_clone_staging
     error "Failed to clone config repo; $NVIM_CONFIG_DIR was not changed"
@@ -717,18 +756,18 @@ clone_config() {
 
   if [[ -n "$backup" ]]; then
     info "Backing up to $backup"
-    if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
+    if ! mv -T "$NVIM_CONFIG_DIR" "$backup"; then
       discard_clone_staging
       error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
       exit 1
     fi
   fi
 
-  if ! mv "$CLONE_STAGING/nvim" "$NVIM_CONFIG_DIR"; then
+  if ! mv -T "$CLONE_STAGING/nvim" "$NVIM_CONFIG_DIR"; then
     discard_clone_staging
     if [[ -z "$backup" ]]; then
       error "Failed to move the clone into $NVIM_CONFIG_DIR; nothing else was changed"
-    elif mv "$backup" "$NVIM_CONFIG_DIR"; then
+    elif mv -T "$backup" "$NVIM_CONFIG_DIR"; then
       error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is back in place there"
     else
       error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is at $backup"
@@ -947,7 +986,7 @@ main() {
   confirm_proceed
   install_neovim
   install_deps
-  drop_sudo_ticket
+  forget_sudo_credentials
   setup_config
   setup_path
   verify_install
