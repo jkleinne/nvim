@@ -126,7 +126,7 @@ The script will:
 
 Run `./nvim-install.sh --help` for details.
 
-The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it needs network: Neovim's first launch installs the plugins into scratch directories).
+The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it needs network: Neovim's first launch installs the plugins into scratch directories). The LSP and linter settings that keep repo code from running are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
 
 ### 3. First Launch and Verification
 
@@ -158,7 +158,7 @@ The configuration files are organized as follows:
 ├── init.lua                # Main entry point
 ├── lazy-lock.json          # Lock file for lazy.nvim
 ├── nvim-install.sh         # Bootstrap script (Arch Linux; other distros best-effort)
-├── tests/                  # Installer tests (bash tests/install-script.test.sh)
+├── tests/                  # Installer and editor config tests
 ├── tflint.hcl              # tflint config used instead of repos' own
 └── ...
 ```

@@ -504,6 +504,28 @@ done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" && grep -qF "partial upgr
   && ! grep -qF -- "-S --noconfirm" "$TMP/T13-sudo.log"
 result T13-upgrade-declined $? "rc=$rc; sudo log: $(tr '\n' ';' <"$TMP/T13-sudo.log" 2>/dev/null); $(tail -n4 <<<"$out" | tr '\n' ' ')"
 
+# T13b: a failed apt-get update is best effort: it warns (the warning reaches the summary) and the
+# install still runs, from the existing package lists
+out="$( (
+  sandbox T13b "$RECORD_BIN"
+  SUDO_LOG="$TMP/T13b-sudo.log" SUDO_FAIL_ON="apt-get update -qq"
+  export SUDO_LOG SUDO_FAIL_ON
+  : >"$SUDO_LOG"
+  load_script
+  PKG_MGR=apt-get
+  pkg_is_installed() { return 1; }
+  rc=0
+  install_pkgs optional grp pkg >/dev/null || rc=$?
+  [[ $rc -eq 0 ]] || { echo "install_pkgs rc=$rc"; exit 1; }
+  [[ "${WARNINGS[*]}" == *"apt-get update failed"* ]] || { echo "WARNINGS: ${WARNINGS[*]}"; exit 1; }
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+t13b_update="$(grep -nxF "apt-get update -qq" "$TMP/T13b-sudo.log" | head -n1 | cut -d: -f1)"
+t13b_install="$(grep -nxF "apt-get install -y pkg" "$TMP/T13b-sudo.log" | head -n1 | cut -d: -f1)"
+done_ok $rc "$out" && [[ -n "$t13b_update" && -n "$t13b_install" ]] && ((t13b_update < t13b_install))
+result T13b-apt-refresh-warns $? "rc=$rc; sudo log: $(tr '\n' ';' <"$TMP/T13b-sudo.log" 2>/dev/null); $(tail -n2 <<<"$out" | tr '\n' ' ')"
+
 # T14: confirm treats only y or Y as yes; end of input, an empty answer, n, and anything else are no.
 # Every prompt in the script goes through it.
 out="$( (
@@ -543,6 +565,24 @@ for tc in "bash:export PATH=\"\$PATH:/nonexistent/bin\"" "fish:fish_add_path --a
   done_ok $? "$out" && grep -qF -- "${tc#*:}" <<<"$out"
   result "T15-path-hint-appends ${tc%%:*}" $? "$(head -n1 <<<"$out")"
 done
+
+# setup_path (tarball installs) writes fish's appending line into config.fish, once
+out="$( (
+  sandbox T15-setup-path-fish "$REFUSE_BIN"
+  load_script
+  NEED_PATH_SETUP=true USER_SHELL=fish
+  rc_file="$HOME/.config/fish/config.fish"
+  mkdir -p "${rc_file%/*}"
+  printf '# existing\n' >"$rc_file"
+  for run in 1 2; do
+    setup_path >/dev/null
+    count="$(grep -cxF "fish_add_path --append --path /opt/nvim/bin" "$rc_file" || true)"
+    [[ $count -eq 1 ]] || { echo "run $run: $count matching lines; config.fish: $(tr '\n' ';' <"$rc_file")"; exit 1; }
+  done
+  echo DONE
+) </dev/null 2>&1)"
+done_ok $? "$out"
+result "T15-path-hint-appends setup-path-fish" $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 
 # T16: declining the config move (n, or end of input) leaves the foreign config untouched and
 # returns, so the run goes on to the summary with the warning in it. The script runs from a plain
@@ -638,10 +678,12 @@ expect_none T17-sudo-dropped "$problems"
 
 # T18: answering y moves a foreign config aside only after the clone succeeds. The script runs from a
 # plain directory, as in T16, so setup_config reaches the prompt. On success the clone replaces the
-# config and the old one sits in one backup; on a failed clone nothing moves. Neither leaves a
-# staging dir. $1 = case id, $2 = git stub dir
+# config and the old one sits in one backup; on a failed clone nothing moves. When moving the config
+# aside fails, or moving the clone into place does, the run stops with the foreign config in place
+# and no backup. No case leaves a staging dir. $1 = case id, $2 = git stub dir, $3 = the mv to fail
+# (backup: the config's move aside; final: the clone's move into place; empty: none)
 t18_case() {
-  local id="$1" git_bin="$2"
+  local id="$1" git_bin="$2" fail_mv="${3:-}"
   (
     sandbox "T18-$id" "$git_bin:$REFUSE_BIN"
     git init -q -b main "$HOME/.config/nvim"
@@ -652,18 +694,30 @@ t18_case() {
     load_script "$HOME/plain/nvim-install.sh"
     [[ "$NVIM_CONFIG_DIR" == "$HOME/.config/nvim" && "$SCRIPT_DIR" == "$HOME/plain" ]] \
       || { echo "NVIM_CONFIG_DIR=$NVIM_CONFIG_DIR SCRIPT_DIR=$SCRIPT_DIR"; exit 1; }
+    # In the move-failure cases, mv fails for the chosen source and runs the real mv for anything else
+    if [[ -n "$fail_mv" ]]; then
+      mv() {
+        if [[ "$fail_mv" == backup && "$1" == "$NVIM_CONFIG_DIR" ]] \
+          || [[ "$fail_mv" == final && "$1" == */.nvim-clone.*/nvim ]]; then
+          echo "STUB MV: failing $*" >&2
+          return 1
+        fi
+        command mv "$@"
+      }
+    fi
     rc=0
     (setup_config <<<y) || rc=$?
     echo "setup_config rc=$rc"
     echo DONE
   ) </dev/null 2>&1
 }
-for id in success clone-failure; do
-  if [[ "$id" == success ]]; then
-    out="$(t18_case "$id" "$CLONE_GIT_BIN")"
-  else
-    out="$(t18_case "$id" "$GIT_BIN")"
-  fi
+for id in success clone-failure backup-move-fails final-move-fails; do
+  case "$id" in
+    success) out="$(t18_case "$id" "$CLONE_GIT_BIN")" ;;
+    clone-failure) out="$(t18_case "$id" "$GIT_BIN")" ;;
+    backup-move-fails) out="$(t18_case "$id" "$CLONE_GIT_BIN" backup)" ;;
+    final-move-fails) out="$(t18_case "$id" "$CLONE_GIT_BIN" final)" ;;
+  esac
   rc=$?
   t18_dir="$TMP/home-T18-$id/.config"
   backups="$(compgen -G "$t18_dir/nvim.bak.*" || true)"
@@ -677,8 +731,13 @@ for id in success clone-failure; do
     [[ -n "$backups" && "$(wc -l <<<"$backups")" -eq 1 && -f "$backups/untracked.lua" ]] \
       || problems+="[want one backup holding untracked.lua, got: $(tr '\n' ' ' <<<"$backups")] "
   else
+    case "$id" in
+      clone-failure) message="was not changed" ;;
+      backup-move-fails) message="Failed to back up" ;;
+      final-move-fails) message="back in place" ;;
+    esac
     grep -qxF "setup_config rc=1" <<<"$out" || problems+="[setup_config did not exit 1] "
-    grep -qF "was not changed" <<<"$out" || problems+="[no 'was not changed' message] "
+    grep -qF "$message" <<<"$out" || problems+="[no '$message' message] "
     [[ -f "$t18_dir/nvim/untracked.lua" ]] || problems+="[untracked.lua moved] "
     [[ "$(git -C "$t18_dir/nvim" remote get-url origin 2>/dev/null)" == https://github.com/someone/else ]] \
       || problems+="[foreign origin gone] "
