@@ -2,13 +2,15 @@
 set -euo pipefail
 
 readonly MIN_NVIM_VERSION="0.12.0"
-readonly NVIM_REPO="https://github.com/jkleinne/nvim.git"
+readonly NVIM_REPO_SLUG="jkleinne/nvim"
+readonly NVIM_REPO="https://github.com/${NVIM_REPO_SLUG}.git"
 readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
 readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_TMPDIR=""
+CLONE_STAGING=""
 WARNINGS=()
 PATH_WARNED_DIRS=()
 NEED_PATH_SETUP=false
@@ -59,6 +61,9 @@ confirm() {
 cleanup() {
   if [[ -n "${SCRIPT_TMPDIR:-}" ]] && [[ -d "$SCRIPT_TMPDIR" ]]; then
     rm -rf "$SCRIPT_TMPDIR"
+  fi
+  if [[ -n "${CLONE_STAGING:-}" ]] && [[ -d "$CLONE_STAGING" ]]; then
+    rm -rf "$CLONE_STAGING"
   fi
 }
 
@@ -222,16 +227,6 @@ confirm_proceed() {
 # Neovim installation
 # ---------------------------------------------------------------------------
 
-pkg_install_neovim() {
-  pkg_ready_once
-  case "$PKG_MGR" in
-    apt-get) sudo apt-get install -y neovim ;;
-    dnf)     sudo dnf install -y neovim ;;
-    pacman)  sudo pacman -S --noconfirm neovim ;;
-    apk)     sudo apk add neovim ;;
-  esac
-}
-
 install_neovim_tarball() {
   local filename="nvim-${OS}-${ARCH}.tar.gz"
   local url="${NVIM_RELEASE_BASE}/${filename}"
@@ -292,7 +287,7 @@ install_neovim() {
   fi
 
   info "Installing Neovim via $PKG_MGR..."
-  if pkg_install_neovim; then
+  if pkg_install neovim; then
     local pkg_version
     pkg_version="$(get_nvim_version)"
     if version_gte "$pkg_version" "$MIN_NVIM_VERSION"; then
@@ -312,14 +307,16 @@ install_neovim() {
 # Dependency installation helpers
 # ---------------------------------------------------------------------------
 
-# Runs once, right before the first package install: checks sudo credentials (fails fast on a wrong
-# password, and caches them), then refreshes package metadata. On Arch that is a full system upgrade,
-# because installing new packages against a freshly synced database without upgrading is a partial
-# upgrade, which Arch does not support. pacman shows its own list and asks before changing anything.
+# Runs once, right before the first package install: checks that sudo exists and its credentials (fails
+# fast on a wrong password, and caches them), then refreshes package metadata. On Arch that is a full
+# system upgrade, because installing new packages against a freshly synced database without upgrading
+# is a partial upgrade, which Arch does not support. pacman shows its own list and asks before changing
+# anything. A machine with everything installed never gets here, so it needs no sudo at all.
 pkg_ready_once() {
   if [[ "$PKG_READY" == true ]]; then
     return
   fi
+  require_sudo
   if ! sudo -v; then
     error "sudo authentication failed."
     exit 1
@@ -333,9 +330,16 @@ pkg_ready_once() {
         exit 1
       fi
       ;;
-    apt-get) info "Updating package lists..."; sudo apt-get update -qq ;;
-    apk)     info "Updating package index..."; sudo apk update ;;
-    dnf)     ;;
+    # The refresh is best effort on these distros; the warning reaches the summary
+    apt-get)
+      info "Updating package lists..."
+      sudo apt-get update -qq || warn "apt-get update failed; installing from the existing package lists"
+      ;;
+    apk)
+      info "Updating package index..."
+      sudo apk update || warn "apk update failed; installing from the existing package index"
+      ;;
+    dnf) ;;
   esac
   PKG_READY=true
 }
@@ -440,6 +444,17 @@ go_bin_dir() {
   printf '%s\n' "$dir"
 }
 
+# The line that appends $1 to PATH in the user's shell config. Appending keeps user dirs from
+# shadowing system binaries; fish needs --path, or fish_add_path puts the dir ahead of the system paths.
+path_append_line() {
+  if [[ "$USER_SHELL" == fish ]]; then
+    printf 'fish_add_path --append --path %s\n' "$1"
+  else
+    # shellcheck disable=SC2016  # $PATH is literal on purpose: the line goes into the user's shell config
+    printf 'export PATH="$PATH:%s"\n' "$1"
+  fi
+}
+
 warn_if_not_on_path() {
   local dir="$1" seen
   if [[ -z "$dir" ]]; then
@@ -454,7 +469,15 @@ warn_if_not_on_path() {
     fi
   done
   PATH_WARNED_DIRS+=("$dir")
-  warn "$dir is not on PATH; add it to your shell config: export PATH=\"\$PATH:$dir\""
+  warn "$dir is not on PATH; add this to your shell config: $(path_append_line "$dir")"
+}
+
+# Forget cached sudo credentials once package installs are done, so code that runs later
+# (go install, uv tool install, Neovim's first launch installing plugins) never inherits them
+drop_sudo_ticket() {
+  if [[ "$PKG_READY" == true ]]; then
+    sudo -k
+  fi
 }
 
 # For go install / uv tool install: the binary lands in a user bin dir that may
@@ -465,6 +488,7 @@ install_user_tool() {
   if [[ -x "$bin_dir/$name" ]]; then
     success "$name (already installed in $bin_dir)"
   else
+    drop_sudo_ticket
     install_soft "$name" "$@"
   fi
   if [[ -x "$bin_dir/$name" ]]; then
@@ -565,10 +589,11 @@ install_language_servers() {
     pacman)
       # Keep in sync with system_servers in lua/plugins/lsp.lua
       install_pkgs optional "language servers" \
-        bash-language-server vscode-json-languageserver pyright typescript-language-server yaml-language-server
+        bash-language-server dockerfile-language-server vscode-json-languageserver pyright \
+        typescript-language-server yaml-language-server
       ;;
     *)
-      warn_manual bash-language-server vscode-json-language-server pyright-langserver \
+      warn_manual bash-language-server docker-langserver vscode-json-language-server pyright-langserver \
         typescript-language-server yaml-language-server
       ;;
   esac
@@ -655,11 +680,12 @@ install_deps() {
 
 # True for this repo's HTTPS, SCP-style SSH, or ssh:// URL, with or without .git or a trailing slash.
 is_config_repo_url() {
-  local url="${1%/}" repo="${NVIM_REPO#https://github.com/}"
+  local url="${1%/}"
   url="${url%.git}"
-  repo="${repo%.git}"
   case "$url" in
-    "https://github.com/$repo" | "git@github.com:$repo" | "ssh://git@github.com/$repo") return 0 ;;
+    "https://github.com/$NVIM_REPO_SLUG" | "git@github.com:$NVIM_REPO_SLUG" | "ssh://git@github.com/$NVIM_REPO_SLUG")
+      return 0
+      ;;
     *) return 1 ;;
   esac
 }
@@ -694,21 +720,16 @@ setup_config() {
     return
   fi
 
-  # Not run from a clone: back up a foreign config if the user agrees, then clone into the freed path
+  # Not run from a clone: ask before touching a foreign config, then clone first and move the foreign
+  # config aside only once the clone succeeded, so a failed clone leaves everything as it was
+  local backup=""
   if [[ -d "$NVIM_CONFIG_DIR" ]]; then
-    local backup
     backup="${NVIM_CONFIG_DIR}.bak.$(date +%s)"
     warn "Existing config at $NVIM_CONFIG_DIR is not this repo."
     if ! confirm "  Move it to $backup and clone this repo?"; then
       warn "Left $NVIM_CONFIG_DIR in place; move it aside yourself and run this script again to clone the config."
       return
     fi
-    info "Backing up to $backup"
-    if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
-      error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
-      exit 1
-    fi
-    success "Backed up existing config"
   fi
 
   info "Cloning config to $NVIM_CONFIG_DIR..."
@@ -716,9 +737,43 @@ setup_config() {
     error "Cannot create parent directory for $NVIM_CONFIG_DIR"
     exit 1
   fi
-  if ! git clone "$NVIM_REPO" "$NVIM_CONFIG_DIR"; then
-    error "Failed to clone config repo to $NVIM_CONFIG_DIR"
+  # A sibling of the config dir, so the final mv is a rename on the same filesystem; cleanup()
+  # removes it if the run is interrupted
+  CLONE_STAGING="$(mktemp -d "$(dirname "$NVIM_CONFIG_DIR")/.nvim-clone.XXXXXX")"
+  if ! git clone "$NVIM_REPO" "$CLONE_STAGING/nvim"; then
+    rm -rf "$CLONE_STAGING"
+    CLONE_STAGING=""
+    error "Failed to clone config repo; $NVIM_CONFIG_DIR was not changed"
     exit 1
+  fi
+
+  if [[ -n "$backup" ]]; then
+    info "Backing up to $backup"
+    if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
+      rm -rf "$CLONE_STAGING"
+      CLONE_STAGING=""
+      error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
+      exit 1
+    fi
+  fi
+
+  if ! mv "$CLONE_STAGING/nvim" "$NVIM_CONFIG_DIR"; then
+    rm -rf "$CLONE_STAGING"
+    CLONE_STAGING=""
+    if [[ -z "$backup" ]]; then
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; nothing else was changed"
+    elif mv "$backup" "$NVIM_CONFIG_DIR"; then
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is back in place there"
+    else
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is at $backup"
+    fi
+    exit 1
+  fi
+  rm -rf "$CLONE_STAGING"
+  CLONE_STAGING=""
+
+  if [[ -n "$backup" ]]; then
+    success "Backed up existing config"
   fi
   success "Config cloned to $NVIM_CONFIG_DIR"
 }
@@ -739,23 +794,12 @@ setup_path() {
   local path_line=""
 
   case "$USER_SHELL" in
-    bash)
-      rc_file="$HOME/.bashrc"
-      path_line="export PATH=\"\$PATH:${nvim_bin}\""
-      ;;
-    zsh)
-      rc_file="${ZDOTDIR:-$HOME}/.zshenv"
-      path_line="export PATH=\"\$PATH:${nvim_bin}\""
-      ;;
-    fish)
-      rc_file="${HOME}/.config/fish/config.fish"
-      path_line="fish_add_path ${nvim_bin}"
-      ;;
-    posix)
-      rc_file="$HOME/.profile"
-      path_line="export PATH=\"\$PATH:${nvim_bin}\""
-      ;;
+    bash)  rc_file="$HOME/.bashrc" ;;
+    zsh)   rc_file="${ZDOTDIR:-$HOME}/.zshenv" ;;
+    fish)  rc_file="${HOME}/.config/fish/config.fish" ;;
+    posix) rc_file="$HOME/.profile" ;;
   esac
+  path_line="$(path_append_line "$nvim_bin")"
 
   if [[ -z "$rc_file" ]]; then
     warn "Could not determine rc file for shell: $USER_SHELL"
@@ -871,11 +915,11 @@ EOF
 
 main() {
   setup_colors
-  # INT and TERM exit with 128 + signal number (the EXIT trap still cleans up); a trap that
-  # only cleaned up would let bash resume with the next command
+  # On INT or TERM, run the EXIT cleanup and die by the same signal, so a calling shell or loop sees
+  # the interrupt (exit 130/143 would look like an ordinary failure and let a loop carry on)
   trap cleanup EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  trap 'trap - INT; kill -s INT "$BASHPID"' INT
+  trap 'trap - TERM; kill -s TERM "$BASHPID"' TERM
 
   if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
     usage
@@ -889,11 +933,11 @@ main() {
   detect_os
   detect_arch
   detect_pkg_manager
-  require_sudo
   detect_shell
   confirm_proceed
   install_neovim
   install_deps
+  drop_sudo_ticket
   setup_config
   setup_path
   verify_install

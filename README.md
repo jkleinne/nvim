@@ -118,6 +118,7 @@ cd ~/.config/nvim
 The script will:
 - On Arch, upgrade the system first (`pacman -Syu`, with pacman's own confirmation) when anything needs installing, since installing against a newer package database without upgrading is a partial upgrade
 - Install Neovim 0.12+ (prefers your system package manager, falls back to the GitHub release tarball)
+- Ask before moving an existing config that is not this repo aside, and move it only after the clone succeeds
 - Install build dependencies, a clipboard tool, runtimes, formatters, linters, TUI tools, and on Arch the Node-based language servers
 - Detect your shell and update PATH if needed (bash, zsh, fish)
 - Skip anything already installed
@@ -125,7 +126,7 @@ The script will:
 
 Run `./nvim-install.sh --help` for details.
 
-The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run.
+The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it needs network: Neovim's first launch installs the plugins into scratch directories).
 
 ### 3. First Launch and Verification
 

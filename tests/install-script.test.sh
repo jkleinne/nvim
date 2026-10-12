@@ -2,11 +2,12 @@
 # Tests for nvim-install.sh: bash tests/install-script.test.sh
 #
 # Hermetic: every stub, fake HOME, and scratch file lives under one temp dir that is removed on exit.
-# sudo is always a stub (one refuses, the other records its arguments without running them), so no
-# test can install or upgrade anything, and sourced tests export a fake HOME before sourcing, so
-# NVIM_CONFIG_DIR never points at a real config. RUN_FULL=1 adds T4, an end-to-end run on this
-# machine that must find everything already installed; it is the only test that queries the real
-# package manager (pacman -Q, read-only) and reads the real ~/.config/nvim.
+# sudo is always a stub (one refuses, the other records its arguments without running them), and
+# git clone, go, and uv are stubs wherever a test reaches them, so no test can install, upgrade, or
+# download a package; sourced tests export a fake HOME before sourcing, so NVIM_CONFIG_DIR never
+# points at a real config. RUN_FULL=1 adds T4, an end-to-end run on this machine (see T4), which
+# also reads the real ~/.config/nvim. T4 and T20 (d) are the only parts that query the real package
+# manager, both read-only (pacman -Q, pacman -Qlq).
 # shellcheck source-path=SCRIPTDIR/..
 set -uo pipefail
 
@@ -75,13 +76,16 @@ EOF
 REFUSE_BIN="$TMP/bin-refuse"
 write_refusing_sudo "$REFUSE_BIN" "$TMP/refused-sudo.log"
 
-# sudo that appends its arguments to $SUDO_LOG and never runs them; it fails only when its
-# arguments equal $SUDO_FAIL_ON
+# sudo that appends its arguments to $SUDO_LOG (and "sudo <args>" to $EVENT_LOG when set, a log
+# other stubs share) and never runs them; it fails only when its arguments equal $SUDO_FAIL_ON
 RECORD_BIN="$TMP/bin-record"
 mkdir -p "$RECORD_BIN"
 cat >"$RECORD_BIN/sudo" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$*" >>"${SUDO_LOG:?}"
+if [ -n "${EVENT_LOG:-}" ]; then
+  printf 'sudo %s\n' "$*" >>"$EVENT_LOG"
+fi
 if [ "$*" = "${SUDO_FAIL_ON:-}" ]; then
   echo "STUB SUDO: failing $*" >&2
   exit 1
@@ -91,6 +95,7 @@ EOF
 chmod +x "$RECORD_BIN/sudo"
 
 # git that refuses to clone (no network) and passes everything else to the real git
+REAL_GIT="$(command -v git)"
 GIT_BIN="$TMP/bin-git"
 mkdir -p "$GIT_BIN"
 cat >"$GIT_BIN/git" <<EOF
@@ -99,9 +104,25 @@ if [ "\$1" = clone ]; then
   echo "STUB GIT CLONE BLOCKED: \$*" >&2
   exit 1
 fi
-exec "$(command -v git)" "\$@"
+exec "$REAL_GIT" "\$@"
 EOF
 chmod +x "$GIT_BIN/git"
+
+# git whose clone, offline, creates the target (last argument) as a repo with this repo's origin and
+# a marker file "cloned"; everything else goes to the real git
+CLONE_GIT_BIN="$TMP/bin-git-clone"
+mkdir -p "$CLONE_GIT_BIN"
+cat >"$CLONE_GIT_BIN/git" <<EOF
+#!/bin/sh
+if [ "\$1" = clone ]; then
+  for dest; do :; done
+  mkdir -p "\$dest" && : >"\$dest/cloned" && "$REAL_GIT" init -q -b main "\$dest" \\
+    && "$REAL_GIT" -C "\$dest" remote add origin https://github.com/jkleinne/nvim.git
+  exit \$?
+fi
+exec "$REAL_GIT" "\$@"
+EOF
+chmod +x "$CLONE_GIT_BIN/git"
 
 # Package manager binaries for detection tests; they refuse to run
 PKG_BIN="$TMP/bin-pkgmgr"
@@ -151,23 +172,41 @@ else
   result T2-plan-screen $? "rc=$rc eof_rc=$eof_rc absent=$absent; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
 fi
 
-# T3: root guard (fakeroot reports EUID 0)
-if ! command -v fakeroot >/dev/null 2>&1; then
-  echo "SKIP T3-root-guard (fakeroot not installed)"
+# T3: root guard, under every wrapper that reports EUID 0 here: fakeroot, and unshare -r when this
+# kernel lets an unprivileged user map itself to root in a user namespace
+t3_wrappers=()
+if command -v fakeroot >/dev/null 2>&1; then
+  t3_wrappers+=(fakeroot)
+fi
+if command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
+  t3_wrappers+=("unshare -r")
+fi
+if [[ ${#t3_wrappers[@]} -eq 0 ]]; then
+  echo "SKIP T3-root-guard (neither fakeroot nor unshare -r works here)"
 else
-  out="$(HOME="$TMP/home-T3" PATH="$REFUSE_BIN:$PATH" fakeroot "$SCRIPT" </dev/null 2>&1)"
-  rc=$?
-  [[ $rc -eq 1 ]] && grep -qF "Do not run this script as root" <<<"$out"
-  result T3-root-guard $? "rc=$rc"
+  t3_fail=""
+  for wrapper in "${t3_wrappers[@]}"; do
+    read -ra wrapper_cmd <<<"$wrapper"
+    out="$(HOME="$TMP/home-T3" PATH="$REFUSE_BIN:$PATH" "${wrapper_cmd[@]}" "$SCRIPT" </dev/null 2>&1)"
+    rc=$?
+    [[ $rc -eq 1 ]] && grep -qF "Do not run this script as root" <<<"$out" \
+      || t3_fail+="[$wrapper: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  done
+  t3_ran="$(printf '%s, ' "${t3_wrappers[@]}")"
+  expect_none "T3-root-guard (${t3_ran%, })" "$t3_fail"
 fi
 
-# T4 (RUN_FULL=1 only): end-to-end run on a fully provisioned Arch machine. Nothing may be installed,
-# so sudo is a refusing stub and the upfront upgrade must never run. HOME stays real, because the
-# run must find the real checkout, so T4 runs only when ~/.config/nvim is a clone of this repo
-# (setup_config then leaves it in place). The verification launch uses scratch XDG dirs and a copy
-# of this checkout as its config, so the real checkout, plugins, and lazy-lock.json are never written.
+# T4 (RUN_FULL=1, Arch only): runs the real script end to end on this machine. On a fully provisioned
+# machine nothing is installed: sudo is a refusing stub, so any install, or the upfront upgrade, fails
+# the test. HOME stays real, because the run must find the real checkout, so T4 runs only when
+# ~/.config/nvim is a clone of this repo (setup_config then leaves it in place). The verification
+# launch needs network: lazy.nvim bootstraps itself and installs every plugin, running their build
+# steps, into scratch XDG dirs whose config is a copy of this checkout, so the real checkout, its
+# plugins, and lazy-lock.json are never written.
 if [[ "${RUN_FULL:-0}" != 1 ]]; then
   echo "SKIP T4 (set RUN_FULL=1 on a fully provisioned Arch machine)"
+elif [[ "$host_mgr" != pacman ]]; then
+  echo "SKIP T4 (not an Arch host)"
 else
   live_config="$HOME/.config/nvim"
   live_remote="$(git -C "$live_config" remote get-url origin 2>/dev/null || true)"
@@ -280,46 +319,60 @@ out="$( (
 done_ok $? "$out" && ! grep -nE 'OS_RELEASE_FILE|NVIM_INSTALL_OS_RELEASE' "$SCRIPT"
 result T8-detection $? "$(tail -n3 <<<"$out")"
 
-# T9: sourcing sets no traps; main sets them, and INT or TERM then exits 130 or 143 after cleanup
-# instead of resuming. This drives main and a real signal rather than grepping main's source, so it
-# checks the behavior (no resume, temp dir removed, exit status), not just the trap text.
+# T9: sourcing sets no traps; main sets them, and INT or TERM then runs the EXIT cleanup and kills the
+# script with the same signal instead of resuming, so a calling shell or loop sees the interrupt. A
+# driver runs main as its own process with a real signal, and python3 reports how it ended (death by
+# signal N is return code -N; exit 130 or 143 would look like an ordinary failure), so this checks the
+# behavior (no resume, temp dir removed, signal death), not just the trap text.
+cat >"$TMP/T9-driver.sh" <<'EOF'
+# Sources the script under test ($1) and runs main; its first step creates the temp dir and sends
+# $T9_SIG to the shell, standing in for work in progress when the signal arrives
+source "$1"
+if [[ -n "$(trap -p EXIT INT TERM)" ]]; then
+  echo "sourcing set traps: $(trap -p EXIT INT TERM)"
+  exit 1
+fi
+require_non_root() {
+  create_tmpdir
+  echo "TMPDIR_CREATED $SCRIPT_TMPDIR"
+  kill -s "$T9_SIG" "$BASHPID"
+  echo RESUMED
+}
+main
+EOF
 t9_signal() {
   local sig="$1"
   (
     sandbox "T9-$sig" "$REFUSE_BIN"
-    TMPDIR="$TMP/T9-$sig-tmp"
-    export TMPDIR
+    TMPDIR="$TMP/T9-$sig-tmp" T9_SIG="$sig"
+    export TMPDIR T9_SIG
     mkdir -p "$TMPDIR"
-    # trap -p in a subshell still lists this file's EXIT trap until the subshell sets its own
-    trap - EXIT INT TERM
-    load_script
-    if [[ -n "$(trap -p EXIT INT TERM)" ]]; then
-      echo "sourcing set traps: $(trap -p EXIT INT TERM)"
-      exit 1
+    if command -v python3 >/dev/null 2>&1; then
+      python3 -I -c 'import subprocess,sys; r=subprocess.run(sys.argv[1:], stdin=subprocess.DEVNULL); sys.stdout.write("rc=%d\n" % r.returncode)' bash "$TMP/T9-driver.sh" "$SCRIPT"
+    else
+      bash "$TMP/T9-driver.sh" "$SCRIPT"
+      echo "rc=$?"
     fi
-    # The first step after main sets its traps; stands in for work in progress when the signal arrives
-    require_non_root() {
-      create_tmpdir
-      echo "TMPDIR_CREATED $SCRIPT_TMPDIR"
-      kill -s "$sig" "$BASHPID"
-      echo RESUMED
-    }
-    main
   ) </dev/null 2>&1
 }
+if command -v python3 >/dev/null 2>&1; then
+  t9_cases=(INT:-2 TERM:-15) t9_note=""
+else
+  t9_cases=(INT:130 TERM:143) t9_note=" (signal death not checked: python3 missing)"
+fi
 t9_fail=""
-for tc in INT:130 TERM:143; do
+for tc in "${t9_cases[@]}"; do
   out="$(t9_signal "${tc%%:*}")"
-  rc=$?
+  got="$(sed -n 's/^rc=//p' <<<"$out" | tail -n1)"
   created="$(sed -n 's/^TMPDIR_CREATED //p' <<<"$out")"
-  [[ $rc -eq ${tc#*:} && -n "$created" && ! -e "$created" ]] && ! grep -qxF RESUMED <<<"$out" \
-    || t9_fail+="[${tc%%:*}: rc=$rc created='$created' $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  [[ "$got" == "${tc#*:}" && -n "$created" && ! -e "$created" ]] && ! grep -qxF RESUMED <<<"$out" \
+    || t9_fail+="[${tc%%:*}: rc=${got:-none} created='$created' $(tail -n2 <<<"$out" | tr '\n' ' ')] "
 done
-expect_none T9-signal-traps "$t9_fail"
+expect_none "T9-signal-traps$t9_note" "$t9_fail"
 
 # T10: an SSH origin counts as this repo, so setup_config leaves the checkout in place
 out="$( (
-  sandbox T10 "$REFUSE_BIN"
+  sandbox T10 "$GIT_BIN:$REFUSE_BIN"
   git init -q -b main "$HOME/.config/nvim"
   git -C "$HOME/.config/nvim" remote add origin git@github.com:jkleinne/nvim.git
   printf 'local work\n' >"$HOME/.config/nvim/untracked.lua"
@@ -359,7 +412,8 @@ done_ok $rc "$out" && grep -qF "Skipping automatic config setup" <<<"$out" \
 result T11-no-move-from-foreign-clone $? "rc=$rc backups=[$backups]; $(tail -n4 <<<"$out" | tr '\n' ' ')"
 
 # T12: the first real install checks sudo once and runs pacman -Syu once, before any pacman -S;
-# the Neovim install path does the same, apt-get refreshes once, and nothing missing means no sudo.
+# installing Neovim goes through the same path, apt-get refreshes once (also across a whole
+# install_deps), nothing missing means no sudo, and a missing sudo binary stops the first install.
 # $1 = case id, $2 = package manager, $3 = 1 when every package counts as installed, $4 = steps to run
 t12_case() {
   (
@@ -376,7 +430,13 @@ t12_case() {
     fi
     case "$4" in
       pkgs) install_pkgs optional "group one" a b && install_pkgs optional "group two" c ;;
-      neovim) pkg_install_neovim && install_pkgs optional "group" d ;;
+      neovim) pkg_install neovim && install_pkgs optional "group" d ;;
+      deps)
+        # No-ops, so no go install or uv tool install can run; package installs only reach the stub
+        install_python_tool() { :; }
+        install_go_tool() { :; }
+        install_deps
+        ;;
     esac >/dev/null
     echo DONE
   ) </dev/null 2>&1
@@ -395,7 +455,8 @@ t12_check_log() {
 t12_fail=""
 for tc in "pacman-pkgs:pacman:0:pkgs:pacman -Syu:pacman -S --noconfirm" \
   "pacman-neovim:pacman:0:neovim:pacman -Syu:pacman -S --noconfirm neovim" \
-  "apt-neovim:apt-get:0:neovim:apt-get update -qq:apt-get install -y neovim"; do
+  "apt-neovim:apt-get:0:neovim:apt-get update -qq:apt-get install -y neovim" \
+  "apt-deps:apt-get:0:deps:apt-get update -qq:apt-get install -y"; do
   IFS=: read -r id mgr all_installed steps refresh install <<<"$tc"
   out="$(t12_case "$id" "$mgr" "$all_installed" "$steps")"
   rc=$?
@@ -408,8 +469,21 @@ out="$(t12_case all-installed pacman 1 pkgs)"
 rc=$?
 done_ok $rc "$out" && [[ ! -s "$TMP/T12-all-installed-sudo.log" ]] \
   || t12_fail+="[all-installed: rc=$rc sudo log: $(tr '\n' ';' <"$TMP/T12-all-installed-sudo.log")] "
-# install_deps no longer refreshes apt itself; the refresh lives only in pkg_ready_once
-[[ "$(grep -c 'apt-get update' "$SCRIPT")" -eq 1 ]] || t12_fail+="[apt-get update appears more than once] "
+# No sudo binary: the first install stops with a clear error. PATH is an empty dir; the guard,
+# require_sudo, and error use only builtins.
+mkdir -p "$TMP/empty-bin"
+out="$( (
+  sandbox T12-no-sudo "$REFUSE_BIN"
+  load_script
+  rc=0
+  # shellcheck disable=SC2123  # replacing PATH is the point: no sudo binary can be found
+  (PATH="$TMP/empty-bin"; PKG_MGR=pacman; pkg_ready_once) || rc=$?
+  echo "inner rc=$rc"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" && grep -qF "sudo is required" <<<"$out" \
+  || t12_fail+="[no-sudo: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
 expect_none T12-refresh-once "$t12_fail"
 
 # T13: a declined or failed pacman -Syu stops the run before any install (no partial upgrade)
@@ -444,20 +518,31 @@ out="$( (
   echo DONE
 ) </dev/null 2>&1)"
 rc=$?
-reads="$(grep -c 'read -rp' "$SCRIPT")"
-done_ok $rc "$out" && [[ "$reads" -eq 1 ]]
-result T14-confirm-eof $? "rc=$rc read -rp count=$reads; $(tail -n2 <<<"$out" | tr '\n' ' ')"
+# Every read builtin call on a non-comment line sits inside confirm(), and there is exactly one. A
+# read from a here-string (version_gte) parses a string, not the terminal, so it does not count.
+reads="$(awk '
+  /^confirm\(\) \{/ { inside = 1 }
+  !/^[[:space:]]*#/ && /(^|[;&|({[:space:]])read([[:space:]]|$)/ && !/<<</ {
+    print (inside ? "inside" : "outside") " confirm, line " NR ": " $0
+  }
+  inside && /^\}/ { inside = 0 }
+' "$SCRIPT")"
+done_ok $rc "$out" && [[ "$(wc -l <<<"$reads")" -eq 1 && "$reads" == "inside confirm"* ]]
+result T14-confirm-eof $? "rc=$rc reads: $(tr '\n' ';' <<<"$reads"); $(tail -n2 <<<"$out" | tr '\n' ' ')"
 
-# T15: the PATH hint appends, like setup_path, so user dirs never shadow system binaries
-want="export PATH=\"\$PATH:/nonexistent/bin\""
-out="$( (
-  sandbox T15 "$REFUSE_BIN"
-  load_script
-  warn_if_not_on_path /nonexistent/bin
-  echo DONE
-) </dev/null 2>&1)"
-done_ok $? "$out" && grep -qF -- "$want" <<<"$out"
-result T15-path-hint-appends $? "$(head -n1 <<<"$out")"
+# T15: the PATH hint appends, like setup_path, so user dirs never shadow system binaries; fish gets
+# its own line, which needs --path to append
+for tc in "bash:export PATH=\"\$PATH:/nonexistent/bin\"" "fish:fish_add_path --append --path /nonexistent/bin"; do
+  out="$( (
+    sandbox "T15-${tc%%:*}" "$REFUSE_BIN"
+    load_script
+    USER_SHELL="${tc%%:*}"
+    warn_if_not_on_path /nonexistent/bin
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" && grep -qF -- "${tc#*:}" <<<"$out"
+  result "T15-path-hint-appends ${tc%%:*}" $? "$(head -n1 <<<"$out")"
+done
 
 # T16: declining the config move (n, or end of input) leaves the foreign config untouched and
 # returns, so the run goes on to the summary with the warning in it. The script runs from a plain
@@ -496,6 +581,202 @@ for answer in n eof; do
     || t16_fail+="[$answer: rc=$rc backups=[$backups] $(tail -n3 <<<"$out" | tr '\n' ' ')] "
 done
 expect_none T16-decline-move-continues "$t16_fail"
+
+# T17: once package installs are done, the cached sudo ticket is dropped before go install or
+# uv tool install runs, and neither ever runs under sudo. One event log records the sudo, go, and uv
+# calls in order; go and uv are stubs whose installs only log, so nothing real is installed.
+T17_BIN="$TMP/bin-T17"
+mkdir -p "$T17_BIN"
+cat >"$T17_BIN/go" <<EOF
+#!/bin/sh
+printf 'go %s\n' "\$*" >>"\${EVENT_LOG:?}"
+case "\$*" in
+  "env GOBIN") printf '%s\n' "$TMP/T17-gobin" ;;
+  "install "*) ;;
+  *) echo "STUB GO: refusing \$*" >&2; exit 1 ;;
+esac
+EOF
+cat >"$T17_BIN/uv" <<EOF
+#!/bin/sh
+printf 'uv %s\n' "\$*" >>"\${EVENT_LOG:?}"
+case "\$*" in
+  "tool dir --bin") printf '%s\n' "$TMP/T17-uvbin" ;;
+  "tool install "*) ;;
+  *) echo "STUB UV: refusing \$*" >&2; exit 1 ;;
+esac
+EOF
+chmod +x "$T17_BIN/go" "$T17_BIN/uv"
+t17_events="$TMP/T17-events.log"
+out="$( (
+  sandbox T17 "$T17_BIN:$RECORD_BIN"
+  SUDO_LOG="$TMP/T17-sudo.log" EVENT_LOG="$t17_events"
+  export SUDO_LOG EVENT_LOG
+  : >"$EVENT_LOG"
+  load_script
+  PKG_MGR=apt-get
+  pkg_is_installed() { return 1; }
+  # Names on no real PATH, so install_soft does not skip them
+  install_pkgs optional grp p1
+  install_go_tool t17-fake-go example.invalid/fake@latest
+  install_python_tool t17-fake-py
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+t17_line() { grep -nE -- "$1" "$t17_events" | head -n1 | cut -d: -f1; }
+apt_install="$(t17_line '^sudo apt-get install ')"
+first_k="$(t17_line '^sudo -k$')"
+go_install="$(t17_line '^go install ')"
+uv_install="$(t17_line '^uv tool install ')"
+problems=""
+done_ok $rc "$out" || problems+="[rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+[[ -n "$apt_install" && -n "$first_k" && -n "$go_install" && -n "$uv_install" ]] \
+  && ((apt_install < first_k && first_k < go_install && first_k < uv_install)) \
+  || problems+="[order: apt-get install=${apt_install:-none} first sudo -k=${first_k:-none} go install=${go_install:-none} uv tool install=${uv_install:-none}] "
+! grep -qE '^sudo (go|uv)( |$)' "$t17_events" || problems+="[go or uv ran under sudo] "
+[[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$t17_events")"
+expect_none T17-sudo-dropped "$problems"
+
+# T18: answering y moves a foreign config aside only after the clone succeeds. The script runs from a
+# plain directory, as in T16, so setup_config reaches the prompt. On success the clone replaces the
+# config and the old one sits in one backup; on a failed clone nothing moves. Neither leaves a
+# staging dir. $1 = case id, $2 = git stub dir
+t18_case() {
+  local id="$1" git_bin="$2"
+  (
+    sandbox "T18-$id" "$git_bin:$REFUSE_BIN"
+    git init -q -b main "$HOME/.config/nvim"
+    git -C "$HOME/.config/nvim" remote add origin https://github.com/someone/else
+    printf 'local work\n' >"$HOME/.config/nvim/untracked.lua"
+    mkdir -p "$HOME/plain"
+    cp "$SCRIPT" "$HOME/plain/nvim-install.sh"
+    load_script "$HOME/plain/nvim-install.sh"
+    [[ "$NVIM_CONFIG_DIR" == "$HOME/.config/nvim" && "$SCRIPT_DIR" == "$HOME/plain" ]] \
+      || { echo "NVIM_CONFIG_DIR=$NVIM_CONFIG_DIR SCRIPT_DIR=$SCRIPT_DIR"; exit 1; }
+    rc=0
+    (setup_config <<<y) || rc=$?
+    echo "setup_config rc=$rc"
+    echo DONE
+  ) </dev/null 2>&1
+}
+for id in success clone-failure; do
+  if [[ "$id" == success ]]; then
+    out="$(t18_case "$id" "$CLONE_GIT_BIN")"
+  else
+    out="$(t18_case "$id" "$GIT_BIN")"
+  fi
+  rc=$?
+  t18_dir="$TMP/home-T18-$id/.config"
+  backups="$(compgen -G "$t18_dir/nvim.bak.*" || true)"
+  staging="$(compgen -G "$t18_dir/.nvim-clone.*" || true)"
+  problems=""
+  done_ok $rc "$out" || problems+="[rc=$rc] "
+  [[ -z "$staging" ]] || problems+="[staging left: $staging] "
+  if [[ "$id" == success ]]; then
+    grep -qxF "setup_config rc=0" <<<"$out" || problems+="[setup_config failed] "
+    [[ -f "$t18_dir/nvim/cloned" ]] || problems+="[no clone at $t18_dir/nvim] "
+    [[ -n "$backups" && "$(wc -l <<<"$backups")" -eq 1 && -f "$backups/untracked.lua" ]] \
+      || problems+="[want one backup holding untracked.lua, got: $(tr '\n' ' ' <<<"$backups")] "
+  else
+    grep -qxF "setup_config rc=1" <<<"$out" || problems+="[setup_config did not exit 1] "
+    grep -qF "was not changed" <<<"$out" || problems+="[no 'was not changed' message] "
+    [[ -f "$t18_dir/nvim/untracked.lua" ]] || problems+="[untracked.lua moved] "
+    [[ "$(git -C "$t18_dir/nvim" remote get-url origin 2>/dev/null)" == https://github.com/someone/else ]] \
+      || problems+="[foreign origin gone] "
+    [[ -z "$backups" ]] || problems+="[backup made: $(tr '\n' ' ' <<<"$backups")] "
+  fi
+  [[ -z "$problems" ]] || problems+="; $(tail -n4 <<<"$out" | tr '\n' ' ')"
+  expect_none "T18-config-move-yes $id" "$problems"
+done
+
+# T19: go_bin_dir prints GOBIN, else the first GOPATH entry's bin dir, and fails when both are empty
+# or go env fails. go is a stub answering go env from T19_* variables.
+T19_BIN="$TMP/bin-T19"
+mkdir -p "$T19_BIN"
+cat >"$T19_BIN/go" <<'EOF'
+#!/bin/sh
+if [ -n "${T19_GO_FAILS:-}" ] || [ "$1" != env ]; then
+  echo "STUB GO: failing $*" >&2
+  exit 1
+fi
+case "$2" in
+  GOBIN) printf '%s\n' "${T19_GOBIN:-}" ;;
+  GOPATH) printf '%s\n' "${T19_GOPATH:-}" ;;
+  *) exit 1 ;;
+esac
+EOF
+chmod +x "$T19_BIN/go"
+out="$( (
+  sandbox T19 "$T19_BIN"
+  load_script
+  export T19_GOBIN T19_GOPATH T19_GO_FAILS
+  # $1 = expected output, or "fail" for a nonzero return; $2 = case name
+  t19_check() {
+    local got rc=0
+    got="$(go_bin_dir)" || rc=$?
+    if [[ "$1" == fail ]]; then
+      [[ $rc -ne 0 ]] || { echo "$2: want failure, got '$got'"; exit 1; }
+    else
+      [[ $rc -eq 0 && "$got" == "$1" ]] || { echo "$2: want '$1', got '$got' (rc=$rc)"; exit 1; }
+    fi
+  }
+  T19_GOBIN=/x/bin T19_GOPATH=/a:/b T19_GO_FAILS=""
+  t19_check /x/bin "GOBIN set"
+  T19_GOBIN="" T19_GOPATH=/a:/b
+  t19_check /a/bin "GOPATH list"
+  T19_GOBIN="" T19_GOPATH=""
+  t19_check fail "both empty"
+  T19_GOBIN=/x/bin T19_GOPATH=/a:/b T19_GO_FAILS=1
+  t19_check fail "go env fails"
+  echo DONE
+) </dev/null 2>&1)"
+done_ok $? "$out"
+result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
+
+# T20: the system servers in lua/plugins/lsp.lua (first string of each system_servers entry), the
+# installer, and the README agree: (a) the best-effort warn_manual list names the same binaries,
+# (b) the pacman list has one package per server, (c) the README's pacman command under Requirements
+# installs every package of that list, and (d) on an Arch host with all of them installed, they ship
+# /usr/bin/<binary> for every server (pacman -Qlq, read-only)
+mapfile -t lsp_bins < <(sed -n '/local system_servers = {/,/^[[:space:]]*}/p' "$ROOT/lua/plugins/lsp.lua" \
+  | sed -n 's/^[^"]*"\([^"]*\)".*/\1/p' | sort)
+# install_language_servers with its continuation lines joined
+ls_fn="$(awk '/^install_language_servers\(\) \{/, /^\}/ { if (sub(/\\$/, "")) printf "%s", $0; else print }' "$SCRIPT")"
+# Prints the words after $1 at the start of a line of ls_fn, one per line
+t20_args() { sed -n "s/^[[:space:]]*$1[[:space:]]//p" <<<"$ls_fn" | tr -s '[:space:]' '\n' | sed '/^$/d'; }
+mapfile -t manual_bins < <(t20_args 'warn_manual' | sort)
+mapfile -t pacman_pkgs < <(t20_args 'install_pkgs optional "language servers"')
+readme_cmd="$(sed -n '/^## Requirements/,/^## Installation/p' "$ROOT/README.md" \
+  | awk '/^sudo pacman -S --needed/ { on = 1 } on { cont = sub(/\\$/, ""); printf "%s ", $0; if (!cont) exit }' \
+  | tr -s '[:space:]' '\n')"
+problems=""
+[[ ${#lsp_bins[@]} -gt 0 ]] || problems+="[no system_servers found in lua/plugins/lsp.lua] "
+[[ "${manual_bins[*]}" == "${lsp_bins[*]}" ]] \
+  || problems+="[(a) warn_manual: ${manual_bins[*]}; system_servers: ${lsp_bins[*]}] "
+[[ ${#pacman_pkgs[@]} -eq ${#lsp_bins[@]} ]] \
+  || problems+="[(b) ${#pacman_pkgs[@]} pacman packages (${pacman_pkgs[*]}) for ${#lsp_bins[@]} servers] "
+[[ -n "$readme_cmd" ]] || problems+="[(c) no 'sudo pacman -S --needed' command under Requirements in README.md] "
+for pkg in "${pacman_pkgs[@]}"; do
+  grep -qxF -- "$pkg" <<<"$readme_cmd" || problems+="[(c) README pacman command lacks $pkg] "
+done
+expect_none T20-server-list-sync "$problems"
+if [[ "$host_mgr" != pacman ]] || ! command -v pacman >/dev/null 2>&1; then
+  echo "SKIP T20-server-list-sync (d) (not an Arch host)"
+else
+  t20_missing=""
+  for pkg in "${pacman_pkgs[@]}"; do
+    pacman -Q "$pkg" >/dev/null 2>&1 || t20_missing+="$pkg "
+  done
+  if [[ -n "$t20_missing" ]]; then
+    echo "SKIP T20-server-list-sync (d) (not installed here: ${t20_missing% })"
+  else
+    t20_files="$(pacman -Qlq "${pacman_pkgs[@]}")"
+    problems=""
+    for bin in "${lsp_bins[@]}"; do
+      grep -qxF "/usr/bin/$bin" <<<"$t20_files" || problems+="[no package ships /usr/bin/$bin] "
+    done
+    expect_none "T20-server-list-sync (d)" "$problems"
+  fi
+fi
 
 echo "exit=$fail"
 exit "$fail"
