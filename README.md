@@ -24,8 +24,8 @@ My personal Neovim configuration
 - **Easily Extendable and Configurable**: Modular and simple directory structure.
 - **Intelligent Autocompletion**: Powered by `blink.cmp` (Rust fuzzy matching) and `LuaSnip`.
 - **Git Integration**: Visualize git changes with `gitsigns` and TUI access via `lazygit`.
-- **Language Support**: LSP configuration with `nvim-lspconfig` for Go, TypeScript, Python, Shell, JSON, YAML, Docker, Terraform, SQL, and Lua. Mason installs the native servers; the Node-based ones come from the system package manager (no npm needed).
-- **Formatting and Linting**: `conform.nvim` for formatters with LSP fallback and format-on-save, `nvim-lint` for additional linting (hadolint, shellcheck, yamllint, golangci-lint, ruff, tflint).
+- **Language Support**: LSP configuration with `nvim-lspconfig` for Go, TypeScript, Python, Shell, JSON, YAML, Docker, Terraform, SQL, and Lua. Mason installs the native servers; the Node-based ones come from the system package manager (on Arch, no npm needed).
+- **Formatting and Linting**: `conform.nvim` for formatters with LSP fallback and format-on-save, `nvim-lint` for additional linting (selene, hadolint, shellcheck, yamllint, golangci-lint, ruff, tflint).
 - **File Management**: `Neo-tree` as the file explorer and `Telescope` with fzf-native for fuzzy finding.
 - **Syntax Highlighting**: Built-in Neovim 0.12 treesitter highlighting via `vim.treesitter.start()`.
 - **Navigation**: `flash.nvim` for labeled jump navigation, `nvim-surround` for surround operations.
@@ -35,11 +35,11 @@ My personal Neovim configuration
 
 ## Requirements
 
-This configuration targets **Arch Linux**. Other Linux distributions work on a best-effort basis through the [bootstrap script](#method-b-bootstrap-script-recommended), which lists anything it cannot install. macOS and Windows are not supported.
+This configuration targets **Arch Linux**. Other Linux distributions work on a best-effort basis through the [bootstrap script](#method-b-bootstrap-script-recommended), which lists the optional tools it cannot install. macOS and Windows are not supported.
 
 ### Arch Linux
 
-Everything except `hadolint` is in the official repositories:
+One command installs everything. The bootstrap script ([Method B](#method-b-bootstrap-script-recommended)) runs it for you, except the Nerd Font; if you install manually ([Method A](#method-a-manual-installation)), run it yourself. Everything except `hadolint` is in the official repositories. On an X11 session, replace `wl-clipboard` with `xclip` in the command:
 
 ```bash
 sudo pacman -S --needed neovim git ripgrep base-devel curl unzip wl-clipboard nodejs go \
@@ -48,8 +48,6 @@ sudo pacman -S --needed neovim git ripgrep base-devel curl unzip wl-clipboard no
   selene shellcheck yamllint tflint golangci-lint ruff \
   lazygit lazydocker fortune-mod ttf-jetbrains-mono-nerd
 ```
-
-On an X11 session, install `xclip` instead of `wl-clipboard`.
 
 `hadolint` (Dockerfile linter) is only in the AUR. Review the PKGBUILD, then install it with your AUR helper, or let Mason install it from inside Neovim with `:MasonInstall hadolint`:
 
@@ -63,21 +61,23 @@ yay -S hadolint-bin
 - **Build tools:** `base-devel` provides the C compiler and `make` that telescope-fzf-native and LuaSnip compile with. Mason downloads with `curl` and extracts with `unzip`.
 - **Clipboard:** `wl-clipboard` (Wayland) or `xclip` (X11). Without one, yanks do not reach the system clipboard.
 - **Runtimes:** Node.js runs the Node-based language servers (npm is not needed). Mason uses Go to build `gopls` and `sqls`.
-- **Language servers:** Mason installs the native servers (`docker_language_server`, `gopls`, `lua_ls`, `sqls`, `terraformls`) on first launch. The Node-based servers (`bashls`, `jsonls`, `pyright`, `ts_ls`, `yamlls`) come from the system packages above and are enabled only when installed.
-- **Formatters** (`conform.nvim`): stylua, shfmt, prettier, black, goimports (`go-tools`), and `terraform fmt`.
+- **Language servers:** Mason installs the native servers (`docker_language_server`, `gopls`, `lua_ls`, `sqls`, `terraformls`) the first time you open a file. The Node-based servers (`bashls`, `jsonls`, `pyright`, `ts_ls`, `yamlls`) come from the system packages above and are enabled only when installed.
+- **Formatters** (`conform.nvim`): stylua, shfmt, prettier, black, goimports (`go-tools`), gofmt (ships with `go`), and `terraform fmt`.
 - **Linters** (`nvim-lint`): selene, shellcheck, yamllint, tflint, golangci-lint, ruff, and hadolint.
 - **TUI tools:** lazygit (`<leader>gtt`) and lazydocker (`<leader>dc`). `fortune` puts a random quote on the dashboard.
 - **Nerd Font:** icons need a [Nerd Font](https://www.nerdfonts.com/). JetBrainsMono Nerd Font is recommended; set it as your terminal's font.
 
-Missing formatters, linters, and Node-based servers are skipped quietly inside Neovim, so you can install only what your work needs.
+Missing formatters, linters, and Node-based servers are skipped quietly inside Neovim, so you can install only what your work needs. One deliberate exception: terraform-ls warns when the `terraform` CLI is missing.
 
 ### Upgrading from an older version of this config
 
-Older versions installed `ansible-language-server`, `dockerfile-language-server`, `docker-compose-language-service`, and `sqlls` through Mason. Mason still enables anything it has installed, so remove them:
+Older versions installed `ansible-language-server`, `dockerfile-language-server`, `docker-compose-language-service`, and `sqlls` through Mason. Mason still enables anything it has installed, so remove them. `:MasonUninstall` errors on a package that is not installed, so run this inside Neovim instead; it removes only the ones that are present:
 
 ```
-:MasonUninstall ansible-language-server dockerfile-language-server docker-compose-language-service sqlls
+:lua for _, n in ipairs { "ansible-language-server", "dockerfile-language-server", "docker-compose-language-service", "sqlls" } do local p = require("mason-registry").get_package(n) if p:is_installed() then p:uninstall() end end
 ```
+
+If an older install also put `bash-language-server`, `json-lsp`, `pyright`, `typescript-language-server`, or `yaml-language-server` in Mason, those copies come first on Neovim's `PATH` and shadow the pacman packages. Remove them from `:Mason` to use the system ones.
 
 ## Installation
 
@@ -96,7 +96,7 @@ mv ~/.cache/nvim ~/.cache/nvim_backup
 
 #### Method A: Manual Installation
 
-1.  Install Neovim 0.12+ (`sudo pacman -S neovim` on Arch, or your distribution's package manager).
+1.  Install the packages under [Requirements](#requirements). On Arch, the pacman command there includes Neovim 0.12+; elsewhere, use your distribution's package manager.
 2.  Clone the repository directly into your Neovim configuration directory:
     ```bash
     git clone https://github.com/jkleinne/nvim ~/.config/nvim
@@ -104,9 +104,9 @@ mv ~/.cache/nvim ~/.cache/nvim_backup
 
 #### Method B: Bootstrap Script (Recommended)
 
-The `nvim-install.sh` script detects your package manager and installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), language servers, formatters, linters, TUI tools, and clones the configuration. Run it as your normal user; it calls `sudo` when it needs to.
+The `nvim-install.sh` script detects your distribution and installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), the Node-based language servers (Arch only), formatters, linters, TUI tools, and clones the configuration. On Arch it installs the same packages as the command under [Requirements](#requirements), except the Nerd Font. Run it as your normal user; it calls `sudo` when it needs to.
 
-**Supported platforms:** Arch Linux (pacman, first-class); Debian/Ubuntu (apt), Fedora/RHEL (dnf), Alpine (apk) (best-effort).
+**Supported platforms:** Arch Linux (pacman) is first-class. Debian/Ubuntu (apt), Fedora/RHEL (dnf), and Alpine (apk) are best-effort.
 
 ```bash
 git clone https://github.com/jkleinne/nvim ~/.config/nvim
@@ -116,16 +116,16 @@ cd ~/.config/nvim
 
 The script will:
 - Install Neovim 0.12+ (prefers your system package manager, falls back to the GitHub release tarball)
-- Install build dependencies, a clipboard tool, runtimes, language servers, formatters, linters, and TUI tools
+- Install build dependencies, a clipboard tool, runtimes, formatters, linters, TUI tools, and on Arch the Node-based language servers
 - Detect your shell and update PATH if needed (bash, zsh, fish)
 - Skip anything already installed
-- List anything it could not install in the summary at the end (best-effort platforms get manual steps there)
+- Stop if a required package (build tools, core tools, runtimes) fails, and list optional tools it could not install in the summary at the end (best-effort platforms get manual steps there)
 
 Run `./nvim-install.sh --help` for details.
 
 ### 3. First Launch and Verification
 
-Open Neovim. The `lazy.nvim` plugin manager will automatically start installing the plugins, including compiling telescope-fzf-native and LuaSnip components.
+Open Neovim. The `lazy.nvim` plugin manager will automatically start installing the plugins, including compiling telescope-fzf-native and LuaSnip components. Mason installs the native language servers the first time you open a file.
 
 ```bash
 nvim
@@ -149,7 +149,7 @@ The configuration files are organized as follows:
 │   │   ├── telescope.lua
 │   │   └── ... (additional plugins)
 │   ├── mappings.lua        # Key mappings and shortcuts
-│   ├── settings.lua        # General settings and options
+│   └── settings.lua        # General settings and options
 ├── init.lua                # Main entry point
 ├── lazy-lock.json          # Lock file for lazy.nvim
 ├── nvim-install.sh         # Bootstrap script (Arch Linux; other distros best-effort)
@@ -253,12 +253,12 @@ Here is a list of the key plugins included in this configuration:
   - **[conform.nvim](https://github.com/stevearc/conform.nvim)**: Formatter runner with LSP fallback and format-on-save.
   - **[flash.nvim](https://github.com/folke/flash.nvim)**: Labeled jump navigation.
   - **[gitsigns.nvim](https://github.com/lewis6991/gitsigns.nvim)**: Git decorations in the gutter.
-  - **[kubectl.nvim](https://github.com/Ramilito/kubectl.nvim)**: Kubernetes integration (disabled; set `enabled = true` in `lua/plugins/kubectl.lua` to restore it and `<leader>k`; lazy.nvim reinstalls it at the locked commit on the next start).
+  - **[kubectl.nvim](https://github.com/Ramilito/kubectl.nvim)**: Kubernetes integration. Disabled: set `enabled = true` in `lua/plugins/kubectl.lua` to restore it and `<leader>k` (lazy.nvim reinstalls it at the locked commit on the next start).
   - **[lazydev.nvim](https://github.com/folke/lazydev.nvim)**: Lazy-loaded Neovim API type information and completions for `lua_ls`.
   - **[mason.nvim](https://github.com/mason-org/mason.nvim)**: Installs the native language servers, plus anything you add with `:Mason`.
   - **[neo-tree.nvim](https://github.com/nvim-neo-tree/neo-tree.nvim)**: File explorer.
   - **[noice.nvim](https://github.com/folke/noice.nvim)**: Modernizes the UI for messages, cmdline, and popups.
-  - **[nvim-lint](https://github.com/mfussenegger/nvim-lint)**: Async linting for Dockerfile, shell, YAML, Go, Python, Terraform.
+  - **[nvim-lint](https://github.com/mfussenegger/nvim-lint)**: Async linting for Lua, Dockerfile, shell, YAML, Go, Python, Terraform.
   - **[nvim-surround](https://github.com/kylechui/nvim-surround)**: Surround operations (change, delete, add).
   - **[telescope.nvim](https://github.com/nvim-telescope/telescope.nvim)**: Fuzzy finder with fzf-native sorting.
   - **[todo-comments.nvim](https://github.com/folke/todo-comments.nvim)**: Highlight and search TODO/FIXME/HACK comments.
