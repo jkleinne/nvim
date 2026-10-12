@@ -575,7 +575,10 @@ install_linters() {
       install_python_tool yamllint
       install_python_tool ruff
       install_go_tool golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-      warn_manual selene tflint hadolint
+      warn_manual selene tflint
+      if ! command -v hadolint >/dev/null 2>&1; then
+        warn "hadolint: install manually, or run ':MasonInstall hadolint' in Neovim"
+      fi
       ;;
   esac
 }
@@ -650,7 +653,21 @@ setup_config() {
       success "Running from $NVIM_CONFIG_DIR, no clone needed"
       return
     fi
+  fi
 
+  # Run from a clone elsewhere, the script never clones, so it must not move the config aside either
+  local script_remote
+  script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
+
+  if is_config_repo_url "$script_remote"; then
+    info "This script is inside a clone of the config repo at $SCRIPT_DIR."
+    info "Clone it to $NVIM_CONFIG_DIR or move it there manually."
+    warn "Skipping automatic config setup (running from $SCRIPT_DIR)"
+    return
+  fi
+
+  # Not run from a clone: back up a foreign config, then always clone into the freed path
+  if [[ -d "$NVIM_CONFIG_DIR" ]]; then
     local backup confirm_move
     backup="${NVIM_CONFIG_DIR}.bak.$(date +%s)"
     warn "Existing config at $NVIM_CONFIG_DIR is not this repo."
@@ -665,16 +682,6 @@ setup_config() {
       exit 1
     fi
     success "Backed up existing config"
-  fi
-
-  local script_remote
-  script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
-
-  if is_config_repo_url "$script_remote"; then
-    info "This script is inside a clone of the config repo at $SCRIPT_DIR."
-    info "Clone it to $NVIM_CONFIG_DIR or move it there manually."
-    warn "Skipping automatic config setup to avoid the old self-move bug."
-    return
   fi
 
   info "Cloning config to $NVIM_CONFIG_DIR..."
