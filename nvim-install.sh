@@ -690,6 +690,59 @@ is_config_repo_url() {
   esac
 }
 
+# Remove the clone staging dir (cleanup() does the same when the run is interrupted)
+discard_clone_staging() {
+  rm -rf "$CLONE_STAGING"
+  CLONE_STAGING=""
+}
+
+# Clone the config into a sibling staging dir, then move a foreign config to $1 (when given) and
+# the clone into place. Nothing is moved unless the clone succeeded, and a failed final move puts
+# the foreign config back.
+clone_config() {
+  local backup="$1"
+  info "Cloning config to $NVIM_CONFIG_DIR..."
+  if ! mkdir -p "$(dirname "$NVIM_CONFIG_DIR")"; then
+    error "Cannot create parent directory for $NVIM_CONFIG_DIR"
+    exit 1
+  fi
+  # A sibling of the config dir, so the final mv is a rename on the same filesystem; cleanup()
+  # removes it if the run is interrupted
+  CLONE_STAGING="$(mktemp -d "$(dirname "$NVIM_CONFIG_DIR")/.nvim-clone.XXXXXX")"
+  if ! git clone "$NVIM_REPO" "$CLONE_STAGING/nvim"; then
+    discard_clone_staging
+    error "Failed to clone config repo; $NVIM_CONFIG_DIR was not changed"
+    exit 1
+  fi
+
+  if [[ -n "$backup" ]]; then
+    info "Backing up to $backup"
+    if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
+      discard_clone_staging
+      error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
+      exit 1
+    fi
+  fi
+
+  if ! mv "$CLONE_STAGING/nvim" "$NVIM_CONFIG_DIR"; then
+    discard_clone_staging
+    if [[ -z "$backup" ]]; then
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; nothing else was changed"
+    elif mv "$backup" "$NVIM_CONFIG_DIR"; then
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is back in place there"
+    else
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is at $backup"
+    fi
+    exit 1
+  fi
+  discard_clone_staging
+
+  if [[ -n "$backup" ]]; then
+    success "Backed up existing config"
+  fi
+  success "Config cloned to $NVIM_CONFIG_DIR"
+}
+
 setup_config() {
   section "Configuration"
 
@@ -732,50 +785,7 @@ setup_config() {
     fi
   fi
 
-  info "Cloning config to $NVIM_CONFIG_DIR..."
-  if ! mkdir -p "$(dirname "$NVIM_CONFIG_DIR")"; then
-    error "Cannot create parent directory for $NVIM_CONFIG_DIR"
-    exit 1
-  fi
-  # A sibling of the config dir, so the final mv is a rename on the same filesystem; cleanup()
-  # removes it if the run is interrupted
-  CLONE_STAGING="$(mktemp -d "$(dirname "$NVIM_CONFIG_DIR")/.nvim-clone.XXXXXX")"
-  if ! git clone "$NVIM_REPO" "$CLONE_STAGING/nvim"; then
-    rm -rf "$CLONE_STAGING"
-    CLONE_STAGING=""
-    error "Failed to clone config repo; $NVIM_CONFIG_DIR was not changed"
-    exit 1
-  fi
-
-  if [[ -n "$backup" ]]; then
-    info "Backing up to $backup"
-    if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
-      rm -rf "$CLONE_STAGING"
-      CLONE_STAGING=""
-      error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
-      exit 1
-    fi
-  fi
-
-  if ! mv "$CLONE_STAGING/nvim" "$NVIM_CONFIG_DIR"; then
-    rm -rf "$CLONE_STAGING"
-    CLONE_STAGING=""
-    if [[ -z "$backup" ]]; then
-      error "Failed to move the clone into $NVIM_CONFIG_DIR; nothing else was changed"
-    elif mv "$backup" "$NVIM_CONFIG_DIR"; then
-      error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is back in place there"
-    else
-      error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is at $backup"
-    fi
-    exit 1
-  fi
-  rm -rf "$CLONE_STAGING"
-  CLONE_STAGING=""
-
-  if [[ -n "$backup" ]]; then
-    success "Backed up existing config"
-  fi
-  success "Config cloned to $NVIM_CONFIG_DIR"
+  clone_config "$backup"
 }
 
 # ---------------------------------------------------------------------------

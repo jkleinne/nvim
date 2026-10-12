@@ -1,3 +1,77 @@
+-- ts_ls uses a system TypeScript: Arch's typescript package, else the tsserver on PATH
+-- (typescript-language-server resolves its bin script to the package's lib/tsserver.js).
+-- Empty when there is none.
+local function system_tsserver_path()
+  local arch_tsserver = "/usr/lib/node_modules/typescript/lib/tsserver.js"
+  if vim.uv.fs_stat(arch_tsserver) then
+    return arch_tsserver
+  end
+  return vim.fn.exepath "tsserver"
+end
+
+-- terraform-ls runs `terraform providers schema`, which executes provider binaries from a repo's
+-- .terraform directory. When the terraform CLI is installed, start it only in directories trusted
+-- through Neovim's trust database (:help vim.secure.read()). Answers other than "allow" are
+-- remembered for the session so the prompt is not repeated; "allow" is re-checked so
+-- `:trust ++remove <dir>` takes effect without a restart.
+local untrusted_roots = {}
+
+-- Whether vim.secure.read is about to ask about dir: it resolves and the trust database has no
+-- line for it (format: runtime/lua/vim/secure.lua). This only decides whether to explain the
+-- prompt; vim.secure.read stays the authority. If the format ever changes, the worst case is a
+-- missing or extra notice.
+local function trust_unanswered(dir)
+  local path = vim.uv.fs_realpath(dir)
+  if not path then
+    return false
+  end
+  local f = io.open(vim.fn.stdpath "state" .. "/trust", "r")
+  if not f then
+    return true
+  end
+  local answered = false
+  for line in f:lines() do
+    local _, file = line:match "^(%S+) (.+)$"
+    if file == path then
+      answered = true
+      break
+    end
+  end
+  f:close()
+  return not answered
+end
+
+local function root_trusted(root)
+  if vim.fn.executable "terraform" == 0 then
+    return true
+  end
+  if untrusted_roots[root] or #vim.api.nvim_list_uis() == 0 then
+    return false
+  end
+  if trust_unanswered(root) then
+    vim.notify(
+      "terraform-ls runs provider plugins from "
+        .. root
+        .. "/.terraform; allow this directory in the next prompt to enable it",
+      vim.log.levels.INFO
+    )
+  end
+  if vim.secure.read(root) == true then
+    return true
+  end
+  untrusted_roots[root] = true
+  return false
+end
+
+-- lspconfig's terraformls root (nearest .terraform or .git, else the file's directory), handed
+-- to Neovim only when trusted, so an untrusted root never starts the server
+local function terraformls_root_dir(bufnr, on_dir)
+  local root = vim.fs.root(bufnr, { ".terraform", ".git" }) or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr))
+  if root_trusted(root) then
+    on_dir(root)
+  end
+end
+
 return {
   "neovim/nvim-lspconfig",
   event = { "BufReadPre", "BufNewFile" },
@@ -6,6 +80,9 @@ return {
     "mason-org/mason-lspconfig.nvim",
   },
   config = function()
+    -- Each config run (for example :Lazy reload) starts a fresh session cache of declined roots
+    untrusted_roots = {}
+
     -- Installed by Mason (native binaries, no npm)
     local mason_servers = {
       "gopls",
@@ -30,69 +107,10 @@ return {
       yamlls = { "yaml-language-server", "--stdio" },
     }
 
-    -- ts_ls uses a system TypeScript: Arch's typescript package, else the tsserver on PATH
-    -- (typescript-language-server resolves its bin script to the package's lib/tsserver.js).
-    local system_tsserver = "/usr/lib/node_modules/typescript/lib/tsserver.js"
-    if not vim.uv.fs_stat(system_tsserver) then
-      system_tsserver = vim.fn.exepath "tsserver"
-    end
+    local system_tsserver = system_tsserver_path()
     if system_tsserver == "" then
       -- Without a system TypeScript, ts_ls would load a repo's node_modules/typescript
       system_servers.ts_ls = nil
-    end
-
-    -- terraform-ls runs `terraform providers schema`, which executes provider binaries from a repo's
-    -- .terraform directory. When the terraform CLI is installed, start it only in directories trusted
-    -- through Neovim's trust database (:help vim.secure.read()). Answers other than "allow" are
-    -- remembered for the session so the prompt is not repeated; "allow" is re-checked so
-    -- `:trust ++remove <dir>` takes effect without a restart.
-    local untrusted_roots = {}
-
-    -- Whether vim.secure.read is about to ask about dir: it resolves and the trust database has no
-    -- line for it (format: runtime/lua/vim/secure.lua). This only decides whether to explain the
-    -- prompt; vim.secure.read stays the authority. If the format ever changes, the worst case is a
-    -- missing or extra notice.
-    local function trust_unanswered(dir)
-      local path = vim.uv.fs_realpath(dir)
-      if not path then
-        return false
-      end
-      local f = io.open(vim.fn.stdpath "state" .. "/trust", "r")
-      if not f then
-        return true
-      end
-      local answered = false
-      for line in f:lines() do
-        local _, file = line:match "^(%S+) (.+)$"
-        if file == path then
-          answered = true
-          break
-        end
-      end
-      f:close()
-      return not answered
-    end
-
-    local function root_trusted(root)
-      if vim.fn.executable "terraform" == 0 then
-        return true
-      end
-      if untrusted_roots[root] or #vim.api.nvim_list_uis() == 0 then
-        return false
-      end
-      if trust_unanswered(root) then
-        vim.notify(
-          "terraform-ls runs provider plugins from "
-            .. root
-            .. "/.terraform; allow this directory in the next prompt to enable it",
-          vim.log.levels.INFO
-        )
-      end
-      if vim.secure.read(root) == true then
-        return true
-      end
-      untrusted_roots[root] = true
-      return false
     end
 
     local capabilities = require("blink.cmp").get_lsp_capabilities()
@@ -118,14 +136,7 @@ return {
       vim.lsp.config("ts_ls", { init_options = { tsserver = { path = system_tsserver } } })
     end
 
-    vim.lsp.config("terraformls", {
-      root_dir = function(bufnr, on_dir)
-        local root = vim.fs.root(bufnr, { ".terraform", ".git" }) or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr))
-        if root_trusted(root) then
-          on_dir(root)
-        end
-      end,
-    })
+    vim.lsp.config("terraformls", { root_dir = terraformls_root_dir })
 
     local mason_lspconfig = require "mason-lspconfig"
 
