@@ -15,17 +15,20 @@ return {
       "terraformls",
     }
 
-    -- Installed by the system package manager (server = binary it provides).
-    -- These are Node programs; the Arch packages depend on nodejs, not npm:
-    -- bash-language-server, vscode-json-languageserver, pyright,
-    -- typescript-language-server, yaml-language-server
+    -- Installed by the system package manager (server = command it runs). These are Node programs;
+    -- the Arch packages depend on nodejs, not npm. Each command is pinned to the system binary so a
+    -- repo's node_modules/.bin copy never runs, and the server is enabled only when that binary exists.
+    -- Keep in sync with install_language_servers in nvim-install.sh.
     local system_servers = {
-      bashls = "bash-language-server",
-      jsonls = "vscode-json-language-server",
-      pyright = "pyright-langserver",
-      ts_ls = "typescript-language-server",
-      yamlls = "yaml-language-server",
+      bashls = { "bash-language-server", "start" },
+      jsonls = { "vscode-json-language-server", "--stdio" },
+      pyright = { "pyright-langserver", "--stdio" },
+      ts_ls = { "typescript-language-server", "--stdio" },
+      yamlls = { "yaml-language-server", "--stdio" },
     }
+
+    -- Arch's typescript package. Without this, ts_ls loads a repo's own node_modules/typescript.
+    local system_tsserver = "/usr/lib/node_modules/typescript/lib/tsserver.js"
 
     local capabilities = require("blink.cmp").get_lsp_capabilities()
 
@@ -46,6 +49,16 @@ return {
       },
     })
 
+    -- docker-language-server sends telemetry by default; keep it off like lua_ls
+    vim.lsp.config("docker_language_server", {
+      init_options = { telemetry = "off" },
+      settings = { docker = { lsp = { telemetry = "off" } } },
+    })
+
+    if vim.uv.fs_stat(system_tsserver) then
+      vim.lsp.config("ts_ls", { init_options = { tsserver = { path = system_tsserver } } })
+    end
+
     local mason_lspconfig = require "mason-lspconfig"
 
     mason_lspconfig.setup {
@@ -53,13 +66,14 @@ return {
       automatic_enable = true,
     }
 
-    -- Enable a system server only when its binary is installed. jsonls, ts_ls and
-    -- yamlls define cmd as a function, so Neovim cannot skip them quietly on its own.
-    for server, bin in pairs(system_servers) do
-      if vim.fn.executable(bin) == 1 then
-        vim.lsp.enable(server)
+    local available = {}
+    for server, cmd in pairs(system_servers) do
+      if vim.fn.executable(cmd[1]) == 1 then
+        vim.lsp.config(server, { cmd = cmd })
+        table.insert(available, server)
       end
     end
+    vim.lsp.enable(available)
 
     -- Set keymaps when an LSP attaches to a buffer
     vim.api.nvim_create_autocmd("LspAttach", {

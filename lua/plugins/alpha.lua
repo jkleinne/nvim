@@ -32,13 +32,16 @@ return {
       if vim.fn.executable "fortune" == 0 then
         return nil
       end
-      local handle, err = io.popen "fortune -s"
+      local handle, err = io.popen "fortune -s 2>/dev/null"
       if err or handle == nil then
         vim.notify("alpha: fortune unavailable (" .. (err or "no handle") .. ")", vim.log.levels.DEBUG)
         return nil
       end
       local fortune = handle:read "*a"
       handle:close()
+      if not fortune or vim.trim(fortune) == "" then
+        return nil
+      end
       return fortune
     end
 

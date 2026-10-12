@@ -6,7 +6,9 @@ return {
     {
       "<leader>f",
       function()
-        require("conform").format { async = true, lsp_format = "fallback" }
+        if not require("conform").format { async = true, lsp_format = "fallback" } then
+          vim.notify("No formatter available for " .. vim.bo.filetype .. " (see :ConformInfo)", vim.log.levels.WARN)
+        end
       end,
       desc = "Format buffer",
     },
@@ -27,11 +29,13 @@ return {
       hcl = { "terraform_fmt" },
       sh = { "shfmt" },
     },
+    -- System prettier only, never a repo's node_modules copy (its config can still run code; see README)
+    formatters = { prettier = { command = "prettier" } },
     format_on_save = {
       timeout_ms = 500,
       lsp_format = "fallback",
     },
-    -- Missing formatters stay quiet; nvim-install.sh reports them
+    -- Format-on-save stays quiet about missing formatters (README Requirements; :ConformInfo lists them)
     notify_no_formatters = false,
   },
 }

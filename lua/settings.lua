@@ -38,6 +38,11 @@ vim.filetype.add {
     ["compose.yml"] = "yaml.docker-compose",
     ["compose.yaml"] = "yaml.docker-compose",
   },
+  -- Override and per-environment files (compose.override.yaml, docker-compose.prod.yml)
+  pattern = {
+    ["compose%..+%.ya?ml"] = "yaml.docker-compose",
+    ["docker%-compose%..+%.ya?ml"] = "yaml.docker-compose",
+  },
 }
 
 -- Enable built-in treesitter highlighting
