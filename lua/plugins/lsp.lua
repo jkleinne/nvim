@@ -8,7 +8,6 @@ return {
   config = function()
     -- Installed by Mason (native binaries, no npm)
     local mason_servers = {
-      "docker_language_server",
       "gopls",
       "lua_ls",
       "sqls",
@@ -16,19 +15,85 @@ return {
     }
 
     -- Installed by the system package manager (server = command it runs). These are Node programs;
-    -- the Arch packages depend on nodejs, not npm. Each command is pinned to the system binary so a
-    -- repo's node_modules/.bin copy never runs, and the server is enabled only when that binary exists.
+    -- the Arch packages depend on nodejs, not npm. The commands are bare names found on PATH; setting
+    -- them as lists means lspconfig's default lookup in root_dir/node_modules/.bin (jsonls, ts_ls,
+    -- yamlls) is never used. A server is enabled only when its command is executable: a list cmd
+    -- already skips a missing binary, but the gate keeps lsp.log free of errors and makes
+    -- vim.lsp.is_enabled reflect what is installed.
     -- Keep in sync with install_language_servers in nvim-install.sh.
     local system_servers = {
       bashls = { "bash-language-server", "start" },
+      dockerls = { "docker-langserver", "--stdio" },
       jsonls = { "vscode-json-language-server", "--stdio" },
       pyright = { "pyright-langserver", "--stdio" },
       ts_ls = { "typescript-language-server", "--stdio" },
       yamlls = { "yaml-language-server", "--stdio" },
     }
 
-    -- Arch's typescript package. Without this, ts_ls loads a repo's own node_modules/typescript.
+    -- ts_ls uses a system TypeScript: Arch's typescript package, else the tsserver on PATH
+    -- (typescript-language-server resolves its bin script to the package's lib/tsserver.js).
     local system_tsserver = "/usr/lib/node_modules/typescript/lib/tsserver.js"
+    if not vim.uv.fs_stat(system_tsserver) then
+      system_tsserver = vim.fn.exepath "tsserver"
+    end
+    if system_tsserver == "" then
+      -- Without a system TypeScript, ts_ls would load a repo's node_modules/typescript
+      system_servers.ts_ls = nil
+    end
+
+    -- terraform-ls runs `terraform providers schema`, which executes provider binaries from a repo's
+    -- .terraform directory. When the terraform CLI is installed, start it only in directories trusted
+    -- through Neovim's trust database (:help vim.secure.read()). Answers other than "allow" are
+    -- remembered for the session so the prompt is not repeated; "allow" is re-checked so
+    -- `:trust ++remove <dir>` takes effect without a restart.
+    local untrusted_roots = {}
+
+    -- Whether vim.secure.read is about to ask about dir: it resolves and the trust database has no
+    -- line for it (format: runtime/lua/vim/secure.lua). This only decides whether to explain the
+    -- prompt; vim.secure.read stays the authority. If the format ever changes, the worst case is a
+    -- missing or extra notice.
+    local function trust_unanswered(dir)
+      local path = vim.uv.fs_realpath(dir)
+      if not path then
+        return false
+      end
+      local f = io.open(vim.fn.stdpath "state" .. "/trust", "r")
+      if not f then
+        return true
+      end
+      local answered = false
+      for line in f:lines() do
+        local _, file = line:match "^(%S+) (.+)$"
+        if file == path then
+          answered = true
+          break
+        end
+      end
+      f:close()
+      return not answered
+    end
+
+    local function root_trusted(root)
+      if vim.fn.executable "terraform" == 0 then
+        return true
+      end
+      if untrusted_roots[root] or #vim.api.nvim_list_uis() == 0 then
+        return false
+      end
+      if trust_unanswered(root) then
+        vim.notify(
+          "terraform-ls runs provider plugins from "
+            .. root
+            .. "/.terraform; allow this directory in the next prompt to enable it",
+          vim.log.levels.INFO
+        )
+      end
+      if vim.secure.read(root) == true then
+        return true
+      end
+      untrusted_roots[root] = true
+      return false
+    end
 
     local capabilities = require("blink.cmp").get_lsp_capabilities()
 
@@ -49,15 +114,18 @@ return {
       },
     })
 
-    -- docker-language-server sends telemetry by default; keep it off like lua_ls
-    vim.lsp.config("docker_language_server", {
-      init_options = { telemetry = "off" },
-      settings = { docker = { lsp = { telemetry = "off" } } },
-    })
-
-    if vim.uv.fs_stat(system_tsserver) then
+    if system_servers.ts_ls then
       vim.lsp.config("ts_ls", { init_options = { tsserver = { path = system_tsserver } } })
     end
+
+    vim.lsp.config("terraformls", {
+      root_dir = function(bufnr, on_dir)
+        local root = vim.fs.root(bufnr, { ".terraform", ".git" }) or vim.fs.dirname(vim.api.nvim_buf_get_name(bufnr))
+        if root_trusted(root) then
+          on_dir(root)
+        end
+      end,
+    })
 
     local mason_lspconfig = require "mason-lspconfig"
 

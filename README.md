@@ -24,7 +24,7 @@ My personal Neovim configuration
 - **Easily Extendable and Configurable**: Modular and simple directory structure.
 - **Intelligent Autocompletion**: Powered by `blink.cmp` (Rust fuzzy matching) and `LuaSnip`.
 - **Git Integration**: Visualize git changes with `gitsigns` and TUI access via `lazygit`.
-- **Language Support**: LSP configuration with `nvim-lspconfig` for Go, TypeScript, Python, Shell, JSON, YAML, Docker, Terraform, SQL, and Lua. Mason installs the native servers; the Node-based ones come from the system package manager (on Arch, no npm needed).
+- **Language Support**: LSP configuration with `nvim-lspconfig` for Go, TypeScript, Python, Shell, JSON, YAML, Docker (Dockerfiles through dockerfile-language-server, compose files through yamlls), Terraform, SQL, and Lua. Mason installs the native servers; the Node-based ones come from the system package manager (on Arch, no npm needed).
 - **Formatting and Linting**: `conform.nvim` for formatters with LSP fallback and format-on-save, `nvim-lint` for additional linting (selene, hadolint, shellcheck, yamllint, golangci-lint, ruff, tflint).
 - **File Management**: `Neo-tree` as the file explorer and `Telescope` with fzf-native for fuzzy finding.
 - **Syntax Highlighting**: Built-in Neovim 0.12 treesitter highlighting via `vim.treesitter.start()`.
@@ -43,7 +43,8 @@ One pacman command installs everything except `hadolint` (see below). The bootst
 
 ```bash
 sudo pacman -S --needed neovim git ripgrep base-devel curl unzip wl-clipboard nodejs go \
-  bash-language-server vscode-json-languageserver pyright typescript-language-server yaml-language-server \
+  bash-language-server dockerfile-language-server vscode-json-languageserver pyright \
+  typescript-language-server yaml-language-server \
   stylua shfmt prettier python-black go-tools terraform \
   selene shellcheck yamllint tflint golangci-lint ruff \
   lazygit lazydocker fortune-mod ttf-jetbrains-mono-nerd
@@ -61,9 +62,9 @@ yay -S hadolint-bin
 - **Build tools:** `base-devel` provides the C compiler and `make` that telescope-fzf-native and LuaSnip compile with. Mason downloads with `curl` and extracts with `unzip`.
 - **Clipboard:** `wl-clipboard` (Wayland) or `xclip` (X11). Without one, yanks do not reach the system clipboard.
 - **Runtimes:** Node.js runs the Node-based language servers (npm is not needed). Mason uses Go to build `gopls` and `sqls`.
-- **Language servers:** Mason installs the native servers (`docker_language_server`, `gopls`, `lua_ls`, `sqls`, `terraformls`) the first time you open a file. The Node-based servers (`bashls`, `jsonls`, `pyright`, `ts_ls`, `yamlls`) come from the system packages above, are enabled only when installed, and always run the system binaries: a repo's `node_modules` copies are never used, and `ts_ls` uses Arch's TypeScript. docker-language-server telemetry is turned off.
+- **Language servers:** Mason installs the native servers (`gopls`, `lua_ls`, `sqls`, `terraformls`) the first time you open a file. The Node-based servers (`bashls`, `dockerls`, `jsonls`, `pyright`, `ts_ls`, `yamlls`) come from the system packages above, are enabled only when installed, and run from `PATH`: a repo's `node_modules` copies are never used. `ts_ls` is enabled only with a system TypeScript (Arch's `typescript`, a dependency of `typescript-language-server`). docker-language-server is not used: it sends telemetry, crash reports, and Dockerfile image names to Docker by default. When the `terraform` CLI is installed, terraform-ls asks before trusting a directory, because it runs provider binaries from the directory's `.terraform`; to forget an answer, run `:trust ++remove <directory>`.
 - **Formatters** (`conform.nvim`): stylua, shfmt, prettier, black, goimports (`go-tools`), gofmt (ships with `go`), and `terraform fmt`. prettier always runs the system binary, but it still reads a repo's prettier config, and a JavaScript config or a plugin listed in it can run code.
-- **Linters** (`nvim-lint`): selene, shellcheck, yamllint, tflint, golangci-lint, ruff, and hadolint. tflint can run plugins named in a repo's `.tflint.hcl`, so it runs only in directories you trust: Neovim asks once per directory (`:help vim.secure.read()`); to forget an answer, run `:trust ++remove <directory>`.
+- **Linters** (`nvim-lint`): selene, shellcheck, yamllint, tflint, golangci-lint, ruff, and hadolint. tflint and golangci-lint never run plugins a repo names: tflint uses this config's `tflint.hcl` and plugins from `tflint-plugins/` in Neovim's data directory (`~/.local/share/nvim`), never a repo's, and golangci-lint runs with `--no-config`, so repos' `.golangci.yml` files are ignored.
 - **TUI tools:** lazygit (`<leader>gtt`) and lazydocker (`<leader>dc`). `fortune` puts a random quote on the dashboard.
 - **Nerd Font:** icons need a [Nerd Font](https://www.nerdfonts.com/). JetBrainsMono Nerd Font is recommended; set it as your terminal's font.
 
@@ -71,7 +72,7 @@ Missing formatters, linters, and Node-based servers are skipped quietly inside N
 
 ### Upgrading from an older version of this config
 
-Older versions installed `ansible-language-server`, `dockerfile-language-server`, `docker-compose-language-service`, and `sqlls` through Mason. Mason still enables anything it has installed, so remove them. `:MasonUninstall` errors on a package that is not installed, so run this inside Neovim instead; it removes only the ones that are present (restart Neovim afterwards):
+Older versions installed `ansible-language-server`, `dockerfile-language-server`, `docker-compose-language-service`, and `sqlls` through Mason. Mason still enables anything it has installed, so remove them (a Mason `dockerfile-language-server` would also shadow the pacman one). `:MasonUninstall` errors on a package that is not installed, so run this inside Neovim instead; it removes only the ones that are present (restart Neovim afterwards):
 
 ```
 :lua for _, n in ipairs { "ansible-language-server", "dockerfile-language-server", "docker-compose-language-service", "sqlls" } do local p = require("mason-registry").get_package(n) if p:is_installed() then p:uninstall() end end
@@ -157,6 +158,7 @@ The configuration files are organized as follows:
 ├── lazy-lock.json          # Lock file for lazy.nvim
 ├── nvim-install.sh         # Bootstrap script (Arch Linux; other distros best-effort)
 ├── tests/                  # Installer tests (bash tests/install-script.test.sh)
+├── tflint.hcl              # tflint config used instead of repos' own
 └── ...
 ```
 
