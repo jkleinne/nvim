@@ -6,19 +6,25 @@ return {
     "mason-org/mason-lspconfig.nvim",
   },
   config = function()
-    local servers = {
-      "ansiblels",
-      "bashls",
-      "docker_compose_language_service",
-      "dockerls",
+    -- Installed by Mason (native binaries, no npm)
+    local mason_servers = {
+      "docker_language_server",
       "gopls",
-      "jsonls",
       "lua_ls",
-      "pyright",
-      "sqlls",
+      "sqls",
       "terraformls",
-      "ts_ls",
-      "yamlls",
+    }
+
+    -- Installed by the system package manager (server = binary it provides).
+    -- These are Node programs; the Arch packages depend on nodejs, not npm:
+    -- bash-language-server, vscode-json-languageserver, pyright,
+    -- typescript-language-server, yaml-language-server
+    local system_servers = {
+      bashls = "bash-language-server",
+      jsonls = "vscode-json-language-server",
+      pyright = "pyright-langserver",
+      ts_ls = "typescript-language-server",
+      yamlls = "yaml-language-server",
     }
 
     local capabilities = require("blink.cmp").get_lsp_capabilities()
@@ -43,9 +49,17 @@ return {
     local mason_lspconfig = require "mason-lspconfig"
 
     mason_lspconfig.setup {
-      ensure_installed = servers,
+      ensure_installed = mason_servers,
       automatic_enable = true,
     }
+
+    -- Enable a system server only when its binary is installed. jsonls, ts_ls and
+    -- yamlls define cmd as a function, so Neovim cannot skip them quietly on its own.
+    for server, bin in pairs(system_servers) do
+      if vim.fn.executable(bin) == 1 then
+        vim.lsp.enable(server)
+      end
+    end
 
     -- Set keymaps when an LSP attaches to a buffer
     vim.api.nvim_create_autocmd("LspAttach", {
