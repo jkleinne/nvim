@@ -63,7 +63,7 @@ yay -S hadolint-bin
 - **Runtimes:** Node.js runs the Node-based language servers (npm is not needed). Mason uses Go to build `gopls` and `sqls`.
 - **Language servers:** Mason installs the native servers (`docker_language_server`, `gopls`, `lua_ls`, `sqls`, `terraformls`) the first time you open a file. The Node-based servers (`bashls`, `jsonls`, `pyright`, `ts_ls`, `yamlls`) come from the system packages above, are enabled only when installed, and always run the system binaries: a repo's `node_modules` copies are never used, and `ts_ls` uses Arch's TypeScript. docker-language-server telemetry is turned off.
 - **Formatters** (`conform.nvim`): stylua, shfmt, prettier, black, goimports (`go-tools`), gofmt (ships with `go`), and `terraform fmt`. prettier always runs the system binary, but it still reads a repo's prettier config, and a JavaScript config or a plugin listed in it can run code.
-- **Linters** (`nvim-lint`): selene, shellcheck, yamllint, tflint, golangci-lint, ruff, and hadolint. tflint can run plugins named in a repo's `.tflint.hcl`, so it runs only in directories you trust: Neovim asks once per directory (`:help vim.secure.read()`; `:trust` and `:trust ++remove` manage the list).
+- **Linters** (`nvim-lint`): selene, shellcheck, yamllint, tflint, golangci-lint, ruff, and hadolint. tflint can run plugins named in a repo's `.tflint.hcl`, so it runs only in directories you trust: Neovim asks once per directory (`:help vim.secure.read()`); to forget an answer, run `:trust ++remove <directory>`.
 - **TUI tools:** lazygit (`<leader>gtt`) and lazydocker (`<leader>dc`). `fortune` puts a random quote on the dashboard.
 - **Nerd Font:** icons need a [Nerd Font](https://www.nerdfonts.com/). JetBrainsMono Nerd Font is recommended; set it as your terminal's font.
 
@@ -115,6 +115,7 @@ cd ~/.config/nvim
 ```
 
 The script will:
+- On Arch, upgrade the system first (`pacman -Syu`, with pacman's own confirmation) when anything needs installing, since installing against a newer package database without upgrading is a partial upgrade
 - Install Neovim 0.12+ (prefers your system package manager, falls back to the GitHub release tarball)
 - Install build dependencies, a clipboard tool, runtimes, formatters, linters, TUI tools, and on Arch the Node-based language servers
 - Detect your shell and update PATH if needed (bash, zsh, fish)
@@ -122,6 +123,8 @@ The script will:
 - Stop if a required package (build tools, core tools, runtimes) fails, and list optional tools it could not install in the summary at the end (best-effort platforms get manual steps there)
 
 Run `./nvim-install.sh --help` for details.
+
+The installer's tests run with `bash tests/install-script.test.sh`; set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run.
 
 ### 3. First Launch and Verification
 
@@ -153,6 +156,7 @@ The configuration files are organized as follows:
 ├── init.lua                # Main entry point
 ├── lazy-lock.json          # Lock file for lazy.nvim
 ├── nvim-install.sh         # Bootstrap script (Arch Linux; other distros best-effort)
+├── tests/                  # Installer tests (bash tests/install-script.test.sh)
 └── ...
 ```
 

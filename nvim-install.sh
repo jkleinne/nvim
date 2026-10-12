@@ -6,8 +6,6 @@ readonly NVIM_REPO="https://github.com/jkleinne/nvim.git"
 readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
 readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
-# Overridable so tests can point distro detection at a fixture file
-readonly OS_RELEASE_FILE="${NVIM_INSTALL_OS_RELEASE:-/etc/os-release}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_TMPDIR=""
@@ -19,6 +17,7 @@ OS=""
 ARCH=""
 PKG_MGR=""
 PKG_TIER=""
+PKG_READY=false
 USER_SHELL=""
 
 # ---------------------------------------------------------------------------
@@ -46,6 +45,13 @@ section() {
   printf '\n%s\n' "${BOLD}${BLUE}--- $1 ---${RESET}"
 }
 
+# Ask a y/N question; anything but y/Y, including end of input, counts as no
+confirm() {
+  local reply
+  read -rp "$1 [y/N] " reply || return 1
+  [[ "$reply" =~ ^[Yy]$ ]]
+}
+
 # ---------------------------------------------------------------------------
 # Temp directory management and cleanup
 # ---------------------------------------------------------------------------
@@ -59,12 +65,6 @@ cleanup() {
 create_tmpdir() {
   SCRIPT_TMPDIR="$(mktemp -d)"
 }
-
-# INT and TERM exit with 128 + signal number (the EXIT trap still cleans up); a trap that
-# only cleaned up would let bash resume with the next command
-trap cleanup EXIT
-trap 'exit 130' INT
-trap 'exit 143' TERM
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -111,14 +111,16 @@ detect_arch() {
 }
 
 # Print the package manager for the distro named by os-release ID and ID_LIKE, or nothing.
+# $1 is the os-release file (default /etc/os-release).
 os_release_pkg_mgr() {
+  local file="${1:-/etc/os-release}"
   local ids
-  if [[ ! -r "$OS_RELEASE_FILE" ]]; then
+  if [[ ! -r "$file" ]]; then
     return 0
   fi
   # Root-owned system data; sourced in a subshell (as get.docker.com does) so nothing leaks
   # shellcheck source=/dev/null  # os-release is data, not a script to lint
-  ids="$(. "$OS_RELEASE_FILE" && printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}")" || return 0
+  ids="$(. "$file" && printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}")" || return 0
   case "$ids" in
     *" arch "*) printf '%s\n' pacman ;;
     *" debian "* | *" ubuntu "*) printf '%s\n' apt-get ;;
@@ -198,18 +200,19 @@ confirm_proceed() {
   printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
   printf '\n'
   if [[ "$PKG_TIER" == "best-effort" ]]; then
-    info "$PKG_MGR is best-effort: tools missing from its repos are listed as manual steps at the end."
+    info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install or uv tool install when available (latest upstream), otherwise listed as manual steps at the end."
     printf '\n'
   fi
   info "This script will:"
+  if [[ "$PKG_MGR" == "pacman" ]]; then
+    printf '  %s\n' "0. Upgrade the system first (pacman -Syu, with pacman's own prompt) if anything needs installing"
+  fi
   printf '  %s\n' "1. Install Neovim 0.12+ (prefer $PKG_MGR, tarball fallback)"
   printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
   printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
   printf '\n'
 
-  local confirmation
-  read -rp "Proceed? [y/N] " confirmation
-  if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
+  if ! confirm "Proceed?"; then
     info "Cancelled."
     exit 0
   fi
@@ -220,8 +223,9 @@ confirm_proceed() {
 # ---------------------------------------------------------------------------
 
 pkg_install_neovim() {
+  pkg_ready_once
   case "$PKG_MGR" in
-    apt-get) sudo apt-get update -qq && sudo apt-get install -y neovim ;;
+    apt-get) sudo apt-get install -y neovim ;;
     dnf)     sudo dnf install -y neovim ;;
     pacman)  sudo pacman -S --noconfirm neovim ;;
     apk)     sudo apk add neovim ;;
@@ -252,9 +256,7 @@ install_neovim_tarball() {
 
   if [[ -d "$NVIM_INSTALL_DIR" ]]; then
     warn "Existing installation at $NVIM_INSTALL_DIR will be replaced."
-    local confirm_remove
-    read -rp "  Remove $NVIM_INSTALL_DIR? [y/N] " confirm_remove
-    if [[ ! "$confirm_remove" =~ ^[Yy]$ ]]; then
+    if ! confirm "  Remove $NVIM_INSTALL_DIR?"; then
       error "Cannot install without removing existing directory."
       exit 1
     fi
@@ -310,6 +312,34 @@ install_neovim() {
 # Dependency installation helpers
 # ---------------------------------------------------------------------------
 
+# Runs once, right before the first package install: checks sudo credentials (fails fast on a wrong
+# password, and caches them), then refreshes package metadata. On Arch that is a full system upgrade,
+# because installing new packages against a freshly synced database without upgrading is a partial
+# upgrade, which Arch does not support. pacman shows its own list and asks before changing anything.
+pkg_ready_once() {
+  if [[ "$PKG_READY" == true ]]; then
+    return
+  fi
+  if ! sudo -v; then
+    error "sudo authentication failed."
+    exit 1
+  fi
+  case "$PKG_MGR" in
+    pacman)
+      info "Upgrading the system first (pacman -Syu)..."
+      if ! sudo pacman -Syu; then
+        error "System upgrade declined or failed; installing packages now would be a partial upgrade."
+        error "Run 'sudo pacman -Syu' yourself, then run this script again."
+        exit 1
+      fi
+      ;;
+    apt-get) info "Updating package lists..."; sudo apt-get update -qq ;;
+    apk)     info "Updating package index..."; sudo apk update ;;
+    dnf)     ;;
+  esac
+  PKG_READY=true
+}
+
 pkg_is_installed() {
   case "$PKG_MGR" in
     apt-get) dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed' ;;
@@ -320,6 +350,7 @@ pkg_is_installed() {
 }
 
 pkg_install() {
+  pkg_ready_once
   case "$PKG_MGR" in
     apt-get) sudo apt-get install -y "$@" ;;
     dnf)     sudo dnf install -y "$@" ;;
@@ -423,7 +454,7 @@ warn_if_not_on_path() {
     fi
   done
   PATH_WARNED_DIRS+=("$dir")
-  warn "$dir is not on PATH; add it to your shell config: export PATH=\"$dir:\$PATH\""
+  warn "$dir is not on PATH; add it to your shell config: export PATH=\"\$PATH:$dir\""
 }
 
 # For go install / uv tool install: the binary lands in a user bin dir that may
@@ -532,6 +563,7 @@ install_language_servers() {
   # Node-based servers come from the system; Mason installs the native ones on first launch
   case "$PKG_MGR" in
     pacman)
+      # Keep in sync with system_servers in lua/plugins/lsp.lua
       install_pkgs optional "language servers" \
         bash-language-server vscode-json-languageserver pyright typescript-language-server yaml-language-server
       ;;
@@ -552,7 +584,8 @@ install_formatters() {
     *)
       install_python_tool black
       install_go_tool shfmt mvdan.cc/sh/v3/cmd/shfmt@latest
-      warn_manual stylua prettier goimports terraform
+      install_go_tool goimports golang.org/x/tools/cmd/goimports@latest
+      warn_manual stylua prettier terraform
       ;;
   esac
 }
@@ -606,11 +639,6 @@ install_tui_tools() {
 # ---------------------------------------------------------------------------
 
 install_deps() {
-  if [[ "$PKG_MGR" == "apt-get" ]]; then
-    info "Updating package lists..."
-    sudo apt-get update -qq
-  fi
-
   install_build_tools
   install_core_tools
   install_clipboard
@@ -666,15 +694,14 @@ setup_config() {
     return
   fi
 
-  # Not run from a clone: back up a foreign config, then always clone into the freed path
+  # Not run from a clone: back up a foreign config if the user agrees, then clone into the freed path
   if [[ -d "$NVIM_CONFIG_DIR" ]]; then
-    local backup confirm_move
+    local backup
     backup="${NVIM_CONFIG_DIR}.bak.$(date +%s)"
     warn "Existing config at $NVIM_CONFIG_DIR is not this repo."
-    read -rp "  Move it to $backup and clone this repo? [y/N] " confirm_move || true
-    if [[ ! "$confirm_move" =~ ^[Yy]$ ]]; then
-      error "Left $NVIM_CONFIG_DIR in place. Move it aside yourself, then run this script again."
-      exit 1
+    if ! confirm "  Move it to $backup and clone this repo?"; then
+      warn "Left $NVIM_CONFIG_DIR in place; move it aside yourself and run this script again to clone the config."
+      return
     fi
     info "Backing up to $backup"
     if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
@@ -844,6 +871,11 @@ EOF
 
 main() {
   setup_colors
+  # INT and TERM exit with 128 + signal number (the EXIT trap still cleans up); a trap that
+  # only cleaned up would let bash resume with the next command
+  trap cleanup EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
 
   if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
     usage
