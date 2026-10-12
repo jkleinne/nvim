@@ -27,16 +27,22 @@ return {
       dashboard.button("q", "󰈆  Quit", ":qa<CR>"),
     }
 
-    local handle, err = io.popen "fortune -s"
-    if err or handle == nil then
-      vim.notify("alpha: fortune unavailable (" .. (err or "no handle") .. ")", vim.log.levels.DEBUG)
-      dashboard.section.footer.val = "May the truth be found."
-      alpha.setup(dashboard.opts)
-      return
+    -- io.popen succeeds even when the command is missing, so check first
+    local function read_fortune()
+      if vim.fn.executable "fortune" == 0 then
+        return nil
+      end
+      local handle, err = io.popen "fortune -s"
+      if err or handle == nil then
+        vim.notify("alpha: fortune unavailable (" .. (err or "no handle") .. ")", vim.log.levels.DEBUG)
+        return nil
+      end
+      local fortune = handle:read "*a"
+      handle:close()
+      return fortune
     end
-    local fortune = handle:read "*a"
-    handle:close()
-    dashboard.section.footer.val = fortune
+
+    dashboard.section.footer.val = read_fortune() or "May the truth be found."
     alpha.setup(dashboard.opts)
   end,
 }
