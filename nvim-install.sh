@@ -3,10 +3,11 @@ set -euo pipefail
 
 readonly MIN_NVIM_VERSION="0.12.0"
 readonly NVIM_REPO="https://github.com/jkleinne/nvim.git"
-readonly NVIM_REPO_HTTPS="https://github.com/jkleinne/nvim"
 readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
 readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
+# Overridable so tests can point distro detection at a fixture file
+readonly OS_RELEASE_FILE="${NVIM_INSTALL_OS_RELEASE:-/etc/os-release}"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SCRIPT_TMPDIR=""
@@ -59,7 +60,11 @@ create_tmpdir() {
   SCRIPT_TMPDIR="$(mktemp -d)"
 }
 
-trap cleanup EXIT INT TERM
+# INT and TERM exit with 128 + signal number (the EXIT trap still cleans up); a trap that
+# only cleaned up would let bash resume with the next command
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---------------------------------------------------------------------------
 # Platform detection
@@ -69,6 +74,13 @@ require_non_root() {
   if [[ "$EUID" -eq 0 ]]; then
     error "Do not run this script as root or with sudo."
     error "It calls sudo itself for system packages, and user-level tools must install into your home directory."
+    exit 1
+  fi
+}
+
+require_sudo() {
+  if ! command -v sudo >/dev/null 2>&1; then
+    error "sudo is required to install system packages, but it is not on PATH."
     exit 1
   fi
 }
@@ -98,15 +110,39 @@ detect_arch() {
   esac
 }
 
+# Print the package manager for the distro named by os-release ID and ID_LIKE, or nothing.
+os_release_pkg_mgr() {
+  local ids
+  if [[ ! -r "$OS_RELEASE_FILE" ]]; then
+    return 0
+  fi
+  # Root-owned system data; sourced in a subshell (as get.docker.com does) so nothing leaks
+  # shellcheck source=/dev/null  # os-release is data, not a script to lint
+  ids="$(. "$OS_RELEASE_FILE" && printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}")" || return 0
+  case "$ids" in
+    *" arch "*) printf '%s\n' pacman ;;
+    *" debian "* | *" ubuntu "*) printf '%s\n' apt-get ;;
+    *" fedora "* | *" rhel "* | *" centos "*) printf '%s\n' dnf ;;
+    *" alpine "*) printf '%s\n' apk ;;
+  esac
+}
+
 detect_pkg_manager() {
   local mgr
-  # pacman first: Arch is first-class, and Arch's repos also ship apt, dnf and apk-tools
-  for mgr in pacman apt-get dnf apk; do
-    if command -v "$mgr" >/dev/null 2>&1; then
-      PKG_MGR="$mgr"
-      break
-    fi
-  done
+  # os-release first: binaries alone mislead, since Debian and Fedora can ship a pacman
+  # binary and Arch's repos ship apt, dnf and apk-tools. Probe only when os-release names
+  # no supported distro or its manager is missing (pacman first: Arch is first-class).
+  mgr="$(os_release_pkg_mgr)"
+  if [[ -n "$mgr" ]] && command -v "$mgr" >/dev/null 2>&1; then
+    PKG_MGR="$mgr"
+  else
+    for mgr in pacman apt-get dnf apk; do
+      if command -v "$mgr" >/dev/null 2>&1; then
+        PKG_MGR="$mgr"
+        break
+      fi
+    done
+  fi
 
   if [[ -z "$PKG_MGR" ]]; then
     error "No supported package manager found."
@@ -276,7 +312,7 @@ install_neovim() {
 
 pkg_is_installed() {
   case "$PKG_MGR" in
-    apt-get) dpkg -s "$1" &>/dev/null 2>&1 ;;
+    apt-get) dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed' ;;
     dnf)     rpm -q "$1" &>/dev/null ;;
     pacman)  pacman -Q "$1" &>/dev/null ;;
     apk)     apk info -e "$1" &>/dev/null ;;
@@ -297,6 +333,14 @@ pkg_install() {
 install_pkgs() {
   local mode="$1" label="$2"
   shift 2
+
+  case "$mode" in
+    required | optional) ;;
+    *)
+      error "install_pkgs: unknown mode '$mode' (expected required or optional)"
+      exit 1
+      ;;
+  esac
 
   local missing=() pkg
   for pkg in "$@"; do
@@ -323,6 +367,11 @@ install_pkgs() {
     exit 1
   fi
 
+  if [[ ${#missing[@]} -eq 1 ]]; then
+    warn "${missing[0]}: install failed, skipping"
+    return
+  fi
+
   # One bad package aborts the whole transaction, so retry individually
   for pkg in "${missing[@]}"; do
     if pkg_install "$pkg"; then
@@ -346,17 +395,25 @@ install_soft() {
   fi
 }
 
+# GOBIN, else the first GOPATH entry's bin dir (go install writes there). Fails when go env does.
 go_bin_dir() {
   local dir
-  dir="$(go env GOBIN)"
+  dir="$(go env GOBIN)" || return 1
   if [[ -z "$dir" ]]; then
-    dir="$(go env GOPATH)/bin"
+    dir="$(go env GOPATH)" || return 1
+    if [[ -z "$dir" ]]; then
+      return 1
+    fi
+    dir="${dir%%:*}/bin"
   fi
   printf '%s\n' "$dir"
 }
 
 warn_if_not_on_path() {
   local dir="$1" seen
+  if [[ -z "$dir" ]]; then
+    return
+  fi
   case ":$PATH:" in
     *":$dir:"*) return ;;
   esac
@@ -370,7 +427,7 @@ warn_if_not_on_path() {
 }
 
 # For go install / uv tool install: the binary lands in a user bin dir that may
-# not be on PATH, so check that dir too and warn when it is unreachable.
+# not be on PATH, so check that dir too and warn when the binary there is unreachable.
 install_user_tool() {
   local name="$1" bin_dir="$2"
   shift 2
@@ -379,18 +436,53 @@ install_user_tool() {
   else
     install_soft "$name" "$@"
   fi
-  warn_if_not_on_path "$bin_dir"
+  if [[ -x "$bin_dir/$name" ]]; then
+    warn_if_not_on_path "$bin_dir"
+  fi
 }
 
 # Best-effort distros: Python CLI tools go into isolated uv environments
 # (PEP 668 blocks user-site installs on most distros).
 install_python_tool() {
-  local name="$1"
-  if command -v uv >/dev/null 2>&1; then
-    install_user_tool "$name" "$(uv tool dir --bin)" uv tool install "$name"
-  else
+  local name="$1" bin_dir
+  if ! command -v uv >/dev/null 2>&1; then
     warn "$name: install uv, then run: uv tool install $name"
+    return
   fi
+  if ! bin_dir="$(uv tool dir --bin)" || [[ -z "$bin_dir" ]]; then
+    warn "$name: could not resolve uv's tool bin dir; run: uv tool install $name"
+    return
+  fi
+  install_user_tool "$name" "$bin_dir" uv tool install "$name"
+}
+
+# Best-effort distros: Go CLI tools go into Go's user bin dir.
+install_go_tool() {
+  local name="$1" module="$2" bin_dir
+  if ! command -v go >/dev/null 2>&1; then
+    warn "$name: install Go, then run: go install $module"
+    return
+  fi
+  if ! bin_dir="$(go_bin_dir)"; then
+    warn "$name: could not resolve Go's bin dir; run: go install $module"
+    return
+  fi
+  install_user_tool "$name" "$bin_dir" go install "$module"
+}
+
+# Warn once, listing the tools that are not on PATH and need a manual install.
+warn_manual() {
+  local missing=() tool list
+  for tool in "$@"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      missing+=("$tool")
+    fi
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return
+  fi
+  printf -v list '%s, ' "${missing[@]}"
+  warn "${list%, }: install manually"
 }
 
 # ---------------------------------------------------------------------------
@@ -444,7 +536,8 @@ install_language_servers() {
         bash-language-server vscode-json-languageserver pyright typescript-language-server yaml-language-server
       ;;
     *)
-      warn "bash-language-server, vscode-json-language-server, pyright, typescript-language-server, yaml-language-server: install manually"
+      warn_manual bash-language-server vscode-json-language-server pyright-langserver \
+        typescript-language-server yaml-language-server
       ;;
   esac
 }
@@ -458,12 +551,8 @@ install_formatters() {
       ;;
     *)
       install_python_tool black
-      if command -v go >/dev/null 2>&1; then
-        install_user_tool shfmt "$(go_bin_dir)" go install mvdan.cc/sh/v3/cmd/shfmt@latest
-      else
-        warn "shfmt: requires Go (skipping)"
-      fi
-      warn "stylua, prettier, goimports, terraform: install manually"
+      install_go_tool shfmt mvdan.cc/sh/v3/cmd/shfmt@latest
+      warn_manual stylua prettier goimports terraform
       ;;
   esac
 }
@@ -474,19 +563,19 @@ install_linters() {
   case "$PKG_MGR" in
     pacman)
       install_pkgs optional "linters" selene shellcheck yamllint tflint golangci-lint ruff
-      warn "hadolint: not in the official repos; review the PKGBUILD and run 'yay -S hadolint-bin', or run ':MasonInstall hadolint' in Neovim"
+      if ! command -v hadolint >/dev/null 2>&1; then
+        warn "hadolint: not in the official repos; review the PKGBUILD and run 'yay -S hadolint-bin', or run ':MasonInstall hadolint' in Neovim"
+      fi
       ;;
     *)
-      install_pkgs optional "shellcheck" shellcheck
+      case "$PKG_MGR" in
+        dnf) install_pkgs optional "shellcheck" ShellCheck ;;
+        *)   install_pkgs optional "shellcheck" shellcheck ;;
+      esac
       install_python_tool yamllint
       install_python_tool ruff
-      if command -v go >/dev/null 2>&1; then
-        install_user_tool golangci-lint "$(go_bin_dir)" \
-          go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-      else
-        warn "golangci-lint: requires Go (skipping)"
-      fi
-      warn "selene, tflint, hadolint: install manually (hadolint also via ':MasonInstall hadolint' in Neovim)"
+      install_go_tool golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+      warn_manual selene tflint hadolint
       ;;
   esac
 }
@@ -499,15 +588,12 @@ install_tui_tools() {
       install_pkgs optional "TUI tools" lazygit lazydocker fortune-mod
       ;;
     *)
-      if command -v go >/dev/null 2>&1; then
-        local go_bin
-        go_bin="$(go_bin_dir)"
-        install_user_tool lazygit "$go_bin" go install github.com/jesseduffield/lazygit@latest
-        install_user_tool lazydocker "$go_bin" go install github.com/jesseduffield/lazydocker@latest
-      else
-        warn "lazygit, lazydocker: requires Go (skipping)"
-      fi
-      install_pkgs optional "fortune" fortune-mod
+      install_go_tool lazygit github.com/jesseduffield/lazygit@latest
+      install_go_tool lazydocker github.com/jesseduffield/lazydocker@latest
+      case "$PKG_MGR" in
+        apk) install_pkgs optional "fortune" fortune ;;
+        *)   install_pkgs optional "fortune" fortune-mod ;;
+      esac
       ;;
   esac
 }
@@ -536,6 +622,17 @@ install_deps() {
 # Config setup
 # ---------------------------------------------------------------------------
 
+# True for this repo's HTTPS, SCP-style SSH, or ssh:// URL, with or without .git or a trailing slash.
+is_config_repo_url() {
+  local url="${1%/}" repo="${NVIM_REPO#https://github.com/}"
+  url="${url%.git}"
+  repo="${repo%.git}"
+  case "$url" in
+    "https://github.com/$repo" | "git@github.com:$repo" | "ssh://git@github.com/$repo") return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 setup_config() {
   section "Configuration"
 
@@ -543,14 +640,25 @@ setup_config() {
     local existing_remote
     existing_remote="$(git -C "$NVIM_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")"
 
-    if [[ "$existing_remote" == "$NVIM_REPO" ]] || [[ "$existing_remote" == "$NVIM_REPO_HTTPS" ]]; then
+    if is_config_repo_url "$existing_remote"; then
       success "Config already present at $NVIM_CONFIG_DIR"
       return
     fi
 
-    local backup
+    # Never move the checkout this script is running from
+    if [[ "$(cd "$NVIM_CONFIG_DIR" 2>/dev/null && pwd -P)" == "$(cd "$SCRIPT_DIR" && pwd -P)" ]]; then
+      success "Running from $NVIM_CONFIG_DIR, no clone needed"
+      return
+    fi
+
+    local backup confirm_move
     backup="${NVIM_CONFIG_DIR}.bak.$(date +%s)"
     warn "Existing config at $NVIM_CONFIG_DIR is not this repo."
+    read -rp "  Move it to $backup and clone this repo? [y/N] " confirm_move || true
+    if [[ ! "$confirm_move" =~ ^[Yy]$ ]]; then
+      error "Left $NVIM_CONFIG_DIR in place. Move it aside yourself, then run this script again."
+      exit 1
+    fi
     info "Backing up to $backup"
     if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
       error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
@@ -562,17 +670,7 @@ setup_config() {
   local script_remote
   script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
 
-  if [[ "$script_remote" == "$NVIM_REPO" ]] || [[ "$script_remote" == "$NVIM_REPO_HTTPS" ]]; then
-    local resolved_script_dir
-    resolved_script_dir="$(cd "$SCRIPT_DIR" && pwd -P)"
-    local resolved_config_dir
-    resolved_config_dir="$(cd "$NVIM_CONFIG_DIR" 2>/dev/null && pwd -P || echo "$NVIM_CONFIG_DIR")"
-
-    if [[ "$resolved_script_dir" == "$resolved_config_dir" ]]; then
-      success "Running from $NVIM_CONFIG_DIR, no clone needed"
-      return
-    fi
-
+  if is_config_repo_url "$script_remote"; then
     info "This script is inside a clone of the config repo at $SCRIPT_DIR."
     info "Clone it to $NVIM_CONFIG_DIR or move it there manually."
     warn "Skipping automatic config setup to avoid the old self-move bug."
@@ -752,6 +850,7 @@ main() {
   detect_os
   detect_arch
   detect_pkg_manager
+  require_sudo
   detect_shell
   confirm_proceed
   install_neovim
@@ -762,4 +861,6 @@ main() {
   print_summary
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi
