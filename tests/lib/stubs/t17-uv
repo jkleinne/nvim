@@ -1,0 +1,9 @@
+#!/bin/sh
+# T17's uv: logs "uv <args>" to $EVENT_LOG, answers uv tool dir --bin with $SUITE_TMP/T17-uvbin, and
+# installs nothing
+printf 'uv %s\n' "$*" >>"${EVENT_LOG:?}"
+case "$*" in
+  "tool dir --bin") printf '%s\n' "${SUITE_TMP:?}/T17-uvbin" ;;
+  "tool install "*) ;;
+  *) echo "STUB UV: refusing $*" >&2; exit 1 ;;
+esac

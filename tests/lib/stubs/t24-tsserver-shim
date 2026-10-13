@@ -1,0 +1,3 @@
+#!/bin/sh
+# T24's tsserver shim: a wrapper script in no TypeScript package, as a version manager installs
+exec node /nonexistent/tsserver.js "$@"

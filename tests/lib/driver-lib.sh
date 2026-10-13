@@ -4,31 +4,36 @@
 # driver is a bash script, run as its own process inside a sandbox with the script under test as $1,
 # that starts with
 #   source "$(dirname "${BASH_SOURCE[0]}")/driver-lib.sh" "$1"
-# The library refuses to run unless HOME is a sandbox home under DRIVER_SANDBOX_ROOT (the suite's temp
-# dir, which the suite exports), sources the script (which turns errexit on, as for real), calls
-# setup_colors, and defines must_override, log_step (appends its argument to $EVENT_LOG), and
-# run_main_stubbed.
+# The library sources common.sh (must_override among its helpers), refuses to run unless HOME is a
+# sandbox home under SUITE_TMP (the suite's temp dir, which the suite exports), sources the script
+# (which turns errexit on, as for real), refuses a script that defines a function whose name is not an
+# identifier (main_steps could not see it) and a PATH on which sudo, curl, wget, go, or uv resolves
+# outside SUITE_TMP (to anything but a stub), calls setup_colors, and defines log_step (appends its
+# argument to $EVENT_LOG) and run_main_stubbed.
 
-if [[ $HOME != "${DRIVER_SANDBOX_ROOT:?}"/home-* ]]; then
-  echo "driver-lib.sh: HOME is $HOME, not a sandbox home under $DRIVER_SANDBOX_ROOT; not sourcing the script"
-  exit 1
-fi
+# shellcheck source=tests/lib/common.sh
+source "${BASH_SOURCE[0]%/*}/common.sh"
+require_sandbox_home "${SUITE_TMP:?}" driver-lib.sh
 # shellcheck source=nvim-install.sh
 source "$1"
 if [[ $- != *e* ]]; then
   echo "errexit is off after sourcing the script; main would not run as it does for real"
   exit 1
 fi
-setup_colors
-
-# Fails the driver when the sourced script has no function $1, so a renamed function cannot slip past
-# the stub meant to replace it and run for real
-must_override() {
-  if ! declare -F "$1" >/dev/null; then
-    echo "nvim-install.sh has no function $1 to override"
+while read -r _ _ fn; do
+  if [[ ! $fn =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]]; then
+    echo "driver-lib.sh: the script defines function '$fn', whose name is not an identifier, so" \
+      "main_steps cannot see it in main; not running main"
     exit 1
   fi
-}
+done < <(declare -F)
+for cmd in sudo curl wget go uv; do
+  if [[ "$(type -P "$cmd")" != "$SUITE_TMP"/* ]]; then
+    echo "driver-lib.sh: $cmd resolves to '$(type -P "$cmd")', not a stub under $SUITE_TMP; not running main"
+    exit 1
+  fi
+done
+setup_colors
 
 log_step() { printf '%s\n' "$1" >>"${EVENT_LOG:?}"; }
 
@@ -90,7 +95,8 @@ run_main_stubbed() {
     fi
     if ! is_one_of "$step" "${DRIVER_STUBBED[@]}"; then
       echo "run_main_stubbed: main calls $step, which driver-lib.sh neither stubs nor runs as it is;" \
-        "add it to DRIVER_STUBBED or DRIVER_RUNS_REAL"
+        "add it to DRIVER_STUBBED or DRIVER_RUNS_REAL. Does it run before or after forget_sudo_credentials?" \
+        "Put it in T22's chain on that side (tests/lib/driver-T22.sh and T22 in the suite)"
       exit 1
     fi
     eval "$step() { log_step $step; }"

@@ -1,0 +1,12 @@
+#!/bin/sh
+# nvim for T26 and T22: --version prints version $T26_VERSION; anything else fails. cat writes the
+# lines in one write: printf may write them one at a time, and get_nvim_version's head -n1 can exit
+# between the writes, which kills this stub with SIGPIPE and fails the pipeline under pipefail.
+if [ "$1" = --version ]; then
+  cat <<EOF
+NVIM v${T26_VERSION:?}
+Build type: Release
+EOF
+  exit 0
+fi
+exit 1

@@ -1,0 +1,12 @@
+#!/bin/sh
+# T25's curl: logs "curl -o <file> <url>" to $EVENT_LOG and copies the tiny local tarball
+# $SUITE_TMP/T25-nvim.tar.gz to <file>; downloads nothing
+out=""
+while [ $# -gt 1 ]; do
+  case "$1" in
+    -o) out="$2"; shift 2 ;;
+    *) shift ;;
+  esac
+done
+printf 'curl -o %s %s\n' "$out" "$1" >>"${EVENT_LOG:?}"
+[ -n "$out" ] && cp "${SUITE_TMP:?}/T25-nvim.tar.gz" "$out"

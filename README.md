@@ -115,7 +115,7 @@ mv ~/.cache/nvim ~/.cache/nvim_backup
 
 #### Method B: Bootstrap Script (Recommended)
 
-The `nvim-install.sh` script detects your distribution and installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), the Node-based language servers (Arch only), formatters, linters, TUI tools, and clones the configuration. On Arch it installs the same packages as the command under [Requirements](#requirements), except the Nerd Font (install it with `sudo pacman -S ttf-jetbrains-mono-nerd`). Run it as your normal user; it calls `sudo` when it needs to.
+The `nvim-install.sh` script detects your distribution and installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), the Node-based language servers (Arch only), formatters, linters, TUI tools, and clones the configuration. On Arch it installs the same packages as the command under [Requirements](#requirements), except the Nerd Font (install it with `sudo pacman -S ttf-jetbrains-mono-nerd`). Run it as your normal user; it calls `sudo` when it needs to. It asks before it changes anything, so it needs a terminal to answer from: piped into `bash` (as in `curl ... | bash`), it stops at the first question.
 
 **Supported platforms:** Arch Linux (pacman) is first-class. Debian/Ubuntu (apt), Fedora/RHEL (dnf), and Alpine (apk) are best-effort.
 
@@ -131,14 +131,14 @@ The script will:
 - Ask before moving an existing config that is not this repo aside, and move it only after the clone succeeds
 - Install build dependencies, a clipboard tool, runtimes, formatters, linters, TUI tools, and on Arch the Node-based language servers
 - On best-effort platforms, install the user-level tools their repos lack (`go install`, `uv tool install`) last, after forgetting any cached sudo credentials
-- Forget cached sudo credentials, including ones from before the run (such as a `sudo pacman -S` you just ran), before it clones the config and launches Neovim, which installs plugins and runs their build steps
+- Forget cached sudo credentials, including ones from before the run (such as a `sudo pacman -S` you just ran), before it clones the config and launches Neovim, which installs plugins and runs their build steps; with passwordless sudo (`NOPASSWD`), forgetting the ticket protects nothing
 - Detect your shell and update PATH if needed (bash, zsh, fish)
 - Skip anything already installed
 - Stop if a required package (build tools, core tools, runtimes) fails, and list optional tools it could not install in the summary at the end (best-effort platforms get manual steps there)
 
 Run `./nvim-install.sh --help` for details.
 
-The installer's tests run with `bash tests/install-script.test.sh` (the scripts that run the installer's `main` for them, and the reader that gets the server list through `nvim --clean`, are in `tests/lib/`); set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it runs `sudo -k` itself first, so no cached sudo ticket reaches the run, and it needs network: Neovim's first launch installs the plugins into scratch directories), and `REQUIRE_ALL=1` to fail instead of skipping when the root-guard test cannot run (it needs `fakeroot` or `unshare -r`). The LSP and linter settings that keep repo code from running and tools from downloading anything are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
+The installer's tests run with `bash tests/install-script.test.sh` (the scripts that run the installer's `main` for them, their shared helpers and stub commands, and the reader that gets the server list through `nvim --clean`, are in `tests/lib/`; the suite refuses to run when its temp dir is on a `noexec` mount, so point `TMPDIR` elsewhere then); set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it runs `sudo -k` itself first, so no cached sudo ticket reaches the run, and it needs network: Neovim's first launch installs the plugins into scratch directories), and `REQUIRE_ALL=1` to fail instead of skipping when the root-guard test cannot run (it needs `fakeroot` or `unshare -r`). The LSP and linter settings that keep repo code from running and tools from downloading anything are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
 
 ### 3. First Launch and Verification
 

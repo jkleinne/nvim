@@ -13,7 +13,7 @@ readonly ARCH_TSSERVER="/usr/lib/node_modules/typescript/lib/tsserver.js"
 
 # The directory this script is in, resolved without CDPATH. Empty when the script has no file (run as
 # bash -c "$(curl ...)", or through a pipe); setup_config then skips its checks for running from a
-# checkout.
+# checkout. Run as bash <(curl ...), it is /proc/self/fd, which matches no checkout, so that is harmless.
 SCRIPT_DIR=""
 if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
   SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,6 +30,7 @@ PKG_MGR=""
 PKG_TIER=""
 PKG_DB_SYNCED=false
 SUDO_TICKET_HELD=false
+PRIVILEGE_CLOSED=false
 USER_SHELL=""
 
 # ---------------------------------------------------------------------------
@@ -57,10 +58,12 @@ section() {
   printf '\n%s\n' "${BOLD}${BLUE}--- $1 ---${RESET}"
 }
 
-# Ask a y/N question; anything but y/Y, including end of input, counts as no
+# Ask a y/N question: returns 0 for y or Y, 1 for any other answer, and 2 at end of input (no one to
+# answer, as when stdin is closed or the script comes through a pipe). Callers that only need yes or no
+# treat 1 and 2 alike.
 confirm() {
   local reply
-  read -rp "$1 [y/N] " reply || return 1
+  read -rp "$1 [y/N] " reply || return 2
   [[ "$reply" =~ ^[Yy]$ ]]
 }
 
@@ -69,8 +72,10 @@ confirm() {
 # ---------------------------------------------------------------------------
 
 # Every root command goes through as_root, which holds a sudo ticket first. main forgets every cached
-# credential once (forget_sudo_credentials), right after the last step that runs root commands, and
-# cleanup drops a ticket the script still holds on any exit.
+# credential once (forget_sudo_credentials), right after the last step that runs root commands, which
+# closes the privileged phase: a root command after it stops the run. cleanup drops a ticket the script
+# still holds on any exit. sudo usually asks for a password once; it asks again if one step, such as
+# the upgrade, outlasts its timestamp_timeout (sudo's timestamp is per terminal, 5 minutes by default).
 
 require_sudo() {
   if ! command -v sudo >/dev/null 2>&1; then
@@ -79,51 +84,70 @@ require_sudo() {
   fi
 }
 
-# Acts only while no ticket is held (the first time, and again after forget_sudo_credentials): checks
-# that sudo exists and its credentials (fails fast on a wrong password, and caches them), and marks
-# the ticket as held, so cleanup drops it. A machine with everything installed never gets here, so
-# it is never asked for a password.
+# Called before each root command, with that command as its arguments (for the error message). Once
+# forget_sudo_credentials has closed the privileged phase, it stops the run. The first time, it checks
+# that sudo exists and its credentials (fails fast on a wrong password, and caches them), after marking
+# the ticket as held, so cleanup drops it even when an interrupt lands while sudo -v caches it. Later,
+# it checks the ticket with sudo -n -v, which never prompts, and validates the credentials again when the
+# ticket lapsed (sudo -n -v also succeeds without a ticket when every sudoers entry is NOPASSWD). A
+# machine with everything installed never gets here, so it is never asked for a password.
 ensure_sudo_ticket() {
-  if [[ "$SUDO_TICKET_HELD" == true ]]; then
+  if [[ "$PRIVILEGE_CLOSED" == true ]]; then
+    error "root command after the privileged phase: $*"
+    exit 1
+  fi
+  if [[ "$SUDO_TICKET_HELD" == true ]] && sudo -n -v 2>/dev/null; then
     return
   fi
   require_sudo
+  SUDO_TICKET_HELD=true
   if ! sudo -v; then
     error "sudo authentication failed."
     exit 1
   fi
-  SUDO_TICKET_HELD=true
 }
 
 # Runs "$@" as root
 as_root() {
-  ensure_sudo_ticket
+  ensure_sudo_ticket "$@"
   sudo "$@"
 }
 
-# Drops any cached sudo credentials, including ones from before this run (for example the README's
-# own 'sudo pacman -S' step), so the code this script starts next never inherits them: main calls it
-# once, after the last root command and before go install and uv tool install fetch and build code,
-# the config clone, and Neovim's first launch, which installs plugins and runs their build steps.
-# sudo -k never prompts. This is stricter than installers that drop only the tickets they created,
-# because this script itself starts third-party build code. sudo -k can fail where sudo is not setuid
-# (some containers, nosuid mounts); such a host has no ticket to drop, and the run goes on, unless
-# sudo -n -v (which succeeds only with a valid ticket, and never prompts) shows a ticket is still
-# live. No ticket is held afterwards, so cleanup has nothing to drop.
+# Closes the privileged phase (any root command after this stops the run) and drops any cached sudo
+# credentials, including ones from before this run (for example the README's own 'sudo pacman -S'
+# step), so the code this script starts next never inherits them: main calls it once, after the last
+# root command and before go install and uv tool install fetch and build code, the config clone, and
+# Neovim's first launch, which installs plugins and runs their build steps. sudo -k never prompts. This
+# is stricter than installers that drop only the tickets they created, because this script itself
+# starts third-party build code. With passwordless (NOPASSWD) sudo there is no ticket to drop, so this
+# protects nothing. sudo -k can fail where sudo is not setuid (some containers, nosuid mounts); such a
+# host has no ticket to drop, and the run goes on, unless sudo -n -v (which never prompts, and succeeds
+# with a live ticket, or with NOPASSWD sudoers entries) succeeds: then the run stops, and a ticket this
+# script took stays marked as held, so cleanup tries sudo -k again.
 forget_sudo_credentials() {
-  SUDO_TICKET_HELD=false
-  if ! command -v sudo >/dev/null 2>&1 || sudo -k 2>/dev/null; then
+  local k_error
+  PRIVILEGE_CLOSED=true
+  if ! command -v sudo >/dev/null 2>&1; then
+    SUDO_TICKET_HELD=false
+    return
+  fi
+  if k_error="$(sudo -k 2>&1 >/dev/null)"; then
+    SUDO_TICKET_HELD=false
     return
   fi
   if sudo -n -v 2>/dev/null; then
-    error "sudo -k failed but a cached sudo ticket is still valid; run 'sudo -k' yourself and run this script again"
+    error "sudo -k failed (${k_error:-no message}), and a cached sudo ticket is still valid."
+    error "Wait for it to expire (sudo's timestamp_timeout, 5 minutes by default), then run this script again."
     exit 1
   fi
+  SUDO_TICKET_HELD=false
 }
 
-# For cleanup, which runs on every exit: drops the ticket the script holds, and never fails
-drop_ticket_quietly() {
-  sudo -k 2>/dev/null || true
+# For cleanup, which runs on every exit: drops the ticket the script still holds, and never fails
+release_held_ticket() {
+  if [[ "${SUDO_TICKET_HELD:-}" == true ]]; then
+    sudo -k 2>/dev/null || true
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -131,15 +155,14 @@ drop_ticket_quietly() {
 # ---------------------------------------------------------------------------
 
 cleanup() {
+  # Runs on every exit, errors and signals included, so a sudo ticket this script took never outlives
+  # it; first, so an interrupt during the removals below cannot skip it
+  release_held_ticket
   if [[ -n "${SCRIPT_TMPDIR:-}" ]] && [[ -d "$SCRIPT_TMPDIR" ]]; then
     rm -rf "$SCRIPT_TMPDIR"
   fi
   if [[ -n "${CLONE_STAGING:-}" ]] && [[ -d "$CLONE_STAGING" ]]; then
     rm -rf "$CLONE_STAGING"
-  fi
-  # Runs on every exit, errors and signals included, so a sudo ticket this script took never outlives it
-  if [[ "${SUDO_TICKET_HELD:-}" == true ]]; then
-    drop_ticket_quietly
   fi
 }
 
@@ -204,14 +227,18 @@ os_release_pkg_mgr() {
 }
 
 # Sets the package manager ($1) and its support tier together: pacman is first-class, the rest
-# best-effort. Behavior that only pacman gets keys on PKG_MGR; PKG_TIER is for display.
+# best-effort. Behavior that only pacman gets keys on PKG_MGR; PKG_TIER is for display. Any other
+# manager stops the run: the install functions' case statements know only these four.
 set_pkg_manager() {
+  case "$1" in
+    pacman) PKG_TIER="first-class" ;;
+    apt-get | dnf | apk) PKG_TIER="best-effort" ;;
+    *)
+      error "set_pkg_manager: unknown package manager '$1' (expected pacman, apt-get, dnf, or apk)"
+      exit 1
+      ;;
+  esac
   PKG_MGR="$1"
-  if [[ "$PKG_MGR" == "pacman" ]]; then
-    PKG_TIER="first-class"
-  else
-    PKG_TIER="best-effort"
-  fi
 }
 
 detect_pkg_manager() {
@@ -297,10 +324,19 @@ confirm_proceed() {
   printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
   printf '\n'
 
-  if ! confirm "Proceed?"; then
-    info "Cancelled."
-    exit 0
-  fi
+  local answer=0
+  confirm "Proceed?" || answer=$?
+  case "$answer" in
+    0) ;;
+    2)
+      error "No answer (stdin is closed or not a terminal); run the script from a terminal"
+      exit 1
+      ;;
+    *)
+      info "Cancelled."
+      exit 0
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -341,6 +377,10 @@ install_neovim_tarball() {
   info "Extracting to $NVIM_INSTALL_DIR (requires sudo)..."
   as_root mkdir -p "$NVIM_INSTALL_DIR"
   as_root tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
+  # tar run as root keeps the owners the archive records, and the dir's bin may go first on PATH
+  # (setup_path prepends it), so root owns the tree and only root can write to it
+  as_root chown -R 0:0 "$NVIM_INSTALL_DIR"
+  as_root chmod -R go-w "$NVIM_INSTALL_DIR"
 
   if [[ -w "/usr/local/bin" ]] || as_root test -w "/usr/local/bin"; then
     as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" /usr/local/bin/nvim
@@ -522,7 +562,7 @@ go_bin_dir() {
 # The line for the user's shell config that puts dir $2 on PATH, after the dirs already there ($1
 # append) or ahead of them ($1 prepend). The user-tool hints append, so user dirs never shadow system
 # binaries. fish gets --path either way, or fish_add_path puts the dir in fish_user_paths, which fish
-# places ahead of the system paths even with --append.
+# places ahead of the system paths even with --append. Any other mode is an error (status 1).
 path_line() {
   # shellcheck disable=SC2016  # $PATH is literal on purpose: the line goes into the user's shell config
   case "$USER_SHELL:$1" in
@@ -530,6 +570,10 @@ path_line() {
     fish:prepend) printf 'fish_add_path --path %s\n' "$2" ;;
     *:append)     printf 'export PATH="$PATH:%s"\n' "$2" ;;
     *:prepend)    printf 'export PATH="%s:$PATH"\n' "$2" ;;
+    *)
+      error "path_line: unknown mode '$1' (expected append or prepend)"
+      return 1
+      ;;
   esac
 }
 
@@ -790,8 +834,9 @@ install_user_tools() {
 # Dependency orchestrator
 # ---------------------------------------------------------------------------
 
-# System packages only, all under one sudo ticket, so sudo asks for a password at most once. The
-# user-level tools (install_user_tools) run later, after main forgets the ticket.
+# System packages only, all under one sudo ticket, so sudo usually asks for a password once; it asks
+# again if one step, such as the upgrade, outlasts its timestamp_timeout. The user-level tools
+# (install_user_tools) run later, after main forgets the ticket.
 install_deps() {
   install_build_tools
   install_core_tools
@@ -1097,8 +1142,8 @@ main() {
 }
 
 # Runs main when the script is executed, directly or as bash -c "$(curl ...)" or through a pipe, and
-# not when it is sourced (the tests source it). Through a pipe, confirm reads the end of input or the
-# script's own text, so the run cancels at the first prompt.
+# not when it is sourced (the tests source it). Through a pipe, confirm reads the end of input (or the
+# script's own text), so the run stops at the first prompt: it needs a terminal to answer from.
 if ! (return 0 2>/dev/null); then
   main "$@"
 fi

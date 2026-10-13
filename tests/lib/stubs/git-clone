@@ -1,0 +1,14 @@
+#!/bin/sh
+# git whose clone, offline, logs its arguments one per line to $CLONE_LOG (when set) and creates the
+# target (last argument) as a repo with origin $CLONE_ORIGIN and a marker file "cloned"; everything
+# else goes to the real git, $REAL_GIT
+if [ "$1" = clone ]; then
+  if [ -n "${CLONE_LOG:-}" ]; then
+    printf '%s\n' "$@" >>"$CLONE_LOG"
+  fi
+  for dest; do :; done
+  mkdir -p "$dest" && : >"$dest/cloned" && "${REAL_GIT:?}" init -q -b main "$dest" \
+    && "$REAL_GIT" -C "$dest" remote add origin "${CLONE_ORIGIN:?}"
+  exit $?
+fi
+exec "${REAL_GIT:?}" "$@"

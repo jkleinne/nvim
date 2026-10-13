@@ -1,0 +1,12 @@
+#!/bin/sh
+# T19's go: answers go env GOBIN and GOPATH from $T19_GOBIN and $T19_GOPATH, and fails when
+# $T19_GO_FAILS is set or for anything else
+if [ -n "${T19_GO_FAILS:-}" ] || [ "$1" != env ]; then
+  echo "STUB GO: failing $*" >&2
+  exit 1
+fi
+case "$2" in
+  GOBIN) printf '%s\n' "${T19_GOBIN:-}" ;;
+  GOPATH) printf '%s\n' "${T19_GOPATH:-}" ;;
+  *) exit 1 ;;
+esac

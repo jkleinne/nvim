@@ -1,0 +1,7 @@
+#!/bin/sh
+# A command no test may run for real (DENY_BIN, and the package managers that detection tests only look
+# up): logs "<name> <args>" to $SUITE_TMP/refused.log, which fails T21, and refuses
+name="${0##*/}"
+printf '%s %s\n' "$name" "$*" >>"${SUITE_TMP:?}/refused.log"
+echo "STUB $name BLOCKED: $*" >&2
+exit 1

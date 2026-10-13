@@ -1,0 +1,7 @@
+#!/bin/sh
+# git that runs the clone stub, $CLONE_GIT (git-clone), and after a clone creates $HOME/.config/nvim with
+# a file "stray" in it, standing in for a config dir that appears while the clone runs
+"${CLONE_GIT:?}" "$@" || exit
+if [ "$1" = clone ]; then
+  mkdir -p "$HOME/.config/nvim" && : >"$HOME/.config/nvim/stray"
+fi

@@ -1,0 +1,29 @@
+#!/bin/sh
+# sudo that never runs its arguments. It appends them to $SUDO_LOG, and "sudo <args>" to $EVENT_LOG when
+# set (a log other stubs share); when $SUDO_MARKER is set, it first logs "marker present" or "marker
+# gone" to $EVENT_LOG, as that file exists or not. It sends INT to the shell that ran it when its
+# arguments equal one of the ';'-separated entries of $SUDO_INT_ON, and fails when they equal one of
+# $SUDO_FAIL_ON.
+if [ -n "${SUDO_MARKER:-}" ]; then
+  if [ -e "$SUDO_MARKER" ]; then
+    echo "marker present" >>"${EVENT_LOG:?}"
+  else
+    echo "marker gone" >>"${EVENT_LOG:?}"
+  fi
+fi
+printf '%s\n' "$*" >>"${SUDO_LOG:?}"
+if [ -n "${EVENT_LOG:-}" ]; then
+  printf 'sudo %s\n' "$*" >>"$EVENT_LOG"
+fi
+if [ -n "${SUDO_INT_ON:-}" ]; then
+  case ";$SUDO_INT_ON;" in
+    *";$*;"*) kill -s INT "$PPID" ;;
+  esac
+fi
+case ";${SUDO_FAIL_ON:-};" in
+  *";$*;"*)
+    echo "STUB SUDO: failing $*" >&2
+    exit 1
+    ;;
+esac
+exit 0
