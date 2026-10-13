@@ -20,7 +20,7 @@ ARCH=""
 PKG_MGR=""
 PKG_TIER=""
 PKG_READY=false
-SUDO_USED=false
+SUDO_TICKET_HELD=false
 USER_SHELL=""
 
 # ---------------------------------------------------------------------------
@@ -67,7 +67,7 @@ cleanup() {
     rm -rf "$CLONE_STAGING"
   fi
   # Runs on every exit, errors and signals included, so a sudo ticket this script took never outlives it
-  if [[ "${SUDO_USED:-}" == true ]]; then
+  if [[ "${SUDO_TICKET_HELD:-}" == true ]]; then
     sudo -k 2>/dev/null || true
   fi
 }
@@ -139,34 +139,41 @@ os_release_pkg_mgr() {
   esac
 }
 
-detect_pkg_manager() {
-  local mgr
-  # os-release first: binaries alone mislead, since Debian and Fedora can ship a pacman
-  # binary and Arch's repos ship apt, dnf and apk-tools. Probe only when os-release names
-  # no supported distro or its manager is missing (pacman first: Arch is first-class).
-  mgr="$(os_release_pkg_mgr)"
-  if [[ -n "$mgr" ]] && command -v "$mgr" >/dev/null 2>&1; then
-    PKG_MGR="$mgr"
-  else
-    for mgr in pacman apt-get dnf apk; do
-      if command -v "$mgr" >/dev/null 2>&1; then
-        PKG_MGR="$mgr"
-        break
-      fi
-    done
-  fi
-
-  if [[ -z "$PKG_MGR" ]]; then
-    error "No supported package manager found."
-    error "Supported: pacman (Arch Linux, first-class); apt-get, dnf, apk (best-effort)."
-    exit 1
-  fi
-
+# Sets the package manager ($1) and its support tier together: pacman is first-class, the rest
+# best-effort. Behavior that only pacman gets keys on PKG_MGR; PKG_TIER is for display.
+set_pkg_manager() {
+  PKG_MGR="$1"
   if [[ "$PKG_MGR" == "pacman" ]]; then
     PKG_TIER="first-class"
   else
     PKG_TIER="best-effort"
   fi
+}
+
+detect_pkg_manager() {
+  local mgr found=""
+  # os-release first: binaries alone mislead, since Debian and Fedora can ship a pacman
+  # binary and Arch's repos ship apt, dnf and apk-tools. Probe only when os-release names
+  # no supported distro or its manager is missing (pacman first: Arch is first-class).
+  mgr="$(os_release_pkg_mgr)"
+  if [[ -n "$mgr" ]] && command -v "$mgr" >/dev/null 2>&1; then
+    found="$mgr"
+  else
+    for mgr in pacman apt-get dnf apk; do
+      if command -v "$mgr" >/dev/null 2>&1; then
+        found="$mgr"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "$found" ]]; then
+    error "No supported package manager found."
+    error "Supported: pacman (Arch Linux, first-class); apt-get, dnf, apk (best-effort)."
+    exit 1
+  fi
+
+  set_pkg_manager "$found"
 }
 
 detect_shell() {
@@ -254,6 +261,9 @@ install_neovim_tarball() {
 
   success "Downloaded $(du -h "$tarball" | cut -f1 | xargs)"
 
+  # Makes this function's sudo use explicit instead of relying on pkg_install neovim having run first
+  sudo_session_once
+
   if [[ -d "$NVIM_INSTALL_DIR" ]]; then
     warn "Existing installation at $NVIM_INSTALL_DIR will be replaced."
     if ! confirm "  Remove $NVIM_INSTALL_DIR?"; then
@@ -312,13 +322,12 @@ install_neovim() {
 # Dependency installation helpers
 # ---------------------------------------------------------------------------
 
-# Runs once, right before the first package install: checks that sudo exists and its credentials (fails
-# fast on a wrong password, and caches them), then refreshes package metadata. On Arch that is a full
-# system upgrade, because installing new packages against a freshly synced database without upgrading
-# is a partial upgrade, which Arch does not support. pacman shows its own list and asks before changing
-# anything. A machine with everything installed never gets here, so it needs no sudo at all.
-pkg_ready_once() {
-  if [[ "$PKG_READY" == true ]]; then
+# Called before sudo commands; acts only while no ticket is held (the first time, and again after
+# forget_sudo_credentials): checks that sudo exists and its credentials (fails fast on a wrong
+# password, and caches them), and marks the ticket as held, so cleanup drops it. A machine with
+# everything installed never gets here, so it is never asked for a password.
+sudo_session_once() {
+  if [[ "$SUDO_TICKET_HELD" == true ]]; then
     return
   fi
   require_sudo
@@ -326,7 +335,17 @@ pkg_ready_once() {
     error "sudo authentication failed."
     exit 1
   fi
-  SUDO_USED=true
+  SUDO_TICKET_HELD=true
+}
+
+# Runs once, right before the first package install: refreshes package metadata. On Arch that is a
+# full system upgrade, because installing new packages against a freshly synced database without
+# upgrading is a partial upgrade, which Arch does not support. pacman shows its own list and asks
+# before changing anything.
+refresh_pkg_metadata_once() {
+  if [[ "$PKG_READY" == true ]]; then
+    return
+  fi
   case "$PKG_MGR" in
     pacman)
       info "Upgrading the system first (pacman -Syu)..."
@@ -360,7 +379,8 @@ pkg_is_installed() {
 }
 
 pkg_install() {
-  pkg_ready_once
+  sudo_session_once
+  refresh_pkg_metadata_once
   case "$PKG_MGR" in
     apt-get) sudo apt-get install -y "$@" ;;
     dnf)     sudo dnf install -y "$@" ;;
@@ -478,25 +498,20 @@ warn_if_not_on_path() {
   warn "$dir is not on PATH; add this to your shell config: $(path_append_line "$dir")"
 }
 
-# Forget the sudo ticket this script took for package installs, once they are done, so the go install
-# and uv tool install runs that follow never inherit it
-drop_sudo_ticket() {
-  if [[ "$SUDO_USED" == true ]]; then
-    sudo -k
-    SUDO_USED=false
-  fi
-}
-
-# The next steps clone the config and launch Neovim, which installs plugins and runs their build steps,
-# so drop any cached sudo credentials, including ones from before this run (for example the README's
-# own 'sudo pacman -S' step); sudo -k never prompts. This is stricter than installers that drop only
-# the tickets they created, because this script itself starts third-party build code.
+# Drops any cached sudo credentials, including ones from before this run (for example the README's
+# own 'sudo pacman -S' step), so the code this script starts next never inherits them: install_deps
+# calls it before go install and uv tool install fetch and build code, and main again before the
+# config clone and Neovim's first launch, which installs plugins and runs their build steps. sudo -k
+# never prompts. This is stricter than installers that drop only the tickets they created, because
+# this script itself starts third-party build code. No ticket is held afterwards, so cleanup has
+# nothing to drop and a later sudo command asks again (sudo_session_once).
 forget_sudo_credentials() {
   if command -v sudo >/dev/null 2>&1; then
     # sudo -k can fail where sudo is not setuid (some containers, nosuid mounts); such a host has no
-    # ticket to drop, and the run must go on to the config clone
+    # ticket to drop, and the run must go on
     sudo -k 2>/dev/null || true
   fi
+  SUDO_TICKET_HELD=false
 }
 
 # For go install / uv tool install: the binary lands in a user bin dir that may
@@ -613,6 +628,9 @@ install_language_servers() {
     *)
       warn_manual bash-language-server docker-langserver vscode-json-language-server pyright-langserver \
         typescript-language-server yaml-language-server
+      if ! command -v tsserver >/dev/null 2>&1; then
+        warn "ts_ls also needs a system TypeScript: install your distribution's TypeScript package, which provides tsserver"
+      fi
       ;;
   esac
 }
@@ -650,7 +668,7 @@ install_linters() {
   if command -v hadolint >/dev/null 2>&1; then
     return
   fi
-  if [[ "$PKG_TIER" == first-class ]]; then
+  if [[ "$PKG_MGR" == pacman ]]; then
     warn "hadolint: not in the official repos; review the PKGBUILD and run 'yay -S hadolint-bin', or run ':MasonInstall hadolint' in Neovim"
   else
     warn "hadolint: install manually, or run ':MasonInstall hadolint' in Neovim"
@@ -675,9 +693,9 @@ install_tui_tools() {
 
 # Best-effort distros: the formatters, linters, and TUI tools their repos lack, from uv tool install
 # and go install (latest upstream). They fetch and build code from the network, so install_deps runs
-# them last, after dropping the sudo ticket.
+# them last, after forgetting any cached sudo credentials.
 install_user_tools() {
-  if [[ "$PKG_TIER" == first-class ]]; then
+  if [[ "$PKG_MGR" == pacman ]]; then
     return
   fi
 
@@ -696,8 +714,8 @@ install_user_tools() {
 # Dependency orchestrator
 # ---------------------------------------------------------------------------
 
-# Two phases, so sudo is asked for once and dropped once, before any go or uv code runs: every system
-# package first, then the user-level tools
+# Two phases, so sudo is asked for at most once and no sudo credentials are cached when go or uv code
+# runs: every system package first, then the user-level tools
 install_deps() {
   install_build_tools
   install_core_tools
@@ -707,7 +725,8 @@ install_deps() {
   install_formatters
   install_linters
   install_tui_tools
-  drop_sudo_ticket
+  # Drops any cached credentials, the script's or older ones, before go and uv run
+  forget_sudo_credentials
   install_user_tools
 }
 
