@@ -1,6 +1,7 @@
 -- The language servers this config sets up. Data only: read by lua/plugins/lsp.lua, and by
--- tests/install-script.test.sh T20 through `nvim --clean -l`. Keep `system` in sync with
--- install_language_servers in nvim-install.sh and the README's pacman command.
+-- tests/install-script.test.sh T20 through `nvim --clean -l tests/lib/system-servers.lua`. Keep in
+-- sync: `system` with install_language_servers in nvim-install.sh, the README's pacman command, and
+-- T20; every list with the independent copy in tests/editor-config.test.lua (checked by L1b).
 return {
   -- Installed by Mason (native binaries, no npm)
   mason = {
@@ -25,4 +26,9 @@ return {
   -- No longer used by this config (docker_language_server: see README). A leftover Mason copy from
   -- an older version must never start.
   retired = { "ansiblels", "docker_compose_language_service", "docker_language_server", "sqlls" },
+
+  -- lspconfig servers that run repo-supplied code with tools this config installs or trusts: tflint
+  -- plugins named in a repo's .tflint.hcl (tflint), a repo's .golangci.yml (golangci_lint_ls), and
+  -- terraform providers (terraform_lsp, tofu_ls). They never start, not even with a bare :lsp enable.
+  never = { "golangci_lint_ls", "terraform_lsp", "tflint", "tofu_ls" },
 }

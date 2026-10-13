@@ -1,7 +1,9 @@
--- ts_ls's TypeScript gate, used by lua/plugins/lsp.lua. typescript-language-server ignores a tsserver
--- path that is not a TypeScript package's tsserver.js and then loads the workspace's own TypeScript,
--- so only such a file counts. Requiring this module has no side effects.
+-- ts_ls's TypeScript policy, used by lua/plugins/lsp.lua. typescript-language-server ignores a
+-- tsserver path that is not a TypeScript package's tsserver.js and then loads the workspace's own
+-- TypeScript, so only such a file counts. Requiring this module has no side effects.
 local M = {}
+
+M.SERVER = "ts_ls"
 
 -- Arch's typescript package (a dependency of typescript-language-server). A field, so tests can
 -- point it at a scratch package.
@@ -49,20 +51,47 @@ function M.system_tsserver()
   return package_root and M.package_tsserver(package_root .. "/lib/tsserver.js") or nil
 end
 
--- A root_dir for ts_ls without a system TypeScript: it never hands Neovim a root, so ts_ls never
--- starts, even through :lsp enable ts_ls, and the first call each session says why
+-- ts_ls's root_dir without a system TypeScript: it never hands Neovim a root, so ts_ls never starts,
+-- even through :lsp enable ts_ls, and the first call each session says why
 function M.refusing_root_dir()
-  return function()
-    if refusal_notified then
+  if refusal_notified then
+    return
+  end
+  refusal_notified = true
+  vim.notify(
+    "ts_ls is off: no system TypeScript found (Arch: the typescript package; elsewhere your distro's "
+      .. "TypeScript package, which provides tsserver). Without one, ts_ls would load a repo's own TypeScript.",
+    vim.log.levels.INFO
+  )
+end
+
+-- ts_ls's whole configuration for system_tsserver (M.system_tsserver()'s answer), and whether to
+-- enable ts_ls. upstream_root_dir is the root_dir configured before this one (lspconfig's), or nil.
+-- tsserver's automatic type acquisition runs npm to download @types packages, so it is always off.
+function M.ts_ls_config(system_tsserver, upstream_root_dir)
+  local init_options = { disableAutomaticTypingAcquisition = true }
+  if not system_tsserver then
+    return { init_options = init_options, root_dir = M.refusing_root_dir }, false
+  end
+  init_options.tsserver = { path = system_tsserver }
+  -- The package is checked again whenever a buffer asks for a root: once it is gone (say,
+  -- uninstalled mid-session), typescript-language-server would load the workspace's TypeScript
+  local function root_dir(bufnr, on_dir)
+    if not M.package_tsserver(system_tsserver) then
+      M.refusing_root_dir()
       return
     end
-    refusal_notified = true
-    vim.notify(
-      "ts_ls is off: no system TypeScript found (Arch: the typescript package; elsewhere your distro's "
-        .. "TypeScript package, which provides tsserver). Without one, ts_ls would load a repo's own TypeScript.",
-      vim.log.levels.INFO
-    )
+    if upstream_root_dir then
+      upstream_root_dir(bufnr, on_dir)
+      return
+    end
+    -- Without lspconfig's (as under --clean), the nearest project marker
+    local root = vim.fs.root(bufnr, { "tsconfig.json", "jsconfig.json", "package.json", ".git" })
+    if root then
+      on_dir(root)
+    end
   end
+  return { init_options = init_options, root_dir = root_dir }, true
 end
 
 -- Starts a new session: the refusal notice shows again

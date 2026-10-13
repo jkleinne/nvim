@@ -1,9 +1,10 @@
 -- terraform-ls's trust gate, used by lua/plugins/lsp.lua. terraform-ls runs `terraform providers
 -- schema`, which executes provider binaries from .terraform directories. When the terraform CLI is
 -- installed, it starts only in roots the trust database allows (:help vim.secure.trust()) that the
--- current user owns: trust is keyed by path only, so, as with git's safe.directory rule, a
--- directory owned by someone else never counts. A root whose path has a line break never starts and
--- is never trusted, because Neovim writes trust lines without escaping. Nothing ever prompts:
+-- current user owns and others cannot write: trust is keyed by path only, so, as with git's
+-- safe.directory rule, a directory someone else owns or anyone can write never counts. Neovim writes
+-- trust lines without escaping, so a root whose path has a line break never starts, and
+-- :TerraformTrust never trusts a root whose path or resolved path has one. Nothing ever prompts:
 -- vim.secure.read's single-key prompt can pop up asynchronously (for example after Mason finishes
 -- installing terraform-ls) and be answered by whatever is typed next, so it is never called. Trust
 -- comes only from :TerraformTrust or :trust. To revoke it, run `:trust ++remove <dir>`, then
@@ -14,12 +15,17 @@ local M = {}
 M.SERVER = "terraformls"
 M.COMMAND = "TerraformTrust"
 
+-- Why M.refusal refuses a root, as the messages name it
+M.REASONS = {
+  filesystem_root = "the filesystem root",
+  home = "your home directory",
+  home_parent = "a parent of your home directory",
+  world_writable = "world-writable",
+  not_owned = "owned by another user",
+}
+
 -- Trust-database hashes for a directory: allowed, denied
 local TRUSTED, DENIED = "directory", "!"
-
--- too_broad's reason for a directory owned by someone else. :trust does not help there, so the
--- messages for it do not suggest it.
-local NOT_OWNED = "owned by another user"
 
 -- Roots told about this session, so each gets the notice once
 local notified_roots = {}
@@ -34,6 +40,28 @@ end
 local function owned_by_user(dir)
   local stat = vim.uv.fs_stat(dir)
   return stat ~= nil and stat.uid == vim.uv.getuid()
+end
+
+-- Whether anyone may write dir (anyone could then create a .terraform in it). false when dir
+-- cannot be stat'ed.
+local function world_writable(dir)
+  local stat = vim.uv.fs_stat(dir)
+  return stat ~= nil and require("bit").band(stat.mode, tonumber("002", 8)) ~= 0
+end
+
+-- The current user's home directory, resolved, as $HOME names it and as the passwd entry does (they
+-- can differ, and HOME can be unset or missing). Skips one that cannot be resolved.
+local function home_dirs()
+  local dirs = {}
+  local function add(dir)
+    local real = dir and vim.uv.fs_realpath(dir)
+    if real then
+      dirs[#dirs + 1] = real
+    end
+  end
+  add(vim.env.HOME)
+  add((vim.uv.os_get_passwd() or {}).homedir)
+  return dirs
 end
 
 -- The hash of the last trust-database line for dir: "directory" (allowed), "!" (denied), or a
@@ -77,48 +105,60 @@ function M.root(bufnr)
   return root
 end
 
--- Whether terraform-ls may start in root, given hash = M.trust_hash(root), so a caller decides
--- from one read of the database
+-- Whether terraform-ls may start in root (from M.root, so without line breaks), given hash =
+-- M.trust_hash(root), so a caller decides from one read of the database
 local function allows(root, hash)
-  if has_line_break(root) then
-    return false
-  end
   if vim.fn.executable "terraform" == 0 then
     -- No CLI, so nothing runs provider plugins
     return true
   end
-  return hash == TRUSTED and owned_by_user(root)
+  return hash == TRUSTED and owned_by_user(root) and not world_writable(root)
 end
 
--- Whether terraform-ls may start in root. trust_hash alone reads the database: vim.secure.read is
--- not consulted, because a second reader could disagree with this one and reach its prompt.
+-- Whether terraform-ls may start in root (from M.root). trust_hash alone reads the database:
+-- vim.secure.read is not consulted, because a second reader could disagree with this one and reach
+-- its prompt.
 function M.allowed(root)
   return allows(root, M.trust_hash(root))
 end
 
 -- Why :TerraformTrust refuses root, or nil: trust in / or in the home directory or a parent of it
 -- would cover far more than one project, anyone can create a .terraform in a world-writable
--- directory, and someone else controls a directory they own (the gate never allows it)
-function M.too_broad(root)
+-- directory, and someone else controls a directory they own. Returns { reason = <M.REASONS text>,
+-- overridable = <bool> }: overridable when :trust <root> would make the gate allow it, that is,
+-- when the user owns root and others cannot write it.
+function M.refusal(root)
   local real = vim.uv.fs_realpath(root) or root
+  local homes = home_dirs()
+  local function is_home_parent()
+    return vim.iter(homes):any(function(home)
+      return vim.startswith(home, real .. "/")
+    end)
+  end
+  local reason
   if real == "/" then
-    return "the filesystem root"
+    reason = M.REASONS.filesystem_root
+  elseif vim.list_contains(homes, real) then
+    reason = M.REASONS.home
+  elseif is_home_parent() then
+    reason = M.REASONS.home_parent
+  elseif world_writable(root) then
+    reason = M.REASONS.world_writable
+  elseif not owned_by_user(root) then
+    reason = M.REASONS.not_owned
   end
-  local home = vim.env.HOME and vim.uv.fs_realpath(vim.env.HOME)
-  if home and real == home then
-    return "your home directory"
+  if not reason then
+    return nil
   end
-  if home and vim.startswith(home .. "/", real .. "/") then
-    return "a parent of your home directory"
-  end
-  local stat = vim.uv.fs_stat(root)
-  if stat and require("bit").band(stat.mode, tonumber("002", 8)) ~= 0 then
-    return "world-writable"
-  end
-  if not owned_by_user(root) then
-    return NOT_OWNED
-  end
-  return nil
+  return { reason = reason, overridable = owned_by_user(root) and not world_writable(root) }
+end
+
+-- "<root> (<reason>); <what the user can do>" for a refusal record. :trust is suggested only where
+-- the gate would honor it.
+local function refusal_text(root, refusal)
+  local hint = refusal.overridable and ("trust it on purpose with :trust " .. vim.fn.fnameescape(root))
+    or "terraform-ls starts only in directories you own that others cannot write"
+  return ("%s (%s); %s"):format(root, refusal.reason, hint)
 end
 
 -- The notice for a root terraform-ls is off in that the database does not deny
@@ -126,16 +166,9 @@ local function off_notice(root)
   if not vim.uv.fs_stat(root) then
     return "terraform-ls is off: save the file first, then run :" .. M.COMMAND
   end
-  local reason = M.too_broad(root)
-  if reason == NOT_OWNED then
-    return ("terraform-ls is off in %s (%s); it starts only in directories you own"):format(root, reason)
-  end
-  if reason then
-    return ("terraform-ls is off in %s (%s); trust it on purpose with :trust %s"):format(
-      root,
-      reason,
-      vim.fn.fnameescape(root)
-    )
+  local refusal = M.refusal(root)
+  if refusal then
+    return "terraform-ls is off in " .. refusal_text(root, refusal)
   end
   return "terraform-ls is off in "
     .. root
@@ -146,8 +179,8 @@ local function off_notice(root)
 end
 
 -- terraformls's root_dir: hands Neovim the root only when it is allowed, so terraform-ls never
--- starts anywhere else. A root the database does not allow or deny gets a notice, once per session,
--- instead of a prompt; a denied root gets none.
+-- starts anywhere else. A root the database does not deny gets a notice, once per session, instead
+-- of a prompt; a denied root gets none.
 function M.root_dir(bufnr, on_dir)
   local root = M.root(bufnr)
   if not root then
@@ -170,8 +203,8 @@ function M.reset()
   notified_roots = {}
 end
 
--- Allows the current file buffer's root in the trust database, unless too_broad refuses it, and
--- checks that the gate reads the entry back. Returns the root, or nil when nothing was allowed.
+-- Allows the current file buffer's root in the trust database, unless M.refusal refuses it, and
+-- checks that the database holds the entry. Returns the root, or nil when nothing was allowed.
 function M.trust_current_buffer()
   local warn = vim.log.levels.WARN
   local root = M.root(0)
@@ -179,28 +212,20 @@ function M.trust_current_buffer()
     vim.notify(M.COMMAND .. ": run it from a buffer that shows a file whose path has no line breaks", warn)
     return nil
   end
-  if not vim.uv.fs_stat(root) then
+  local real = vim.uv.fs_realpath(root)
+  if not real then
     vim.notify(("%s: %s does not exist yet; save the file first"):format(M.COMMAND, root), warn)
     return nil
   end
-  local reason = M.too_broad(root)
-  if reason == NOT_OWNED then
-    vim.notify(
-      ("%s: not trusting %s (%s); terraform-ls starts only in directories you own"):format(M.COMMAND, root, reason),
-      warn
-    )
+  -- vim.secure.trust writes the resolved path, which can have a line break where root has none: a
+  -- file :w ++p wrote into a new directory through a symlink keeps the link's path as its name
+  if has_line_break(real) then
+    vim.notify(("%s: not trusting %s: its resolved path has a line break"):format(M.COMMAND, root), warn)
     return nil
   end
-  if reason then
-    vim.notify(
-      ("%s: not trusting %s (%s). If you really mean it, run :trust %s"):format(
-        M.COMMAND,
-        root,
-        reason,
-        vim.fn.fnameescape(root)
-      ),
-      warn
-    )
+  local refusal = M.refusal(root)
+  if refusal then
+    vim.notify(("%s: not trusting %s"):format(M.COMMAND, refusal_text(root, refusal)), warn)
     return nil
   end
   local ok, path = vim.secure.trust { action = "allow", path = root }
@@ -208,7 +233,8 @@ function M.trust_current_buffer()
     vim.notify(M.COMMAND .. ": " .. path, vim.log.levels.ERROR)
     return nil
   end
-  if not M.allowed(root) then
+  -- Checks the written data, not the policy (M.allowed is true for any root without the CLI)
+  if M.trust_hash(root) ~= TRUSTED then
     vim.notify(M.COMMAND .. ": wrote the trust entry but could not read it back (trust database format changed?)", warn)
     return nil
   end

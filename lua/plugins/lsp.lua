@@ -36,7 +36,8 @@ return {
     "mason-org/mason-lspconfig.nvim",
   },
   config = function()
-    -- The server inventory: Mason's servers, the system package manager's, and retired ones
+    -- The server inventory: Mason's servers, the system package manager's, retired ones, and ones
+    -- that never start
     local servers = require "lsp_gates.servers"
     local typescript = require "lsp_gates.typescript"
     local terraform_trust = require "lsp_gates.terraform_trust"
@@ -48,15 +49,22 @@ return {
     -- lsp.lua alone decides whether a system server runs. mason-lspconfig would otherwise enable any
     -- Mason-installed copy by name with lspconfig's defaults, skipping the gates below; Mason puts its
     -- bin dir first on PATH, so a Mason-only copy still runs through the gated loop.
-    local not_auto_enabled = vim.list_extend(vim.tbl_keys(servers.system), servers.retired)
+    local never_start = vim.list_extend(vim.list_extend({}, servers.retired), servers.never)
+    local not_auto_enabled = vim.list_extend(vim.tbl_keys(servers.system), never_start)
     table.sort(not_auto_enabled)
 
-    local system_tsserver = typescript.system_tsserver()
+    -- ts_ls's whole policy (lsp_gates.typescript): with a system TypeScript, ts_ls uses it, checks it
+    -- again before each start, and then asks lspconfig's root_dir (taken here, before lsp.lua's own
+    -- replaces it); without one, ts_ls never starts, not even through :lsp enable ts_ls (else it would
+    -- load the workspace's TypeScript). Type acquisition (npm) is off either way.
+    local upstream_ts = vim.lsp.config[typescript.SERVER]
+    local ts_ls, ts_ls_enabled =
+      typescript.ts_ls_config(typescript.system_tsserver(), upstream_ts and upstream_ts.root_dir)
 
     -- What a system server needs besides its command before it is enabled
     local activation_gates = {
-      ts_ls = function()
-        return system_tsserver ~= nil
+      [typescript.SERVER] = function()
+        return ts_ls_enabled
       end,
     }
 
@@ -67,6 +75,9 @@ return {
     })
 
     vim.lsp.config("lua_ls", {
+      -- LuaLS keeps the plugins a user approved in <logpath>/trusted and loads them without asking.
+      -- A log dir this config owns starts empty, and the null answers below never add to it.
+      cmd = { "lua-language-server", "--logpath=" .. vim.fn.stdpath "log" .. "/lua_ls" },
       settings = {
         Lua = {
           diagnostics = {
@@ -79,7 +90,8 @@ return {
       },
       -- LuaLS 3.19.1 loads a repo's .luarc.json runtime.plugin for either button of its trust
       -- prompt, so a null answer is the only real "no". This also declines its third-party library
-      -- prompts.
+      -- prompts, and its auto-require and require-path prompts, so accepting an auto-require
+      -- completion inserts only the name.
       handlers = {
         ["window/showMessageRequest"] = function()
           return vim.NIL
@@ -87,16 +99,7 @@ return {
       },
     })
 
-    -- tsserver's automatic type acquisition runs npm to download @types packages, so it is off
-    local ts_ls = { init_options = { disableAutomaticTypingAcquisition = true } }
-    if system_tsserver then
-      ts_ls.init_options.tsserver = { path = system_tsserver }
-    else
-      -- Never starts, not even through :lsp enable ts_ls: else ts_ls would load the workspace's
-      -- TypeScript
-      ts_ls.root_dir = typescript.refusing_root_dir()
-    end
-    vim.lsp.config("ts_ls", ts_ls)
+    vim.lsp.config(typescript.SERVER, ts_ls)
 
     -- Remote schemas are never downloaded: the schema stores are off, and registerContentRequest has the
     -- server send $schema URLs to Neovim, which has no handler for them. on_init chains lspconfig's own
@@ -124,19 +127,23 @@ return {
 
     vim.lsp.config(terraform_trust.SERVER, { root_dir = terraform_trust.root_dir })
 
-    -- A leftover Mason copy never starts, even with a bare :lsp enable
-    for _, server in ipairs(servers.retired) do
+    -- A leftover Mason copy of a retired server, and a server that runs a repo's code
+    -- (servers.never), never start, even with a bare :lsp enable
+    for _, server in ipairs(never_start) do
       vim.lsp.config(server, { root_dir = function() end })
     end
 
     -- Configuration and activation are separate. Every system server gets its list cmd, so an
-    -- explicit :lsp enable <name> for one of them never falls back to a repo's node_modules/.bin (a
-    -- missing binary just fails to spawn). A bare :lsp enable enables every lspconfig server for the
-    -- filetype, and some of those prefer node_modules/.bin (upstream behavior this config does not
-    -- patch). Only the servers whose command is executable and whose gate (if any) passes are
-    -- enabled, which keeps lsp.log free of spawn errors and makes vim.lsp.is_enabled reflect what is
-    -- installed. Every vim.lsp.config call comes before mason_lspconfig.setup, because enabling
-    -- re-fires FileType for open buffers.
+    -- explicit :lsp enable <name> for one of them never falls back to a repo's node_modules/.bin
+    -- (Neovim refuses a list cmd whose binary is missing and logs it in lsp.log; nothing spawns). A
+    -- bare :lsp enable enables every lspconfig server for the filetype, and some of those prefer
+    -- node_modules/.bin (upstream behavior this config does not patch). Only the servers whose
+    -- command is executable and whose gate (if any) passes are enabled, which keeps lsp.log free of
+    -- those refusals and makes vim.lsp.is_enabled reflect what is installed. Every vim.lsp.config
+    -- call comes before mason_lspconfig.setup, because enabling re-fires FileType for open buffers.
+    -- When mason-lspconfig enables a Mason server it applies its own settings for it
+    -- (mason-lspconfig.lsp.<name>), which would replace these; it has none for this config's Mason
+    -- servers today.
     local enable = {}
     for server, cmd in pairs(servers.system) do
       vim.lsp.config(server, { cmd = cmd })
@@ -157,6 +164,9 @@ return {
 
     terraform_trust.create_command()
 
-    vim.api.nvim_create_autocmd("LspAttach", { callback = set_lsp_keymaps })
+    vim.api.nvim_create_autocmd("LspAttach", {
+      group = vim.api.nvim_create_augroup("lsp_keymaps", { clear = true }),
+      callback = set_lsp_keymaps,
+    })
   end,
 }
