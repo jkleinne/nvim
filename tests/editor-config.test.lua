@@ -19,10 +19,10 @@
 -- and restored after it: vim.notify, vim.fn.confirm (a trust prompt is recorded and cancelled, so
 -- it never waits for input), vim.secure.read (wrapped to record its calls), vim.lsp.enable and
 -- vim.cmd.doautoall (recorded instead of run in the :TerraformTrust cases), vim.secure.trust
--- (L10f), vim.uv.getuid (L8b, L9k, L10c), vim.uv.os_get_passwd (L10c), and HOME; the gates'
--- per-session notices are reset. L10g wraps vim.lsp's functions around one call and restores them
--- itself. Nothing is installed or downloaded, and no language server starts. Exits nonzero when a
--- test fails.
+-- (L10f), vim.uv.getuid (L8b, L9k, L10c, L10h), vim.uv.os_get_passwd (L10c), HOME, and
+-- EDITOR_TEST_ALIAS (L9m, L9n, L10i); the gates' per-session notices are reset. L10g wraps vim.lsp's
+-- functions around one call and restores them itself. Nothing is installed or downloaded, and no
+-- language server starts. Exits nonzero when a test fails.
 
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:gsub("^@", ""), ":p:h:h")
 -- Resolved before any path is built from it, so those paths match the (resolved) buffer names
@@ -102,9 +102,12 @@ end
 -- Texts the gates' notices contain (the refusal reasons come from terraform_trust.REASONS)
 local text = {
   trust_command = ":TerraformTrust",
-  owner_rule = "terraform-ls starts only in directories you own that others cannot write",
+  override_hint = "run :TerraformTrust! to trust it anyway (that covers every project below it)",
+  owner_rule = "terraform-ls starts only in directories you own that are not world-writable",
   save_first = "save the file first",
   not_a_file = "buffer that shows a file",
+  no_expansion = "no $NAME that Neovim would expand",
+  allowed = "terraform-ls allowed in ",
   resolved_line_break = "its resolved path has a line break",
   not_read_back = "could not read it back",
   no_typescript = "ts_ls is off: no system TypeScript found",
@@ -117,6 +120,7 @@ local text = {
 local original = {
   path = vim.env.PATH,
   home = vim.env.HOME,
+  editor_test_alias = vim.env.EDITOR_TEST_ALIAS,
   arch_tsserver = typescript.ARCH_TSSERVER,
   confirm = vim.fn.confirm,
   doautoall = vim.cmd.doautoall,
@@ -140,7 +144,7 @@ local system_cmds = {
   yamlls = { "yaml-language-server", "--stdio" },
 }
 local retired_names = { "ansiblels", "docker_compose_language_service", "docker_language_server", "sqlls" }
-local never_names = { "golangci_lint_ls", "terraform_lsp", "tflint", "tofu_ls" }
+local never_names = { "esbonio", "golangci_lint_ls", "terraform_lsp", "tflint", "tofu_ls", "tvm_ffi_navigator" }
 local server_names = vim.tbl_keys(system_cmds)
 table.sort(server_names)
 local server_bins = {}
@@ -384,16 +388,23 @@ local function is_trust_notice(event, dir)
   return is_notice(event, vim.log.levels.INFO, { dir, text.trust_command })
 end
 
--- The texts a refusal of root for reason gives: :trust <root> where the gate would honor it
--- (overridable), else the owner rule, and then never :trust. Returns texts, absent_texts.
+-- The texts a refusal of root for reason gives: :TerraformTrust! where the gate would honor trust
+-- (overridable), else the owner rule and not :TerraformTrust!, and never :trust (Neovim 0.12's
+-- :trust <dir> fails with E475). Returns texts, absent_texts.
 local function advice_texts(root_dir, reason, overridable)
   local texts = { root_dir .. " (" .. reason .. ")" }
   if overridable then
-    texts[2] = ":trust " .. vim.fn.fnameescape(root_dir)
-    return texts, {}
+    texts[2] = text.override_hint
+    return texts, { ":trust" }
   end
   texts[2] = text.owner_rule
-  return texts, { ":trust" }
+  return texts, { ":trust", ":TerraformTrust!" }
+end
+
+-- The command a refusal's hint (the text after "; ") names, without its colon, or nil
+local function hinted_command(msg)
+  local hint = msg:match "; (.*)$"
+  return hint and hint:match ":(%S+)"
 end
 
 -- Calls a root_dir function and returns the dirs it passed to on_dir
@@ -435,19 +446,31 @@ local function ts_ls_problems(tsserver_path)
   return joined(problems)
 end
 
--- Runs :TerraformTrust from buf with an empty trust database and fresh activation records. Problems
--- unless it gave exactly one WARN notice containing each of texts and none of absent_texts (plain
--- substrings), wrote nothing to the database, and activated nothing.
-local function refused_problems(label, buf, events, texts, absent_texts)
-  vim.fn.delete(trust_file())
+-- The trust database's bytes, or nil when there is none
+local function trust_bytes()
+  local f = io.open(trust_file(), "rb")
+  if not f then
+    return nil
+  end
+  local bytes = f:read "*a"
+  f:close()
+  return bytes
+end
+
+-- Runs command (default TerraformTrust) from buf with fresh activation records. Problems unless it
+-- ran without error, gave exactly one WARN notice containing each of texts and none of absent_texts
+-- (plain substrings), left the trust database byte-identical, and activated nothing.
+local function refused_problems(label, buf, events, texts, absent_texts, command)
   vim.fn.mkdir(vim.fn.stdpath "state", "p")
+  local before_bytes = trust_bytes()
   vim.api.nvim_set_current_buf(buf)
   local calls, undo = record_activation()
   local before = #events
-  vim.cmd "TerraformTrust"
+  local ok, err = pcall(vim.cmd, command or "TerraformTrust")
   undo()
   local notices = vim.list_slice(events, before + 1)
   local problems = {}
+  want(problems, ok, label .. ": error " .. tostring(err))
   want(
     problems,
     #notices == 1 and is_notice(notices[1], vim.log.levels.WARN, texts, absent_texts),
@@ -458,15 +481,39 @@ local function refused_problems(label, buf, events, texts, absent_texts)
       .. "; got "
       .. show(notices)
   )
-  want(problems, #trust_lines() == 0, label .. ": trust database " .. show(trust_lines()))
+  want(problems, trust_bytes() == before_bytes, label .. ": trust database changed to " .. show(trust_lines()))
   want(problems, #calls == 0, label .. ": activation calls " .. show(calls))
   return problems
+end
+
+-- A directory literally named $EDITOR_TEST_ALIAS in <tmp>/<name>-dl, holding main.tf, with
+-- EDITOR_TEST_ALIAS set so that vim.fs.normalize turns that directory's path into one that resolves
+-- to target: "alias", with <dl>/alias linking to target, or (absolute) target's own path, with a
+-- link like <dl>/tmp -> /tmp for its first component (normalize joins the doubled slash). Returns
+-- the literal directory and a buffer for its main.tf.
+local function dollar_name_tree(name, target, absolute)
+  local dl = tmp .. "/" .. name .. "-dl"
+  local literal = dl .. "/$EDITOR_TEST_ALIAS"
+  vim.fn.mkdir(literal, "p")
+  vim.fn.writefile({}, literal .. "/main.tf")
+  if absolute then
+    local top = target:match "^/[^/]+"
+    assert(vim.uv.fs_symlink(top, dl .. top))
+    vim.env.EDITOR_TEST_ALIAS = target
+  else
+    assert(vim.uv.fs_symlink(target, dl .. "/alias"))
+    vim.env.EDITOR_TEST_ALIAS = "alias"
+  end
+  local resolved = vim.uv.fs_realpath(vim.fs.normalize(literal))
+  assert(resolved == target, ("%s normalizes onto %s, not %s"):format(literal, tostring(resolved), target))
+  return literal, vim.fn.bufadd(literal .. "/main.tf")
 end
 
 -- Undoes every stub and every LSP setting a case made
 local function restore()
   vim.env.PATH = original.path
   vim.env.HOME = original.home
+  vim.env.EDITOR_TEST_ALIAS = original.editor_test_alias
   typescript.ARCH_TSSERVER = original.arch_tsserver
   vim.fn.confirm = original.confirm
   vim.cmd.doautoall = original.doautoall
@@ -615,10 +662,10 @@ case("L1c-retired-refuse", function()
   return joined(refusing_problems(retired_names, buf))
 end)
 
--- L1d: the lspconfig servers that run a repo's code with tools this config installs or trusts
--- (tflint plugins, a repo's .golangci.yml, terraform providers) never start: each one's root_dir
--- never hands Neovim a root, even when a bare :lsp enable enables it, and mason-lspconfig's
--- automatic enable skips them
+-- L1d: the known lspconfig servers that run a repo's code with tools this config installs or trusts
+-- (tflint plugins, a repo's .golangci.yml, terraform providers, a repo's Python modules through
+-- python -m) never start: each one's root_dir never hands Neovim a root, even when a bare :lsp
+-- enable enables it, and mason-lspconfig's automatic enable skips them
 case("L1d-never-servers", function()
   load_spec "lsp"
   local _, buf = project "L1d"
@@ -1040,10 +1087,10 @@ case("L8-unanswered-no-prompt", function()
   return joined(problems)
 end)
 
--- L8b: the notice fits the root: one :TerraformTrust refuses but :trust would allow (here the home
--- directory) names :trust for trusting it on purpose, one owned by another user gives the owner
--- rule and never names :trust, and one that does not exist yet (a new file in a new directory) says
--- to save the file first, as :TerraformTrust itself does there
+-- L8b: the notice fits the root: one :TerraformTrust refuses but the gate would honor (here the home
+-- directory) names :TerraformTrust! for trusting it anyway, one owned by another user gives the
+-- owner rule and names neither that nor :trust, and one that does not exist yet (a new file in a
+-- new directory) says to save the file first, as :TerraformTrust itself does there
 case("L8b-notice-variants", function()
   local events, home, home_buf = terraform_setup "L8b-home"
   vim.env.HOME = home
@@ -1338,6 +1385,84 @@ case("L9l-trusted-world-writable-refused", function()
   return joined(problems)
 end)
 
+-- L9m: vim.fs.root and vim.secure key on the path vim.fs.normalize gives, which expands $NAME from
+-- the environment, while terraform-ls would start in the literal directory. A file in a directory
+-- literally named $EDITOR_TEST_ALIAS that normalizes onto an allowed directory (with no .terraform
+-- or .git, so the root would be the file's own directory) has no root: terraform-ls never starts
+-- there, no notice shows, and :TerraformTrust and :TerraformTrust! refuse it, leaving the database
+-- as it was
+case("L9m-dollar-name-fallback", function()
+  local events = terraform_setup "L9m"
+  local trusted = tmp .. "/L9m-trusted"
+  vim.fn.mkdir(trusted, "p")
+  trust("allow", trusted)
+  local _, buf = dollar_name_tree("L9m", trusted, false)
+  local problems = {}
+  local got_root = terraform_trust.root(buf)
+  want(problems, got_root == nil, "root " .. show(got_root))
+  local dirs = root_dirs(vim.lsp.config.terraformls.root_dir, buf)
+  want(problems, #dirs == 0, "on_dir calls " .. show(dirs))
+  want(problems, #events == 0, "events " .. show(events))
+  for _, command in ipairs { "TerraformTrust", "TerraformTrust!" } do
+    vim.list_extend(
+      problems,
+      refused_problems(":" .. command, buf, events, { text.not_a_file, text.no_expansion }, {}, command)
+    )
+  end
+  return joined(problems)
+end)
+
+-- L9n: the same with markers: the allowed directory is a project (a .git), so vim.fs.root, searching
+-- from the directory the name normalizes to, returns that path, while main.tf's own directory holds
+-- a .terraform. EDITOR_TEST_ALIAS names the project relatively (through <dl>/alias) and absolutely
+-- (its own path, through a link like <dl>/tmp -> /tmp). Neither file has a root, terraform-ls never
+-- starts for it, and no notice shows.
+case("L9n-dollar-name-marker", function()
+  local events, trusted = terraform_setup "L9n"
+  trust("allow", trusted)
+  local problems = {}
+  for _, absolute in ipairs { false, true } do
+    local label = absolute and "absolute" or "relative"
+    local literal, buf = dollar_name_tree("L9n-" .. label, trusted, absolute)
+    vim.fn.mkdir(literal .. "/.terraform", "p")
+    local expanded = vim.fs.root(buf, { ".terraform", ".git" })
+    want(
+      problems,
+      expanded ~= nil and vim.uv.fs_realpath(expanded) == trusted,
+      label .. ": setup: vim.fs.root gives " .. show(expanded) .. ", not a path to " .. trusted
+    )
+    local got_root = terraform_trust.root(buf)
+    want(problems, got_root == nil, label .. ": root " .. show(got_root))
+    local dirs = root_dirs(vim.lsp.config.terraformls.root_dir, buf)
+    want(problems, #dirs == 0, label .. ": on_dir calls " .. show(dirs))
+  end
+  want(problems, #events == 0, "events " .. show(events))
+  return joined(problems)
+end)
+
+-- L9o: a root the user owns that the group can write (0775, as a 002 umask makes it) counts: the gate
+-- checks only for world-writable roots. :TerraformTrust trusts it and terraform-ls starts there. This
+-- pins an accepted residual, so a change to it is deliberate.
+case("L9o-group-writable-allowed", function()
+  local events, dir, buf = terraform_setup "L9o"
+  assert(vim.uv.fs_chmod(dir, tonumber("775", 8)))
+  local problems = {}
+  local refusal = terraform_trust.refusal(dir)
+  want(problems, refusal == nil, "refusal " .. show(refusal))
+  vim.fn.mkdir(vim.fn.stdpath "state", "p")
+  vim.api.nvim_set_current_buf(buf)
+  vim.cmd "TerraformTrust"
+  want(
+    problems,
+    #events == 1 and is_notice(events[1], vim.log.levels.INFO, { text.allowed .. dir }),
+    "want one INFO notice that it is allowed; got " .. show(events)
+  )
+  want(problems, terraform_trust.allowed(dir), "allowed(dir) false after :TerraformTrust")
+  local dirs = root_dirs(vim.lsp.config.terraformls.root_dir, buf)
+  want(problems, vim.deep_equal(dirs, { dir }), "on_dir calls " .. show(dirs))
+  return joined(problems)
+end)
+
 -- L10: :TerraformTrust allows the current buffer's root in the trust database and, with terraformls
 -- enabled, re-runs its gate for open buffers through vim.lsp.enable (never through doautoall on
 -- Neovim's internal augroup), so terraform-ls starts there
@@ -1368,11 +1493,12 @@ case("L10b-terraform-trust-nofile", function()
 end)
 
 -- L10c: :TerraformTrust refuses roots where trust would cover far more than one project, and roots
--- someone else controls or anyone can write, and names the reason. It suggests :trust <dir> only
--- where the gate would honor that, in a directory the user owns that others cannot write: the home
--- directory (found through a symlinked HOME, or through the passwd entry when HOME is unset) and a
--- parent of it the user owns. For /, a root-owned parent of HOME, a world-writable directory (the
--- user's or, like /tmp, root's), and a directory owned by another user, it gives the owner rule.
+-- someone else controls or anyone can write, and names the reason. It suggests :TerraformTrust!
+-- only where the gate would honor trust, in a directory the user owns that is not world-writable:
+-- the home directory (found through a symlinked HOME, or through the passwd entry when HOME is
+-- unset) and a parent of it the user owns. For /, a root-owned parent of HOME, a world-writable
+-- directory (the user's or, like /tmp, root's), and a directory owned by another user, it gives the
+-- owner rule.
 case("L10c-terraform-trust-advice", function()
   local events, home, home_buf = terraform_setup "L10c-home"
   local home_link = tmp .. "/L10c-home-link"
@@ -1573,6 +1699,124 @@ case("L10g-command-reenables", function()
     return event.kind ~= "notify"
   end, events)
   want(problems, #asked == 0, "reads or prompts " .. show(asked))
+  return joined(problems)
+end)
+
+-- L10h: :TerraformTrust! overrides a refusal the gate can honor: the home directory and a parent of
+-- it the user owns, which :TerraformTrust refuses. The command that the notice's hint and the
+-- refusal's hint name, run as named, trusts the root with the usual message, and the gate then
+-- allows it. A world-writable root and one owned by another user stay refused, with nothing written.
+case("L10h-bang-override", function()
+  local events, home, home_buf = terraform_setup "L10h-home"
+  local parent, parent_buf = project "L10h-parent"
+  vim.fn.mkdir(parent .. "/home", "p")
+  local problems = {}
+
+  -- { label, buffer, its root, HOME, reason }
+  for _, target in ipairs {
+    { "home", home_buf, home, home, reasons.home },
+    { "user's parent of home", parent_buf, parent, parent .. "/home", reasons.home_parent },
+  } do
+    local label, buf, root_dir, reason = target[1], target[2], target[3], target[5]
+    vim.env.HOME = target[4]
+    vim.fn.delete(trust_file())
+    local texts, absent_texts = advice_texts(root_dir, reason, true)
+
+    local before = #events
+    root_dirs(vim.lsp.config.terraformls.root_dir, buf)
+    local notice = events[before + 1]
+    want(
+      problems,
+      #events == before + 1 and is_notice(notice, vim.log.levels.INFO, texts, absent_texts),
+      label .. ": want one INFO notice with " .. show(texts) .. "; got " .. show(vim.list_slice(events, before + 1))
+    )
+    vim.list_extend(problems, refused_problems(label .. ", :TerraformTrust", buf, events, texts, absent_texts))
+    local refusal = events[#events]
+
+    for _, hinted in ipairs { { "notice", notice }, { "refusal", refusal } } do
+      local event = hinted[2]
+      local command = event and event.kind == "notify" and hinted_command(event.msg)
+      local run = label .. ", the " .. hinted[1] .. "'s command " .. show(command)
+      if not command then
+        want(problems, false, run .. ": no command in " .. show(event))
+      else
+        vim.fn.delete(trust_file())
+        vim.api.nvim_set_current_buf(buf)
+        before = #events
+        local ok, err = pcall(vim.cmd, command)
+        local notices = vim.list_slice(events, before + 1)
+        want(problems, ok, run .. ": error " .. tostring(err))
+        want(
+          problems,
+          #notices == 1 and notices[1].level == vim.log.levels.INFO and notices[1].msg == text.allowed .. root_dir,
+          run .. ": want the INFO notice " .. show(text.allowed .. root_dir) .. "; got " .. show(notices)
+        )
+        local lines = trust_lines()
+        want(problems, vim.deep_equal(lines, { "directory " .. root_dir }), run .. ": trust database " .. show(lines))
+        want(problems, terraform_trust.allowed(root_dir), run .. ": allowed(root) false")
+      end
+    end
+  end
+
+  -- The database still holds the parent's entry, which these refusals must leave as it is
+  vim.env.HOME = home
+  local open, open_buf = project "L10h-world-writable"
+  assert(vim.uv.fs_chmod(open, tonumber("777", 8)))
+  local foreign, foreign_buf = project "L10h-foreign"
+  local uid = original.getuid()
+  -- { label, buffer, its root, reason, getuid }
+  for _, target in ipairs {
+    { "world-writable", open_buf, open, reasons.world_writable },
+    {
+      "foreign-owned",
+      foreign_buf,
+      foreign,
+      reasons.not_owned,
+      function()
+        return uid + 1
+      end,
+    },
+  } do
+    vim.uv.getuid = target[5] or original.getuid
+    local texts, absent_texts = advice_texts(target[3], target[4], false)
+    vim.list_extend(
+      problems,
+      refused_problems(target[1] .. ", :TerraformTrust!", target[2], events, texts, absent_texts, "TerraformTrust!")
+    )
+    vim.uv.getuid = original.getuid
+  end
+  return joined(problems)
+end)
+
+-- L10i: :TerraformTrust writes the entry for the path it checked. A file named through a link into a
+-- directory literally named $EDITOR_TEST_ALIAS, before its own directory existed (as :w ++p allows),
+-- keeps a name without $NAME, so it has a root, but its resolved path holds $EDITOR_TEST_ALIAS.
+-- vim.secure.trust normalizes the path it is given, so it must get the root, not the resolved path:
+-- the database then allows the resolved directory itself, never the one EDITOR_TEST_ALIAS names.
+case("L10i-trust-write-resolved-dollar-name", function()
+  local events = terraform_setup "L10i"
+  local other = tmp .. "/L10i-other"
+  vim.fn.mkdir(other .. "/new", "p")
+  local literal = dollar_name_tree("L10i", other, false)
+  local link = tmp .. "/L10i-link"
+  assert(vim.uv.fs_symlink(literal, link))
+  -- Named while new/ does not exist, so Neovim cannot resolve the link; then created, as :w ++p does
+  local buf = vim.fn.bufadd(link .. "/new/main.tf")
+  vim.fn.mkdir(literal .. "/new", "p")
+  local problems = {}
+  local got_root = terraform_trust.root(buf)
+  want(problems, got_root == link .. "/new", "root " .. show(got_root))
+  vim.fn.mkdir(vim.fn.stdpath "state", "p")
+  vim.api.nvim_set_current_buf(buf)
+  vim.cmd "TerraformTrust"
+  local lines = trust_lines()
+  want(problems, vim.deep_equal(lines, { "directory " .. literal .. "/new" }), "trust database " .. show(lines))
+  want(problems, not terraform_trust.allowed(other .. "/new"), "allowed(" .. other .. "/new) true")
+  want(
+    problems,
+    #events == 1 and is_notice(events[1], vim.log.levels.INFO, { text.allowed .. literal .. "/new" }),
+    "want one INFO notice that " .. literal .. "/new is allowed; got " .. show(events)
+  )
   return joined(problems)
 end)
 

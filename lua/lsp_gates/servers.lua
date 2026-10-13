@@ -27,8 +27,10 @@ return {
   -- an older version must never start.
   retired = { "ansiblels", "docker_compose_language_service", "docker_language_server", "sqlls" },
 
-  -- lspconfig servers that run repo-supplied code with tools this config installs or trusts: tflint
-  -- plugins named in a repo's .tflint.hcl (tflint), a repo's .golangci.yml (golangci_lint_ls), and
-  -- terraform providers (terraform_lsp, tofu_ls). They never start, not even with a bare :lsp enable.
-  never = { "golangci_lint_ls", "terraform_lsp", "tflint", "tofu_ls" },
+  -- The known lspconfig servers that run repo-supplied code with tools this config installs or
+  -- trusts: tflint plugins named in a repo's .tflint.hcl (tflint), a repo's .golangci.yml
+  -- (golangci_lint_ls), terraform providers (terraform_lsp, tofu_ls), and a repo's Python modules
+  -- through `python -m` from the repo directory (esbonio, tvm_ffi_navigator; Python comes with this
+  -- config's linters). They never start, not even with a bare :lsp enable.
+  never = { "esbonio", "golangci_lint_ls", "terraform_lsp", "tflint", "tofu_ls", "tvm_ffi_navigator" },
 }
