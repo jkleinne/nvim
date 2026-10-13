@@ -1166,7 +1166,7 @@ out="$( (
 done_ok $? "$out"
 result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 
-# T20: the system servers in lua/plugins/lsp.lua (first string of each system_servers entry), the
+# T20: the system servers in lua/lsp_gates/servers.lua (first string of each `system` entry), the
 # installer, and the README agree: (a) the best-effort warn_manual list names the same binaries,
 # (b) the pacman list has one package per server, (c) the README's pacman command under Requirements
 # names exactly the packages the script installs on pacman, except the documented ones: the Nerd Font
@@ -1174,7 +1174,8 @@ result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 # and on an Arch host (b0) every package the script installs on pacman exists in the sync databases
 # (pacman -Si), and (d) with all the server packages installed, they ship /usr/bin/<binary> for every
 # server (pacman -Qlq). Both pacman queries are read-only and need no root.
-mapfile -t lsp_bins < <(sed -n '/local system_servers = {/,/^[[:space:]]*}/p' "$ROOT/lua/plugins/lsp.lua" \
+# The installer round replaces this sed with an `nvim --clean -l` read of the module
+mapfile -t lsp_bins < <(sed -n '/^  system = {/,/^  }/p' "$ROOT/lua/lsp_gates/servers.lua" \
   | sed -n 's/^[^"]*"\([^"]*\)".*/\1/p' | sort)
 # install_language_servers with its continuation lines joined
 ls_fn="$(awk '/^install_language_servers\(\) \{/, /^\}/ { if (sub(/\\$/, "")) printf "%s", $0; else print }' "$SCRIPT")"
@@ -1211,7 +1212,7 @@ out="$( (
 rc=$?
 mapfile -t t20_all_pkgs < <({ sed -n 's/^PKG //p' <<<"$out"; echo neovim; } | sort -u)
 problems=""
-[[ ${#lsp_bins[@]} -gt 0 ]] || problems+="[no system_servers found in lua/plugins/lsp.lua] "
+[[ ${#lsp_bins[@]} -gt 0 ]] || problems+="[no system servers found in lua/lsp_gates/servers.lua] "
 [[ "${manual_bins[*]}" == "${lsp_bins[*]}" ]] \
   || problems+="[(a) warn_manual: ${manual_bins[*]}; system_servers: ${lsp_bins[*]}] "
 [[ ${#pacman_pkgs[@]} -eq ${#lsp_bins[@]} ]] \
