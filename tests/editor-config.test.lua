@@ -1652,8 +1652,9 @@ case("L10f-post-write-check", function()
   return joined(problems)
 end)
 
--- L10g: the command re-runs the gate (vim.lsp.enable) only when terraformls is enabled and a root
--- was trusted; trust_current_buffer itself returns the root and makes no vim.lsp call
+-- L10g: the command, with or without !, re-runs the gate (vim.lsp.enable) only when terraformls is
+-- enabled and a root was trusted; trust_current_buffer itself returns the root and makes no vim.lsp
+-- call
 case("L10g-command-reenables", function()
   local events, dir, buf = terraform_setup "L10g"
   local home = project "L10g-home"
@@ -1680,17 +1681,19 @@ case("L10g-command-reenables", function()
   want(problems, ok and got == dir, "trust_current_buffer returned " .. show(got))
   want(problems, #lsp_calls == 0, "trust_current_buffer's vim.lsp calls " .. show(lsp_calls))
 
-  -- { label, terraformls enabled, HOME, want a vim.lsp.enable call }
+  -- { label, terraformls enabled, HOME, want a vim.lsp.enable call, command (default TerraformTrust) }
   for _, run in ipairs {
     { "enabled", true, home, true },
     { "not enabled", false, home, false },
     { "enabled, refused (home directory)", true, dir, false },
+    { "enabled, bang", true, home, true, "TerraformTrust!" },
+    { "enabled, bang overrides (home directory)", true, dir, true, "TerraformTrust!" },
   } do
     vim.fn.delete(trust_file())
     vim.lsp.enable("terraformls", run[2])
     vim.env.HOME = run[3]
     local calls, undo = record_activation()
-    vim.cmd "TerraformTrust"
+    vim.cmd(run[5] or "TerraformTrust")
     undo()
     local want_calls = run[4] and { { "enable", "terraformls" } } or {}
     want(problems, vim.deep_equal(calls, want_calls), run[1] .. ": activation calls " .. show(calls))
