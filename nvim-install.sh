@@ -7,8 +7,17 @@ readonly NVIM_REPO="https://github.com/${NVIM_REPO_SLUG}.git"
 readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
 readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
+# Arch's TypeScript (a dependency of typescript-language-server), the first place the editor's ts_ls
+# gate looks; has_system_typescript makes the same check
+readonly ARCH_TSSERVER="/usr/lib/node_modules/typescript/lib/tsserver.js"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The directory this script is in, resolved without CDPATH. Empty when the script has no file (run as
+# bash -c "$(curl ...)", or through a pipe); setup_config then skips its checks for running from a
+# checkout.
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+fi
 SCRIPT_TMPDIR=""
 CLONE_STAGING=""
 WARNINGS=()
@@ -19,7 +28,7 @@ OS=""
 ARCH=""
 PKG_MGR=""
 PKG_TIER=""
-PKG_READY=false
+PKG_DB_SYNCED=false
 SUDO_TICKET_HELD=false
 USER_SHELL=""
 
@@ -56,6 +65,68 @@ confirm() {
 }
 
 # ---------------------------------------------------------------------------
+# Privilege
+# ---------------------------------------------------------------------------
+
+# Every root command goes through as_root, which holds a sudo ticket first. main forgets every cached
+# credential once (forget_sudo_credentials), right after the last step that runs root commands, and
+# cleanup drops a ticket the script still holds on any exit.
+
+require_sudo() {
+  if ! command -v sudo >/dev/null 2>&1; then
+    error "sudo is required to install system packages, but it is not on PATH."
+    exit 1
+  fi
+}
+
+# Acts only while no ticket is held (the first time, and again after forget_sudo_credentials): checks
+# that sudo exists and its credentials (fails fast on a wrong password, and caches them), and marks
+# the ticket as held, so cleanup drops it. A machine with everything installed never gets here, so
+# it is never asked for a password.
+ensure_sudo_ticket() {
+  if [[ "$SUDO_TICKET_HELD" == true ]]; then
+    return
+  fi
+  require_sudo
+  if ! sudo -v; then
+    error "sudo authentication failed."
+    exit 1
+  fi
+  SUDO_TICKET_HELD=true
+}
+
+# Runs "$@" as root
+as_root() {
+  ensure_sudo_ticket
+  sudo "$@"
+}
+
+# Drops any cached sudo credentials, including ones from before this run (for example the README's
+# own 'sudo pacman -S' step), so the code this script starts next never inherits them: main calls it
+# once, after the last root command and before go install and uv tool install fetch and build code,
+# the config clone, and Neovim's first launch, which installs plugins and runs their build steps.
+# sudo -k never prompts. This is stricter than installers that drop only the tickets they created,
+# because this script itself starts third-party build code. sudo -k can fail where sudo is not setuid
+# (some containers, nosuid mounts); such a host has no ticket to drop, and the run goes on, unless
+# sudo -n -v (which succeeds only with a valid ticket, and never prompts) shows a ticket is still
+# live. No ticket is held afterwards, so cleanup has nothing to drop.
+forget_sudo_credentials() {
+  SUDO_TICKET_HELD=false
+  if ! command -v sudo >/dev/null 2>&1 || sudo -k 2>/dev/null; then
+    return
+  fi
+  if sudo -n -v 2>/dev/null; then
+    error "sudo -k failed but a cached sudo ticket is still valid; run 'sudo -k' yourself and run this script again"
+    exit 1
+  fi
+}
+
+# For cleanup, which runs on every exit: drops the ticket the script holds, and never fails
+drop_ticket_quietly() {
+  sudo -k 2>/dev/null || true
+}
+
+# ---------------------------------------------------------------------------
 # Temp directory management and cleanup
 # ---------------------------------------------------------------------------
 
@@ -68,7 +139,7 @@ cleanup() {
   fi
   # Runs on every exit, errors and signals included, so a sudo ticket this script took never outlives it
   if [[ "${SUDO_TICKET_HELD:-}" == true ]]; then
-    sudo -k 2>/dev/null || true
+    drop_ticket_quietly
   fi
 }
 
@@ -84,13 +155,6 @@ require_non_root() {
   if [[ "$EUID" -eq 0 ]]; then
     error "Do not run this script as root or with sudo."
     error "It calls sudo itself for system packages, and user-level tools must install into your home directory."
-    exit 1
-  fi
-}
-
-require_sudo() {
-  if ! command -v sudo >/dev/null 2>&1; then
-    error "sudo is required to install system packages, but it is not on PATH."
     exit 1
   fi
 }
@@ -225,7 +289,11 @@ confirm_proceed() {
     printf '  %s\n' "0. Upgrade the system first (pacman -Syu, with pacman's own prompt) if anything needs installing"
   fi
   printf '  %s\n' "1. Install Neovim 0.12+ (prefer $PKG_MGR, tarball fallback)"
-  printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
+  if [[ "$PKG_MGR" == "pacman" ]]; then
+    printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
+  else
+    printf '  %s\n' "2. Install build tools, clipboard, runtimes, formatters, linters, TUI tools (language servers: manual steps)"
+  fi
   printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
   printf '\n'
 
@@ -261,24 +329,21 @@ install_neovim_tarball() {
 
   success "Downloaded $(du -h "$tarball" | cut -f1 | xargs)"
 
-  # Makes this function's sudo use explicit instead of relying on pkg_install neovim having run first
-  sudo_session_once
-
   if [[ -d "$NVIM_INSTALL_DIR" ]]; then
     warn "Existing installation at $NVIM_INSTALL_DIR will be replaced."
     if ! confirm "  Remove $NVIM_INSTALL_DIR?"; then
       error "Cannot install without removing existing directory."
       exit 1
     fi
-    sudo rm -rf "$NVIM_INSTALL_DIR"
+    as_root rm -rf "$NVIM_INSTALL_DIR"
   fi
 
   info "Extracting to $NVIM_INSTALL_DIR (requires sudo)..."
-  sudo mkdir -p "$NVIM_INSTALL_DIR"
-  sudo tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
+  as_root mkdir -p "$NVIM_INSTALL_DIR"
+  as_root tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
 
-  if [[ -w "/usr/local/bin" ]] || sudo test -w "/usr/local/bin"; then
-    sudo ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" /usr/local/bin/nvim
+  if [[ -w "/usr/local/bin" ]] || as_root test -w "/usr/local/bin"; then
+    as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" /usr/local/bin/nvim
     success "Symlinked nvim to /usr/local/bin/nvim"
   else
     NEED_PATH_SETUP=true
@@ -322,51 +387,35 @@ install_neovim() {
 # Dependency installation helpers
 # ---------------------------------------------------------------------------
 
-# Called before sudo commands; acts only while no ticket is held (the first time, and again after
-# forget_sudo_credentials): checks that sudo exists and its credentials (fails fast on a wrong
-# password, and caches them), and marks the ticket as held, so cleanup drops it. A machine with
-# everything installed never gets here, so it is never asked for a password.
-sudo_session_once() {
-  if [[ "$SUDO_TICKET_HELD" == true ]]; then
-    return
-  fi
-  require_sudo
-  if ! sudo -v; then
-    error "sudo authentication failed."
-    exit 1
-  fi
-  SUDO_TICKET_HELD=true
-}
-
-# Runs once, right before the first package install: refreshes package metadata. On Arch that is a
-# full system upgrade, because installing new packages against a freshly synced database without
-# upgrading is a partial upgrade, which Arch does not support. pacman shows its own list and asks
-# before changing anything.
-refresh_pkg_metadata_once() {
-  if [[ "$PKG_READY" == true ]]; then
+# Runs once, right before the first package install: syncs the package database. On Arch that is the
+# full system upgrade (pacman -Syu), because installing new packages against a freshly synced
+# database without upgrading is a partial upgrade, which Arch does not support. pacman shows its own
+# list and asks before changing anything.
+sync_pkg_db_once() {
+  if [[ "$PKG_DB_SYNCED" == true ]]; then
     return
   fi
   case "$PKG_MGR" in
     pacman)
       info "Upgrading the system first (pacman -Syu)..."
-      if ! sudo pacman -Syu; then
+      if ! as_root pacman -Syu; then
         error "System upgrade declined or failed; installing packages now would be a partial upgrade."
         error "Run 'sudo pacman -Syu' yourself, then run this script again."
         exit 1
       fi
       ;;
-    # The refresh is best effort on these distros; the warning reaches the summary
+    # The sync is best effort on these distros; the warning reaches the summary
     apt-get)
       info "Updating package lists..."
-      sudo apt-get update -qq || warn "apt-get update failed; installing from the existing package lists"
+      as_root apt-get update -qq || warn "apt-get update failed; installing from the existing package lists"
       ;;
     apk)
       info "Updating package index..."
-      sudo apk update || warn "apk update failed; installing from the existing package index"
+      as_root apk update || warn "apk update failed; installing from the existing package index"
       ;;
     dnf) ;;
   esac
-  PKG_READY=true
+  PKG_DB_SYNCED=true
 }
 
 pkg_is_installed() {
@@ -379,13 +428,12 @@ pkg_is_installed() {
 }
 
 pkg_install() {
-  sudo_session_once
-  refresh_pkg_metadata_once
+  sync_pkg_db_once
   case "$PKG_MGR" in
-    apt-get) sudo apt-get install -y "$@" ;;
-    dnf)     sudo dnf install -y "$@" ;;
-    pacman)  sudo pacman -S --noconfirm "$@" ;;
-    apk)     sudo apk add "$@" ;;
+    apt-get) as_root apt-get install -y "$@" ;;
+    dnf)     as_root dnf install -y "$@" ;;
+    pacman)  as_root pacman -S --noconfirm "$@" ;;
+    apk)     as_root apk add "$@" ;;
   esac
 }
 
@@ -443,7 +491,8 @@ install_pkgs() {
   done
 }
 
-install_soft() {
+# Unless tool $1 is already on PATH, installs it by running "$@", and warns when that fails
+install_unless_on_path() {
   local name="$1"; shift
   if command -v "$name" >/dev/null 2>&1; then
     success "$name (already installed)"
@@ -470,15 +519,18 @@ go_bin_dir() {
   printf '%s\n' "$dir"
 }
 
-# The line that appends $1 to PATH in the user's shell config. Appending keeps user dirs from
-# shadowing system binaries; fish needs --path, or fish_add_path puts the dir ahead of the system paths.
-path_append_line() {
-  if [[ "$USER_SHELL" == fish ]]; then
-    printf 'fish_add_path --append --path %s\n' "$1"
-  else
-    # shellcheck disable=SC2016  # $PATH is literal on purpose: the line goes into the user's shell config
-    printf 'export PATH="$PATH:%s"\n' "$1"
-  fi
+# The line for the user's shell config that puts dir $2 on PATH, after the dirs already there ($1
+# append) or ahead of them ($1 prepend). The user-tool hints append, so user dirs never shadow system
+# binaries. fish gets --path either way, or fish_add_path puts the dir in fish_user_paths, which fish
+# places ahead of the system paths even with --append.
+path_line() {
+  # shellcheck disable=SC2016  # $PATH is literal on purpose: the line goes into the user's shell config
+  case "$USER_SHELL:$1" in
+    fish:append)  printf 'fish_add_path --append --path %s\n' "$2" ;;
+    fish:prepend) printf 'fish_add_path --path %s\n' "$2" ;;
+    *:append)     printf 'export PATH="$PATH:%s"\n' "$2" ;;
+    *:prepend)    printf 'export PATH="%s:$PATH"\n' "$2" ;;
+  esac
 }
 
 warn_if_not_on_path() {
@@ -495,23 +547,7 @@ warn_if_not_on_path() {
     fi
   done
   PATH_WARNED_DIRS+=("$dir")
-  warn "$dir is not on PATH; add this to your shell config: $(path_append_line "$dir")"
-}
-
-# Drops any cached sudo credentials, including ones from before this run (for example the README's
-# own 'sudo pacman -S' step), so the code this script starts next never inherits them: install_deps
-# calls it before go install and uv tool install fetch and build code, and main again before the
-# config clone and Neovim's first launch, which installs plugins and runs their build steps. sudo -k
-# never prompts. This is stricter than installers that drop only the tickets they created, because
-# this script itself starts third-party build code. No ticket is held afterwards, so cleanup has
-# nothing to drop and a later sudo command asks again (sudo_session_once).
-forget_sudo_credentials() {
-  if command -v sudo >/dev/null 2>&1; then
-    # sudo -k can fail where sudo is not setuid (some containers, nosuid mounts); such a host has no
-    # ticket to drop, and the run must go on
-    sudo -k 2>/dev/null || true
-  fi
-  SUDO_TICKET_HELD=false
+  warn "$dir is not on PATH; add this to your shell config: $(path_line append "$dir")"
 }
 
 # For go install / uv tool install: the binary lands in a user bin dir that may
@@ -522,7 +558,7 @@ install_user_tool() {
   if [[ -x "$bin_dir/$name" ]]; then
     success "$name (already installed in $bin_dir)"
   else
-    install_soft "$name" "$@"
+    install_unless_on_path "$name" "$@"
   fi
   if [[ -x "$bin_dir/$name" ]]; then
     warn_if_not_on_path "$bin_dir"
@@ -573,6 +609,46 @@ warn_manual() {
   warn "${list%, }: install manually"
 }
 
+# Succeeds when $1, with symlinks resolved, is a file whose package.json two levels up names
+# typescript and has a non-empty string version: the test the editor's ts_ls gate applies to a
+# tsserver.js (package_tsserver in lua/lsp_gates/typescript.lua). The fields are matched as text,
+# which is enough for a hint.
+typescript_package_tsserver() {
+  local js pkg_json meta
+  local name_re='"name"[[:space:]]*:[[:space:]]*"typescript"'
+  local version_re='"version"[[:space:]]*:[[:space:]]*"[^"]+"'
+  [[ -f "$1" ]] || return 1
+  js="$(readlink -f -- "$1")" || return 1
+  pkg_json="${js%/*}"
+  pkg_json="${pkg_json%/*}/package.json"
+  [[ -f "$pkg_json" && -r "$pkg_json" ]] || return 1
+  meta="$(<"$pkg_json")"
+  [[ $meta =~ $name_re && $meta =~ $version_re ]]
+}
+
+# Whether the editor's ts_ls gate finds a system TypeScript (system_tsserver in
+# lua/lsp_gates/typescript.lua): Arch's ($ARCH_TSSERVER), else the TypeScript package that the
+# tsserver on PATH, with symlinks resolved, belongs to (the nearest dir above it with a package.json,
+# whose lib/tsserver.js must pass typescript_package_tsserver). A version manager's shim or a wrapper
+# script belongs to no such package.
+has_system_typescript() {
+  local bin dir
+  if typescript_package_tsserver "$ARCH_TSSERVER"; then
+    return 0
+  fi
+  bin="$(command -v tsserver)" || return 1
+  bin="$(readlink -f -- "$bin")" || return 1
+  dir="$bin"
+  while [[ "$dir" == */* ]]; do
+    dir="${dir%/*}"
+    if [[ -e "$dir/package.json" ]]; then
+      typescript_package_tsserver "$dir/lib/tsserver.js"
+      return
+    fi
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Dependency categories
 # ---------------------------------------------------------------------------
@@ -620,7 +696,7 @@ install_language_servers() {
   # Node-based servers come from the system; Mason installs the native ones on first launch
   case "$PKG_MGR" in
     pacman)
-      # Keep in sync with system_servers in lua/plugins/lsp.lua
+      # Keep in sync with the system table in lua/lsp_gates/servers.lua
       install_pkgs optional "language servers" \
         bash-language-server dockerfile-language-server vscode-json-languageserver pyright \
         typescript-language-server yaml-language-server
@@ -628,7 +704,7 @@ install_language_servers() {
     *)
       warn_manual bash-language-server docker-langserver vscode-json-language-server pyright-langserver \
         typescript-language-server yaml-language-server
-      if ! command -v tsserver >/dev/null 2>&1; then
+      if ! has_system_typescript; then
         warn "ts_ls also needs a system TypeScript: install your distribution's TypeScript package, which provides tsserver"
       fi
       ;;
@@ -692,8 +768,8 @@ install_tui_tools() {
 }
 
 # Best-effort distros: the formatters, linters, and TUI tools their repos lack, from uv tool install
-# and go install (latest upstream). They fetch and build code from the network, so install_deps runs
-# them last, after forgetting any cached sudo credentials.
+# and go install (latest upstream). They fetch and build code from the network, so main runs this
+# only after forget_sudo_credentials, and it runs no root command.
 install_user_tools() {
   if [[ "$PKG_MGR" == pacman ]]; then
     return
@@ -714,8 +790,8 @@ install_user_tools() {
 # Dependency orchestrator
 # ---------------------------------------------------------------------------
 
-# Two phases, so sudo is asked for at most once and no sudo credentials are cached when go or uv code
-# runs: every system package first, then the user-level tools
+# System packages only, all under one sudo ticket, so sudo asks for a password at most once. The
+# user-level tools (install_user_tools) run later, after main forgets the ticket.
 install_deps() {
   install_build_tools
   install_core_tools
@@ -725,9 +801,6 @@ install_deps() {
   install_formatters
   install_linters
   install_tui_tools
-  # Drops any cached credentials, the script's or older ones, before go and uv run
-  forget_sudo_credentials
-  install_user_tools
 }
 
 # ---------------------------------------------------------------------------
@@ -815,16 +888,19 @@ setup_config() {
       return
     fi
 
-    # Never move the checkout this script is running from
-    if [[ "$(cd "$NVIM_CONFIG_DIR" 2>/dev/null && pwd -P)" == "$(cd "$SCRIPT_DIR" && pwd -P)" ]]; then
+    # Never move the checkout this script is running from (with no script file, there is none)
+    if [[ -n "$SCRIPT_DIR" ]] \
+      && [[ "$(cd "$NVIM_CONFIG_DIR" 2>/dev/null && pwd -P)" == "$(cd "$SCRIPT_DIR" && pwd -P)" ]]; then
       success "Running from $NVIM_CONFIG_DIR, no clone needed"
       return
     fi
   fi
 
   # Run from a clone elsewhere, the script never clones, so it must not move the config aside either
-  local script_remote
-  script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
+  local script_remote=""
+  if [[ -n "$SCRIPT_DIR" ]]; then
+    script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
+  fi
 
   if is_config_repo_url "$script_remote"; then
     info "This script is inside a clone of the config repo at $SCRIPT_DIR."
@@ -861,7 +937,7 @@ setup_path() {
 
   local nvim_bin="${NVIM_INSTALL_DIR}/bin"
   local rc_file=""
-  local path_line=""
+  local line=""
 
   case "$USER_SHELL" in
     bash)  rc_file="$HOME/.bashrc" ;;
@@ -869,19 +945,21 @@ setup_path() {
     fish)  rc_file="${HOME}/.config/fish/config.fish" ;;
     posix) rc_file="$HOME/.profile" ;;
   esac
-  path_line="$(path_append_line "$nvim_bin")"
+  # Prepended, unlike the user-tool dirs: the tarball is installed exactly when the packaged nvim is
+  # missing or too old, so its nvim must win over an older one in /usr/bin
+  line="$(path_line prepend "$nvim_bin")"
 
   if [[ -z "$rc_file" ]]; then
     warn "Could not determine rc file for shell: $USER_SHELL"
     info "Add this to your shell config manually:"
-    printf '  %s\n' "$path_line"
+    printf '  %s\n' "$line"
     return
   fi
 
   if [[ "$rc_file" != "$HOME/.profile" ]] && [[ ! -f "$rc_file" ]]; then
     warn "$rc_file does not exist."
     info "Add this to your shell config manually:"
-    printf '  %s\n' "$path_line"
+    printf '  %s\n' "$line"
     return
   fi
 
@@ -890,7 +968,7 @@ setup_path() {
     return
   fi
 
-  printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$path_line" >> "$rc_file"
+  printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$line" >> "$rc_file"
   success "Added PATH entry to $rc_file"
   info "Run 'source $rc_file' or open a new terminal to apply."
 }
@@ -964,10 +1042,11 @@ Usage: nvim-install.sh [--help]
 
 Bootstrap script for Neovim 0.12+ with a full dev environment on Linux.
 
-Installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), the
-Node-based language servers, formatters, linters, and TUI tools, then clones
-the Neovim configuration to ~/.config/nvim. Mason installs the remaining
-language servers on first launch.
+Installs Neovim, build tools, a clipboard tool, runtimes (Node, Go),
+formatters, linters, and TUI tools, and on Arch the Node-based language
+servers (listed as manual steps elsewhere), then clones the Neovim
+configuration to ~/.config/nvim. Mason installs the remaining language
+servers on first launch.
 
 Supported platforms:
   Arch Linux     (pacman)  first-class
@@ -1007,13 +1086,19 @@ main() {
   confirm_proceed
   install_neovim
   install_deps
+  # The one privilege boundary: every root command runs above, none below, and no cached credentials
+  # reach the go and uv builds, the config clone, or Neovim's first launch
   forget_sudo_credentials
+  install_user_tools
   setup_config
   setup_path
   verify_install
   print_summary
 }
 
-if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+# Runs main when the script is executed, directly or as bash -c "$(curl ...)" or through a pipe, and
+# not when it is sourced (the tests source it). Through a pipe, confirm reads the end of input or the
+# script's own text, so the run cancels at the first prompt.
+if ! (return 0 2>/dev/null); then
   main "$@"
 fi
