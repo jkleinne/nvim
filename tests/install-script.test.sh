@@ -786,23 +786,32 @@ result T10-repo-url-forms $? "$(grep '^BAD' <<<"$out" | tr '\n' ' ')$(tail -n1 <
 MIRROR_URL="https://example.invalid/mirror.git"
 MIRROR2_URL="https://example.invalid/mirror2.git"
 
-# Makes a checkout at $1 whose origin has the URLs in $2 (space-separated, fetch URL first), then runs
-# `git -C $1 "${@:3}"` when given
+# Makes a checkout at $1 whose origin has the URLs in $2 (space-separated, fetch URL first; none for
+# no origin), then runs the command "${@:3}" (when given) inside it
 checkout_fixture() {
   local dir="$1" url urls
   read -ra urls <<<"$2"
   shift 2
   git init -q -b main "$dir"
-  git -C "$dir" remote add origin "${urls[0]}"
+  if ((${#urls[@]})); then
+    git -C "$dir" remote add origin "${urls[0]}"
+  fi
   for url in "${urls[@]:1}"; do
     git -C "$dir" remote set-url --add origin "$url"
   done
   if (($#)); then
-    git -C "$dir" "$@"
+    (cd "$dir" && "$@")
   fi
 }
 
-# Runs setup_config with ~/.config/nvim a checkout_fixture of origin URLs $2 and git args "${@:3}",
+# Defines origin as URL $1 in a file the checkout's git config includes, not in the config itself
+# shellcheck disable=SC2329  # checkout_fixture runs it, by name, through t10_present_case
+origin_in_include() {
+  git config -f .git/origin.inc remote.origin.url "$1"
+  git config include.path origin.inc
+}
+
+# Runs setup_config with ~/.config/nvim a checkout_fixture of origin URLs $2 and command "${@:3}",
 # and reports result $1: the checkout counts as this repo, so it stays in place
 t10_present_case() {
   local id="$1" origins="$2" out rc config backups
@@ -826,13 +835,18 @@ t10_present_case() {
 # An SSH origin counts as this repo
 t10_present_case T10-ssh-remote git@github.com:jkleinne/nvim.git
 # Every URL of origin counts, as stored and as url.<base>.insteadOf rewrites it: URLs added for
-# pushing (this repo's first, last, or in the middle), a rule that adds a token, and a short alias
+# pushing (this repo's first, last, or in the middle), a rule that adds a token, a short alias, a rule
+# that rewrites to a form this check rejects (an SSH host alias; only the stored URL matches), and an
+# origin defined in an included file (only the rewritten read sees it, since --local skips includes)
 t10_present_case T10-mirror-after "$REPO_URL_HTTPS $MIRROR_URL"
 t10_present_case T10-mirror-before "$MIRROR_URL $REPO_URL_HTTPS"
 t10_present_case T10-mirror-middle "$MIRROR_URL $REPO_URL_HTTPS $MIRROR2_URL"
 t10_present_case T10-insteadof-remote "$REPO_URL_HTTPS" \
-  config url."https://token@github.com/".insteadOf "https://github.com/"
-t10_present_case T10-alias-remote gh:jkleinne/nvim config url."https://github.com/".insteadOf gh:
+  git config url."https://token@github.com/".insteadOf "https://github.com/"
+t10_present_case T10-alias-remote gh:jkleinne/nvim git config url."https://github.com/".insteadOf gh:
+t10_present_case T10-insteadof-unrecognized "$REPO_URL_HTTPS" \
+  git config url."git@github-personal:".insteadOf "https://github.com/"
+t10_present_case T10-include-origin "" origin_in_include "$REPO_URL_HTTPS"
 
 # A directory outside any repository never counts as this repo, not even with an origin in the
 # global git config: neither the config dir nor the directory the script runs from (a plain copy)
@@ -850,7 +864,7 @@ result T10-global-origin-ignored $? "$(tail -n3 <<<"$out" | tr '\n' ' ')"
 
 # T11: run from a clone of the repo elsewhere, setup_config skips before any prompt or move, even when told y.
 # A copy of the script in a scratch clone makes SCRIPT_DIR that clone; the git stub refuses clone.
-# t11_case <result> <origin URLs> [git args]: the clone is a checkout_fixture of those arguments.
+# t11_case <result> <origin URLs> [command]: the clone is a checkout_fixture of those arguments.
 t11_case() {
   local id="$1" origins="$2" out rc config backups problems
   shift 2

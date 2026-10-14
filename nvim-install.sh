@@ -875,9 +875,10 @@ is_config_repo_url() {
 is_config_checkout() {
   local url urls
   [[ -n "$1" ]] || return 1
+  # errexit holds inside the substitution, so a read that finds nothing must not end it early
   mapfile -t urls < <(
-    git -C "$1" config --local --get-all remote.origin.url 2>/dev/null
-    git -C "$1" remote get-url --all origin 2>/dev/null
+    git -C "$1" config --local --get-all remote.origin.url 2>/dev/null || true
+    git -C "$1" remote get-url --all origin 2>/dev/null || true
   )
   for url in "${urls[@]}"; do
     if is_config_repo_url "$url"; then
