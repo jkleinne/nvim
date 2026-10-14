@@ -555,15 +555,17 @@ else
     t4_env
     GIT_OPTIONAL_LOCKS=0 git -C "$live_config" "$@"
   ); }
-  # The stored origin, as setup_config reads it (insteadOf rules do not apply)
-  live_remote="$(t4_git config --get remote.origin.url 2>/dev/null || true)"
+  # The stored origin URLs, for the message; the guard asks setup_config's own check
+  live_remote="$(t4_git config --local --get-all remote.origin.url 2>/dev/null | tr '\n' ' ' || true)"
   if ! (
     sandbox T4-guard ""
     load_script
-    is_config_repo_url "$live_remote"
+    t4_env
+    export GIT_OPTIONAL_LOCKS=0
+    is_config_checkout "$live_config"
   ) </dev/null >/dev/null 2>&1; then
     result T4-idempotent-run 1 \
-      "origin of $live_config is '$(redact_urls <<<"$live_remote")', not this repo; refusing a full run"
+      "stored origin URLs of $live_config are '$(redact_urls <<<"$live_remote")', not this repo; refusing a full run"
   else
     xdg="$TMP/T4-xdg"
     mkdir -p "$xdg/config/nvim" "$xdg/data" "$xdg/state" "$xdg/cache" "$TMP/T4-tmp" "$TMP/bin-T4"
@@ -751,7 +753,8 @@ else
 fi
 
 # T10: is_config_repo_url accepts this repo's HTTPS URL (with or without .git, with a trailing slash),
-# SCP-style SSH, and ssh:// forms, and nothing else (the URL spellings stay literal on purpose)
+# SCP-style SSH, and ssh:// forms (an HTTPS URL may name a user or token before the host), and nothing
+# else (the URL spellings stay literal on purpose)
 out="$( (
   sandbox T10-urls ""
   load_script
@@ -760,12 +763,17 @@ out="$( (
   [[ $NVIM_REPO == "$REPO_URL_HTTPS" ]] && is_config_repo_url "$NVIM_REPO" || echo "BAD NVIM_REPO '$NVIM_REPO'"
   for url in https://github.com/jkleinne/nvim https://github.com/jkleinne/nvim.git \
     https://github.com/jkleinne/nvim/ https://github.com/jkleinne/nvim.git/ \
+    https://x-access-token:SECRET@github.com/jkleinne/nvim.git \
+    https://jkleinne@github.com/jkleinne/nvim \
     git@github.com:jkleinne/nvim git@github.com:jkleinne/nvim.git \
     ssh://git@github.com/jkleinne/nvim ssh://git@github.com/jkleinne/nvim.git; do
     is_config_repo_url "$url" || echo "BAD rejected '$url'"
   done
   for url in https://github.com/jkleinne/nvim-fork https://github.com/someone/nvim \
-    http://github.com/jkleinne/nvim.git git@github.com:jkleinne/nvim/extra ""; do
+    http://github.com/jkleinne/nvim.git git@github.com:jkleinne/nvim/extra \
+    https://u@github.com/someone/nvim https://jkleinne@github.com/jkleinne/nvim-fork \
+    https://x-access-token:SECRET@evil.example/jkleinne/nvim \
+    https://evil.example/x@github.com/jkleinne/nvim ""; do
     ! is_config_repo_url "$url" || echo "BAD accepted '$url'"
   done
   echo DONE
@@ -773,61 +781,86 @@ out="$( (
 done_ok $? "$out" && ! grep -q '^BAD' <<<"$out"
 result T10-repo-url-forms $? "$(grep '^BAD' <<<"$out" | tr '\n' ' ')$(tail -n1 <<<"$out")"
 
-# An SSH origin counts as this repo, so setup_config leaves the checkout in place
-out="$( (
-  sandbox T10 "$NOCLONE_GIT_BIN"
-  git init -q -b main "$HOME/.config/nvim"
-  git -C "$HOME/.config/nvim" remote add origin git@github.com:jkleinne/nvim.git
-  printf 'local work\n' >"$HOME/.config/nvim/untracked.lua"
-  load_script
-  [[ $NVIM_CONFIG_DIR == "$TMP"/* ]] || { echo "NVIM_CONFIG_DIR=$NVIM_CONFIG_DIR"; exit 1; }
-  setup_config
-  echo DONE
-) </dev/null 2>&1)"
-rc=$?
-t10_config="$(sandbox_home T10)/.config/nvim"
-backups="$(compgen -G "$t10_config.bak.*" || true)"
-done_ok $rc "$out" && grep -qF "Config already present" <<<"$out" \
-  && [[ -f "$t10_config/untracked.lua" && -z "$backups" ]]
-result T10-ssh-remote $? "rc=$rc backups=[$backups]; $(tail -n3 <<<"$out" | tr '\n' ' ')"
+MIRROR_URL="https://example.invalid/mirror.git"
 
-# A url.<base>.insteadOf rule (for example one that adds a token) rewrites what `git remote get-url`
-# prints, not the origin stored at clone time, so setup_config still sees this repo and leaves it
+# Runs setup_config with ~/.config/nvim a checkout whose origin is $2, after `git -C <checkout> "${@:3}"`
+# (when given), and reports result $1: the checkout counts as this repo, so it stays in place
+t10_present_case() {
+  local id="$1" origin="$2" out rc config backups
+  shift 2
+  out="$( (
+    sandbox "$id" "$NOCLONE_GIT_BIN"
+    git init -q -b main "$HOME/.config/nvim"
+    git -C "$HOME/.config/nvim" remote add origin "$origin"
+    if (($#)); then
+      git -C "$HOME/.config/nvim" "$@"
+    fi
+    printf 'local work\n' >"$HOME/.config/nvim/untracked.lua"
+    load_script
+    [[ $NVIM_CONFIG_DIR == "$TMP"/* ]] || { echo "NVIM_CONFIG_DIR=$NVIM_CONFIG_DIR"; exit 1; }
+    setup_config
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  config="$(sandbox_home "$id")/.config/nvim"
+  backups="$(compgen -G "$config.bak.*" || true)"
+  done_ok $rc "$out" && grep -qF "Config already present" <<<"$out" \
+    && [[ -f "$config/untracked.lua" && -z "$backups" ]] && ! grep -qF "token@" <<<"$out"
+  result "$id" $? "rc=$rc backups=[$backups]; $(tail -n3 <<<"$out" | tr '\n' ' ')"
+}
+# An SSH origin counts as this repo
+t10_present_case T10-ssh-remote git@github.com:jkleinne/nvim.git
+# Every URL of origin counts, as stored and as url.<base>.insteadOf rewrites it: a second URL added
+# for pushing (before or after this repo's), a rule that adds a token, and a short alias
+t10_present_case T10-mirror-after "$REPO_URL_HTTPS" remote set-url --add origin "$MIRROR_URL"
+t10_present_case T10-mirror-before "$MIRROR_URL" remote set-url --add origin "$REPO_URL_HTTPS"
+t10_present_case T10-insteadof-remote "$REPO_URL_HTTPS" \
+  config url."https://token@github.com/".insteadOf "https://github.com/"
+t10_present_case T10-alias-remote gh:jkleinne/nvim config url."https://github.com/".insteadOf gh:
+
+# A directory outside any repository never counts as this repo, not even with an origin in the
+# global git config: neither the config dir nor the directory the script runs from (a plain copy)
 out="$( (
-  sandbox T10-insteadof "$NOCLONE_GIT_BIN"
-  git init -q -b main "$HOME/.config/nvim"
-  git -C "$HOME/.config/nvim" remote add origin "$REPO_URL_HTTPS"
-  git -C "$HOME/.config/nvim" config url."https://token@github.com/".insteadOf "https://github.com/"
-  printf 'local work\n' >"$HOME/.config/nvim/untracked.lua"
-  load_script
-  [[ $NVIM_CONFIG_DIR == "$TMP"/* ]] || { echo "NVIM_CONFIG_DIR=$NVIM_CONFIG_DIR"; exit 1; }
+  sandbox T10-global-origin "$NOCLONE_GIT_BIN"
+  mkdir -p "$HOME/.config/nvim"
+  export GIT_CONFIG_GLOBAL="$HOME/global-gitconfig"
+  git config --global remote.origin.url "$REPO_URL_HTTPS"
+  load_script_copy "$HOME/plain"
   setup_config
   echo DONE
 ) </dev/null 2>&1)"
-rc=$?
-t10_config="$(sandbox_home T10-insteadof)/.config/nvim"
-backups="$(compgen -G "$t10_config.bak.*" || true)"
-done_ok $rc "$out" && grep -qF "Config already present" <<<"$out" \
-  && [[ -f "$t10_config/untracked.lua" && -z "$backups" ]] && ! grep -qF "token@" <<<"$out"
-result T10-insteadof-remote $? "rc=$rc backups=[$backups]; $(tail -n3 <<<"$out" | tr '\n' ' ')"
+done_ok $? "$out" && grep -qF "is not this repo" <<<"$out" && ! grep -qF "Config already present" <<<"$out"
+result T10-global-origin-ignored $? "$(tail -n3 <<<"$out" | tr '\n' ' ')"
 
 # T11: run from a clone of the repo elsewhere, setup_config skips before any prompt or move, even when told y.
 # A copy of the script in a scratch clone makes SCRIPT_DIR that clone; the git stub refuses clone.
-out="$( (
-  sandbox T11 "$NOCLONE_GIT_BIN"
-  foreign_config_fixture "$HOME/.config/nvim"
-  git init -q -b main "$HOME/src/nvim"
-  git -C "$HOME/src/nvim" remote add origin "$REPO_URL_HTTPS"
-  load_script_copy "$HOME/src/nvim"
-  printf 'y\n' | setup_config
-  echo DONE
-) </dev/null 2>&1)"
-rc=$?
-t11_config="$(sandbox_home T11)/.config/nvim"
-backups="$(compgen -G "$t11_config.bak.*" || true)"
-problems="$(foreign_config_intact "$t11_config")"
-done_ok $rc "$out" && grep -qF "Skipping automatic config setup" <<<"$out" && [[ -z "$problems" && -z "$backups" ]]
-result T11-no-move-from-foreign-clone $? "rc=$rc backups=[$backups] $problems; $(tail -n4 <<<"$out" | tr '\n' ' ')"
+# t11_case <result> <origin> [git args]: the clone's origin is <origin>, then `git -C <clone> <args>`.
+t11_case() {
+  local id="$1" origin="$2" out rc config backups problems
+  shift 2
+  out="$( (
+    sandbox "$id" "$NOCLONE_GIT_BIN"
+    foreign_config_fixture "$HOME/.config/nvim"
+    git init -q -b main "$HOME/src/nvim"
+    git -C "$HOME/src/nvim" remote add origin "$origin"
+    if (($#)); then
+      git -C "$HOME/src/nvim" "$@"
+    fi
+    load_script_copy "$HOME/src/nvim"
+    printf 'y\n' | setup_config
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  config="$(sandbox_home "$id")/.config/nvim"
+  backups="$(compgen -G "$config.bak.*" || true)"
+  problems="$(foreign_config_intact "$config")"
+  done_ok $rc "$out" && grep -qF "Skipping automatic config setup" <<<"$out" && [[ -z "$problems" && -z "$backups" ]]
+  result "$id" $? "rc=$rc backups=[$backups] $problems; $(tail -n4 <<<"$out" | tr '\n' ' ')"
+}
+t11_case T11-no-move-from-foreign-clone "$REPO_URL_HTTPS"
+# The same for a clone with a second URL, before or after this repo's
+t11_case T11-mirror-after "$REPO_URL_HTTPS" remote set-url --add origin "$MIRROR_URL"
+t11_case T11-mirror-before "$MIRROR_URL" remote set-url --add origin "$REPO_URL_HTTPS"
 
 # T11b: run with no script file (bash -c, or a pipe), SCRIPT_DIR is empty, and setup_config skips its
 # checks for running from a checkout: with no config yet, it clones. The working directory is a clone
