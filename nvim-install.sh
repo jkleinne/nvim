@@ -857,7 +857,7 @@ is_config_repo_url() {
   local url="${1%/}"
   url="${url%.git}"
   # A user name or token before the host (https://user:token@github.com/...) names the same repo
-  if [[ $url =~ ^https://[^/@]+@(.+)$ ]]; then
+  if [[ $url =~ ^https://[^/?#@]+@(.+)$ ]]; then
     url="https://${BASH_REMATCH[1]}"
   fi
   case "$url" in

@@ -773,7 +773,9 @@ out="$( (
     http://github.com/jkleinne/nvim.git git@github.com:jkleinne/nvim/extra \
     https://u@github.com/someone/nvim https://jkleinne@github.com/jkleinne/nvim-fork \
     https://x-access-token:SECRET@evil.example/jkleinne/nvim \
-    https://evil.example/x@github.com/jkleinne/nvim ""; do
+    https://evil.example/x@github.com/jkleinne/nvim \
+    'https://evil.example?x@github.com/jkleinne/nvim' \
+    'https://evil.example#x@github.com/jkleinne/nvim.git' ""; do
     ! is_config_repo_url "$url" || echo "BAD accepted '$url'"
   done
   echo DONE
@@ -782,19 +784,32 @@ done_ok $? "$out" && ! grep -q '^BAD' <<<"$out"
 result T10-repo-url-forms $? "$(grep '^BAD' <<<"$out" | tr '\n' ' ')$(tail -n1 <<<"$out")"
 
 MIRROR_URL="https://example.invalid/mirror.git"
+MIRROR2_URL="https://example.invalid/mirror2.git"
 
-# Runs setup_config with ~/.config/nvim a checkout whose origin is $2, after `git -C <checkout> "${@:3}"`
-# (when given), and reports result $1: the checkout counts as this repo, so it stays in place
+# Makes a checkout at $1 whose origin has the URLs in $2 (space-separated, fetch URL first), then runs
+# `git -C $1 "${@:3}"` when given
+checkout_fixture() {
+  local dir="$1" url urls
+  read -ra urls <<<"$2"
+  shift 2
+  git init -q -b main "$dir"
+  git -C "$dir" remote add origin "${urls[0]}"
+  for url in "${urls[@]:1}"; do
+    git -C "$dir" remote set-url --add origin "$url"
+  done
+  if (($#)); then
+    git -C "$dir" "$@"
+  fi
+}
+
+# Runs setup_config with ~/.config/nvim a checkout_fixture of origin URLs $2 and git args "${@:3}",
+# and reports result $1: the checkout counts as this repo, so it stays in place
 t10_present_case() {
-  local id="$1" origin="$2" out rc config backups
+  local id="$1" origins="$2" out rc config backups
   shift 2
   out="$( (
     sandbox "$id" "$NOCLONE_GIT_BIN"
-    git init -q -b main "$HOME/.config/nvim"
-    git -C "$HOME/.config/nvim" remote add origin "$origin"
-    if (($#)); then
-      git -C "$HOME/.config/nvim" "$@"
-    fi
+    checkout_fixture "$HOME/.config/nvim" "$origins" "$@"
     printf 'local work\n' >"$HOME/.config/nvim/untracked.lua"
     load_script
     [[ $NVIM_CONFIG_DIR == "$TMP"/* ]] || { echo "NVIM_CONFIG_DIR=$NVIM_CONFIG_DIR"; exit 1; }
@@ -810,10 +825,11 @@ t10_present_case() {
 }
 # An SSH origin counts as this repo
 t10_present_case T10-ssh-remote git@github.com:jkleinne/nvim.git
-# Every URL of origin counts, as stored and as url.<base>.insteadOf rewrites it: a second URL added
-# for pushing (before or after this repo's), a rule that adds a token, and a short alias
-t10_present_case T10-mirror-after "$REPO_URL_HTTPS" remote set-url --add origin "$MIRROR_URL"
-t10_present_case T10-mirror-before "$MIRROR_URL" remote set-url --add origin "$REPO_URL_HTTPS"
+# Every URL of origin counts, as stored and as url.<base>.insteadOf rewrites it: URLs added for
+# pushing (this repo's first, last, or in the middle), a rule that adds a token, and a short alias
+t10_present_case T10-mirror-after "$REPO_URL_HTTPS $MIRROR_URL"
+t10_present_case T10-mirror-before "$MIRROR_URL $REPO_URL_HTTPS"
+t10_present_case T10-mirror-middle "$MIRROR_URL $REPO_URL_HTTPS $MIRROR2_URL"
 t10_present_case T10-insteadof-remote "$REPO_URL_HTTPS" \
   config url."https://token@github.com/".insteadOf "https://github.com/"
 t10_present_case T10-alias-remote gh:jkleinne/nvim config url."https://github.com/".insteadOf gh:
@@ -834,18 +850,14 @@ result T10-global-origin-ignored $? "$(tail -n3 <<<"$out" | tr '\n' ' ')"
 
 # T11: run from a clone of the repo elsewhere, setup_config skips before any prompt or move, even when told y.
 # A copy of the script in a scratch clone makes SCRIPT_DIR that clone; the git stub refuses clone.
-# t11_case <result> <origin> [git args]: the clone's origin is <origin>, then `git -C <clone> <args>`.
+# t11_case <result> <origin URLs> [git args]: the clone is a checkout_fixture of those arguments.
 t11_case() {
-  local id="$1" origin="$2" out rc config backups problems
+  local id="$1" origins="$2" out rc config backups problems
   shift 2
   out="$( (
     sandbox "$id" "$NOCLONE_GIT_BIN"
     foreign_config_fixture "$HOME/.config/nvim"
-    git init -q -b main "$HOME/src/nvim"
-    git -C "$HOME/src/nvim" remote add origin "$origin"
-    if (($#)); then
-      git -C "$HOME/src/nvim" "$@"
-    fi
+    checkout_fixture "$HOME/src/nvim" "$origins" "$@"
     load_script_copy "$HOME/src/nvim"
     printf 'y\n' | setup_config
     echo DONE
@@ -859,8 +871,8 @@ t11_case() {
 }
 t11_case T11-no-move-from-foreign-clone "$REPO_URL_HTTPS"
 # The same for a clone with a second URL, before or after this repo's
-t11_case T11-mirror-after "$REPO_URL_HTTPS" remote set-url --add origin "$MIRROR_URL"
-t11_case T11-mirror-before "$MIRROR_URL" remote set-url --add origin "$REPO_URL_HTTPS"
+t11_case T11-mirror-after "$REPO_URL_HTTPS $MIRROR_URL"
+t11_case T11-mirror-before "$MIRROR_URL $REPO_URL_HTTPS"
 
 # T11b: run with no script file (bash -c, or a pipe), SCRIPT_DIR is empty, and setup_config skips its
 # checks for running from a checkout: with no config yet, it clones. The working directory is a clone
@@ -1030,11 +1042,12 @@ out="$( (
   echo DONE
 ) </dev/null 2>&1)"
 rc=$?
-# Every read builtin call on a non-comment line sits inside confirm(), and there is exactly one. A
-# read from a here-string (version_gte) parses a string, not the terminal, so it does not count.
+# Every read, mapfile, or readarray builtin call on a non-comment line sits inside confirm(), and there
+# is exactly one. A call that reads a here-string (version_gte) or a process substitution
+# (is_config_checkout) parses a string or a command's output, not the terminal, so it does not count.
 reads="$(awk '
   /^confirm\(\) \{/ { inside = 1 }
-  !/^[[:space:]]*#/ && /(^|[;&|({[:space:]])read([[:space:]]|$)/ && !/<<</ {
+  !/^[[:space:]]*#/ && /(^|[;&|({[:space:]])(read|mapfile|readarray)([[:space:]]|$)/ && !/<<</ && !/< <\(/ {
     print (inside ? "inside" : "outside") " confirm, line " NR ": " $0
   }
   inside && /^\}/ { inside = 0 }
