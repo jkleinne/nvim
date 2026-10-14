@@ -754,6 +754,9 @@ fi
 out="$( (
   sandbox T10-urls ""
   load_script
+  # The clone URL is one this check accepts, spelled out here, so the script cannot clone one repo
+  # and then call the clone foreign
+  [[ $NVIM_REPO == "$REPO_URL_HTTPS" ]] && is_config_repo_url "$NVIM_REPO" || echo "BAD NVIM_REPO '$NVIM_REPO'"
   for url in https://github.com/jkleinne/nvim https://github.com/jkleinne/nvim.git \
     https://github.com/jkleinne/nvim/ https://github.com/jkleinne/nvim.git/ \
     git@github.com:jkleinne/nvim git@github.com:jkleinne/nvim.git \
