@@ -555,7 +555,8 @@ else
     t4_env
     GIT_OPTIONAL_LOCKS=0 git -C "$live_config" "$@"
   ); }
-  live_remote="$(t4_git remote get-url origin 2>/dev/null || true)"
+  # The stored origin, as setup_config reads it (insteadOf rules do not apply)
+  live_remote="$(t4_git config --get remote.origin.url 2>/dev/null || true)"
   if ! (
     sandbox T4-guard ""
     load_script
@@ -789,6 +790,26 @@ backups="$(compgen -G "$t10_config.bak.*" || true)"
 done_ok $rc "$out" && grep -qF "Config already present" <<<"$out" \
   && [[ -f "$t10_config/untracked.lua" && -z "$backups" ]]
 result T10-ssh-remote $? "rc=$rc backups=[$backups]; $(tail -n3 <<<"$out" | tr '\n' ' ')"
+
+# A url.<base>.insteadOf rule (for example one that adds a token) rewrites what `git remote get-url`
+# prints, not the origin stored at clone time, so setup_config still sees this repo and leaves it
+out="$( (
+  sandbox T10-insteadof "$NOCLONE_GIT_BIN"
+  git init -q -b main "$HOME/.config/nvim"
+  git -C "$HOME/.config/nvim" remote add origin "$REPO_URL_HTTPS"
+  git -C "$HOME/.config/nvim" config url."https://token@github.com/".insteadOf "https://github.com/"
+  printf 'local work\n' >"$HOME/.config/nvim/untracked.lua"
+  load_script
+  [[ $NVIM_CONFIG_DIR == "$TMP"/* ]] || { echo "NVIM_CONFIG_DIR=$NVIM_CONFIG_DIR"; exit 1; }
+  setup_config
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+t10_config="$(sandbox_home T10-insteadof)/.config/nvim"
+backups="$(compgen -G "$t10_config.bak.*" || true)"
+done_ok $rc "$out" && grep -qF "Config already present" <<<"$out" \
+  && [[ -f "$t10_config/untracked.lua" && -z "$backups" ]] && ! grep -qF "token@" <<<"$out"
+result T10-insteadof-remote $? "rc=$rc backups=[$backups]; $(tail -n3 <<<"$out" | tr '\n' ' ')"
 
 # T11: run from a clone of the repo elsewhere, setup_config skips before any prompt or move, even when told y.
 # A copy of the script in a scratch clone makes SCRIPT_DIR that clone; the git stub refuses clone.

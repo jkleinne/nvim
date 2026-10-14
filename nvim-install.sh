@@ -926,7 +926,8 @@ setup_config() {
 
   if [[ -d "$NVIM_CONFIG_DIR" ]]; then
     local existing_remote
-    existing_remote="$(git -C "$NVIM_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")"
+    # The stored URL: `git remote get-url` applies url.<base>.insteadOf rules, which can add a token
+    existing_remote="$(git -C "$NVIM_CONFIG_DIR" config --get remote.origin.url 2>/dev/null || echo "")"
 
     if is_config_repo_url "$existing_remote"; then
       success "Config already present at $NVIM_CONFIG_DIR"
@@ -944,7 +945,7 @@ setup_config() {
   # Run from a clone elsewhere, the script never clones, so it must not move the config aside either
   local script_remote=""
   if [[ -n "$SCRIPT_DIR" ]]; then
-    script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
+    script_remote="$(git -C "$SCRIPT_DIR" config --get remote.origin.url 2>/dev/null || echo "")"
   fi
 
   if is_config_repo_url "$script_remote"; then
