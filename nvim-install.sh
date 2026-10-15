@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2034  # forward-declared constants; used in subsequent tasks
 set -euo pipefail
 
 readonly MIN_NVIM_VERSION="0.12.0"
-readonly NVIM_REPO="https://github.com/jkleinne/nvim.git"
-readonly NVIM_REPO_HTTPS="https://github.com/jkleinne/nvim"
+readonly NVIM_REPO_SLUG="jkleinne/nvim"
+readonly NVIM_REPO="https://github.com/${NVIM_REPO_SLUG}.git"
 readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
 readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
+# Arch's TypeScript (a dependency of typescript-language-server), the first place the editor's ts_ls
+# gate looks; has_system_typescript makes the same check
+readonly ARCH_TSSERVER="/usr/lib/node_modules/typescript/lib/tsserver.js"
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# The directory this script is in, resolved without CDPATH. Empty when the script has no file (run as
+# bash -c "$(curl ...)", or through a pipe); setup_config then skips its checks for running from a
+# checkout. Run as bash <(curl ...), it is /proc/self/fd, which matches no checkout, so that is harmless.
+SCRIPT_DIR=""
+if [[ -n "${BASH_SOURCE[0]:-}" ]]; then
+  SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+fi
 SCRIPT_TMPDIR=""
+CLONE_STAGING=""
 WARNINGS=()
+PATH_WARNED_DIRS=()
 NEED_PATH_SETUP=false
 NVIM_INSTALL_METHOD=""
 OS=""
 ARCH=""
 PKG_MGR=""
+PKG_TIER=""
+PKG_DB_SYNCED=false
+SUDO_TICKET_HELD=false
+PRIVILEGE_CLOSED=false
 USER_SHELL=""
 
 # ---------------------------------------------------------------------------
@@ -44,13 +58,111 @@ section() {
   printf '\n%s\n' "${BOLD}${BLUE}--- $1 ---${RESET}"
 }
 
+# Ask a y/N question: returns 0 for y or Y, 1 for any other answer, and 2 at end of input (no one to
+# answer, as when stdin is closed or the script comes through a pipe). Callers that only need yes or no
+# treat 1 and 2 alike.
+confirm() {
+  local reply
+  read -rp "$1 [y/N] " reply || return 2
+  [[ "$reply" =~ ^[Yy]$ ]]
+}
+
+# ---------------------------------------------------------------------------
+# Privilege
+# ---------------------------------------------------------------------------
+
+# Every root command goes through as_root, which holds a sudo ticket first. main forgets every cached
+# credential once (forget_sudo_credentials), right after the last step that runs root commands, which
+# closes the privileged phase: a root command after it stops the run. cleanup drops a ticket the script
+# still holds on any exit. sudo usually asks for a password once; it asks again if one step, such as
+# the upgrade, outlasts its timestamp_timeout (sudo's timestamp is per terminal, 5 minutes by default).
+
+require_sudo() {
+  if ! command -v sudo >/dev/null 2>&1; then
+    error "sudo is required to install system packages, but it is not on PATH."
+    exit 1
+  fi
+}
+
+# Called before each root command, with that command as its arguments (for the error message). Once
+# forget_sudo_credentials has closed the privileged phase, it stops the run. The first time, it checks
+# that sudo exists and its credentials (fails fast on a wrong password, and caches them), after marking
+# the ticket as held, so cleanup drops it even when an interrupt lands while sudo -v caches it. Later,
+# it checks the ticket with sudo -n -v, which never prompts, and validates the credentials again when the
+# ticket lapsed (sudo -n -v also succeeds without a ticket when every sudoers entry is NOPASSWD). A
+# machine with everything installed never gets here, so it is never asked for a password.
+ensure_sudo_ticket() {
+  if [[ "$PRIVILEGE_CLOSED" == true ]]; then
+    error "root command after the privileged phase: $*"
+    exit 1
+  fi
+  if [[ "$SUDO_TICKET_HELD" == true ]] && sudo -n -v 2>/dev/null; then
+    return
+  fi
+  require_sudo
+  SUDO_TICKET_HELD=true
+  if ! sudo -v; then
+    error "sudo authentication failed."
+    exit 1
+  fi
+}
+
+# Runs "$@" as root
+as_root() {
+  ensure_sudo_ticket "$@"
+  sudo "$@"
+}
+
+# Closes the privileged phase (any root command after this stops the run) and drops any cached sudo
+# credentials, including ones from before this run (for example the README's own 'sudo pacman -S'
+# step), so the code this script starts next never inherits them: main calls it once, after the last
+# root command and before go install and uv tool install fetch and build code, the config clone, and
+# Neovim's first launch, which installs plugins and runs their build steps. sudo -k never prompts. This
+# is stricter than installers that drop only the tickets they created, because this script itself
+# starts third-party build code. With passwordless (NOPASSWD) sudo there is no ticket to drop, so this
+# protects nothing. sudo -k can fail where sudo is not setuid (some containers, nosuid mounts); such a
+# host has no ticket to drop, and the run goes on, unless sudo -n -v (which never prompts, and succeeds
+# with a live ticket, or with NOPASSWD sudoers entries) succeeds: then the run stops, and a ticket this
+# script took stays marked as held, so cleanup tries sudo -k again.
+forget_sudo_credentials() {
+  local k_error
+  PRIVILEGE_CLOSED=true
+  if ! command -v sudo >/dev/null 2>&1; then
+    SUDO_TICKET_HELD=false
+    return
+  fi
+  if k_error="$(sudo -k 2>&1 >/dev/null)"; then
+    SUDO_TICKET_HELD=false
+    return
+  fi
+  if sudo -n -v 2>/dev/null; then
+    error "sudo -k failed (${k_error:-no message}), and a cached sudo ticket is still valid."
+    error "Wait for it to expire (sudo's timestamp_timeout, 5 minutes by default), then run this script again."
+    exit 1
+  fi
+  SUDO_TICKET_HELD=false
+}
+
+# For cleanup, which runs on every exit: drops the ticket the script still holds, and never fails
+release_held_ticket() {
+  if [[ "${SUDO_TICKET_HELD:-}" == true ]]; then
+    sudo -k 2>/dev/null || true
+  fi
+}
+
 # ---------------------------------------------------------------------------
 # Temp directory management and cleanup
 # ---------------------------------------------------------------------------
 
 cleanup() {
+  # Runs on every exit, errors and signals included, so a sudo ticket this script took never outlives
+  # it; first, so an interrupt during the removals below cannot skip it
+  release_held_ticket
   if [[ -n "${SCRIPT_TMPDIR:-}" ]] && [[ -d "$SCRIPT_TMPDIR" ]]; then
     rm -rf "$SCRIPT_TMPDIR"
+  fi
+  if [[ -n "${CLONE_STAGING:-}" ]] && [[ -d "$CLONE_STAGING" ]]; then
+    rm -rf "$CLONE_STAGING"
   fi
 }
 
@@ -58,36 +170,32 @@ create_tmpdir() {
   SCRIPT_TMPDIR="$(mktemp -d)"
 }
 
-trap cleanup EXIT INT TERM
-
 # ---------------------------------------------------------------------------
 # Platform detection
 # ---------------------------------------------------------------------------
 
+require_non_root() {
+  if [[ "$EUID" -eq 0 ]]; then
+    error "Do not run this script as root or with sudo."
+    error "It calls sudo itself for system packages, and user-level tools must install into your home directory."
+    exit 1
+  fi
+}
+
 detect_os() {
   local kernel
   kernel="$(uname -s)"
-  case "$kernel" in
-    Darwin) OS="darwin" ;;
-    Linux)  OS="linux" ;;
-    *)
-      error "Unsupported operating system: $kernel"
-      error "This script supports macOS and Linux."
-      exit 1
-      ;;
-  esac
+  if [[ "$kernel" != "Linux" ]]; then
+    error "Unsupported operating system: $kernel"
+    error "This script supports Linux only (Arch Linux first-class, other distros best-effort)."
+    exit 1
+  fi
+  OS="linux"
 }
 
 detect_arch() {
   local machine
   machine="$(uname -m)"
-
-  if [[ "$OS" == "darwin" ]]; then
-    if sysctl -n hw.optional.arm64 2>/dev/null | grep -q '1'; then
-      ARCH="arm64"
-      return
-    fi
-  fi
 
   case "$machine" in
     x86_64 | amd64) ARCH="x86_64" ;;
@@ -99,29 +207,64 @@ detect_arch() {
   esac
 }
 
-detect_pkg_manager() {
-  if [[ "$OS" == "darwin" ]]; then
-    if command -v brew >/dev/null 2>&1; then
-      PKG_MGR="brew"
-    else
-      error "Homebrew is required on macOS but was not found."
-      error "Install it from https://brew.sh and re-run this script."
+# Print the package manager for the distro named by os-release ID and ID_LIKE, or nothing.
+# $1 is the os-release file (default /etc/os-release).
+os_release_pkg_mgr() {
+  local file="${1:-/etc/os-release}"
+  local ids
+  if [[ ! -r "$file" ]]; then
+    return 0
+  fi
+  # Root-owned system data; sourced in a subshell (as get.docker.com does) so nothing leaks
+  # shellcheck source=/dev/null  # os-release is data, not a script to lint
+  ids="$(. "$file" && printf ' %s %s ' "${ID:-}" "${ID_LIKE:-}")" || return 0
+  case "$ids" in
+    *" arch "*) printf '%s\n' pacman ;;
+    *" debian "* | *" ubuntu "*) printf '%s\n' apt-get ;;
+    *" fedora "* | *" rhel "* | *" centos "*) printf '%s\n' dnf ;;
+    *" alpine "*) printf '%s\n' apk ;;
+  esac
+}
+
+# Sets the package manager ($1) and its support tier together: pacman is first-class, the rest
+# best-effort. Behavior that only pacman gets keys on PKG_MGR; PKG_TIER is for display. Any other
+# manager stops the run: the install functions' case statements know only these four.
+set_pkg_manager() {
+  case "$1" in
+    pacman) PKG_TIER="first-class" ;;
+    apt-get | dnf | apk) PKG_TIER="best-effort" ;;
+    *)
+      error "set_pkg_manager: unknown package manager '$1' (expected pacman, apt-get, dnf, or apk)"
       exit 1
-    fi
-    return
+      ;;
+  esac
+  PKG_MGR="$1"
+}
+
+detect_pkg_manager() {
+  local mgr found=""
+  # os-release first: binaries alone mislead, since Debian and Fedora can ship a pacman
+  # binary and Arch's repos ship apt, dnf and apk-tools. Probe only when os-release names
+  # no supported distro or its manager is missing (pacman first: Arch is first-class).
+  mgr="$(os_release_pkg_mgr)"
+  if [[ -n "$mgr" ]] && command -v "$mgr" >/dev/null 2>&1; then
+    found="$mgr"
+  else
+    for mgr in pacman apt-get dnf apk; do
+      if command -v "$mgr" >/dev/null 2>&1; then
+        found="$mgr"
+        break
+      fi
+    done
   fi
 
-  local mgr
-  for mgr in apt-get dnf pacman apk; do
-    if command -v "$mgr" >/dev/null 2>&1; then
-      PKG_MGR="$mgr"
-      return
-    fi
-  done
+  if [[ -z "$found" ]]; then
+    error "No supported package manager found."
+    error "Supported: pacman (Arch Linux, first-class); apt-get, dnf, apk (best-effort)."
+    exit 1
+  fi
 
-  error "No supported package manager found."
-  error "Supported: apt-get (Debian/Ubuntu), dnf (Fedora/RHEL), pacman (Arch), apk (Alpine)."
-  exit 1
+  set_pkg_manager "$found"
 }
 
 detect_shell() {
@@ -161,49 +304,54 @@ confirm_proceed() {
   printf '  %-18s %s\n' "OS:" "$OS"
   printf '  %-18s %s\n' "Architecture:" "$ARCH"
   printf '  %-18s %s\n' "Package manager:" "$PKG_MGR"
+  printf '  %-18s %s\n' "Support tier:" "$PKG_TIER"
   printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
   printf '\n'
+  if [[ "$PKG_TIER" == "best-effort" ]]; then
+    info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install or uv tool install when available (latest upstream), otherwise listed as manual steps at the end."
+    printf '\n'
+  fi
   info "This script will:"
+  if [[ "$PKG_MGR" == "pacman" ]]; then
+    printf '  %s\n' "0. Upgrade the system first (pacman -Syu, with pacman's own prompt) if anything needs installing"
+  fi
   printf '  %s\n' "1. Install Neovim 0.12+ (prefer $PKG_MGR, tarball fallback)"
-  printf '  %s\n' "2. Install build tools, runtimes, formatters, linters, TUI tools"
+  if [[ "$PKG_MGR" == "pacman" ]]; then
+    printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
+  else
+    printf '  %s\n' "2. Install build tools, clipboard, runtimes, formatters, linters, TUI tools (language servers: manual steps)"
+  fi
   printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
   printf '\n'
 
-  local confirmation
-  read -rp "Proceed? [y/N] " confirmation
-  if [[ ! "$confirmation" =~ ^[Yy]$ ]]; then
-    info "Cancelled."
-    exit 0
-  fi
+  local answer=0
+  confirm "Proceed?" || answer=$?
+  case "$answer" in
+    0) ;;
+    2)
+      error "No answer (stdin is closed or not a terminal); run the script from a terminal"
+      exit 1
+      ;;
+    *)
+      info "Cancelled."
+      exit 0
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
 # Neovim installation
 # ---------------------------------------------------------------------------
 
-pkg_install_neovim() {
-  case "$PKG_MGR" in
-    brew)    brew install neovim ;;
-    apt-get) sudo apt-get update -qq && sudo apt-get install -y neovim ;;
-    dnf)     sudo dnf install -y neovim ;;
-    pacman)  sudo pacman -S --noconfirm neovim ;;
-    apk)     sudo apk add neovim ;;
-  esac
-}
-
 install_neovim_tarball() {
-  local os_name="$OS"
-  if [[ "$OS" == "darwin" ]]; then
-    os_name="macos"
-  fi
-  local filename="nvim-${os_name}-${ARCH}.tar.gz"
+  local filename="nvim-${OS}-${ARCH}.tar.gz"
   local url="${NVIM_RELEASE_BASE}/${filename}"
 
   create_tmpdir
   local tarball="${SCRIPT_TMPDIR}/${filename}"
 
   # Neovim releases do not publish SHA256 checksum files.
-  # HTTPS from github.com is the trust anchor (same as Homebrew formulae downloads).
+  # HTTPS from github.com is the trust anchor.
   info "Downloading Neovim from GitHub releases..."
   if ! curl -fSL --progress-bar -o "$tarball" "$url"; then
     error "Failed to download Neovim from $url"
@@ -219,21 +367,23 @@ install_neovim_tarball() {
 
   if [[ -d "$NVIM_INSTALL_DIR" ]]; then
     warn "Existing installation at $NVIM_INSTALL_DIR will be replaced."
-    local confirm_remove
-    read -rp "  Remove $NVIM_INSTALL_DIR? [y/N] " confirm_remove
-    if [[ ! "$confirm_remove" =~ ^[Yy]$ ]]; then
+    if ! confirm "  Remove $NVIM_INSTALL_DIR?"; then
       error "Cannot install without removing existing directory."
       exit 1
     fi
-    sudo rm -rf "$NVIM_INSTALL_DIR"
+    as_root rm -rf "$NVIM_INSTALL_DIR"
   fi
 
   info "Extracting to $NVIM_INSTALL_DIR (requires sudo)..."
-  sudo mkdir -p "$NVIM_INSTALL_DIR"
-  sudo tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
+  as_root mkdir -p "$NVIM_INSTALL_DIR"
+  as_root tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
+  # tar run as root keeps the owners the archive records, and the dir's bin may go first on PATH
+  # (setup_path prepends it), so root owns the tree and only root can write to it
+  as_root chown -R 0:0 "$NVIM_INSTALL_DIR"
+  as_root chmod -R go-w "$NVIM_INSTALL_DIR"
 
-  if [[ -w "/usr/local/bin" ]] || sudo test -w "/usr/local/bin"; then
-    sudo ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" /usr/local/bin/nvim
+  if [[ -w "/usr/local/bin" ]] || as_root test -w "/usr/local/bin"; then
+    as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" /usr/local/bin/nvim
     success "Symlinked nvim to /usr/local/bin/nvim"
   else
     NEED_PATH_SETUP=true
@@ -257,7 +407,7 @@ install_neovim() {
   fi
 
   info "Installing Neovim via $PKG_MGR..."
-  if pkg_install_neovim; then
+  if pkg_install neovim; then
     local pkg_version
     pkg_version="$(get_nvim_version)"
     if version_gte "$pkg_version" "$MIN_NVIM_VERSION"; then
@@ -277,10 +427,40 @@ install_neovim() {
 # Dependency installation helpers
 # ---------------------------------------------------------------------------
 
+# Runs once, right before the first package install: syncs the package database. On Arch that is the
+# full system upgrade (pacman -Syu), because installing new packages against a freshly synced
+# database without upgrading is a partial upgrade, which Arch does not support. pacman shows its own
+# list and asks before changing anything.
+sync_pkg_db_once() {
+  if [[ "$PKG_DB_SYNCED" == true ]]; then
+    return
+  fi
+  case "$PKG_MGR" in
+    pacman)
+      info "Upgrading the system first (pacman -Syu)..."
+      if ! as_root pacman -Syu; then
+        error "System upgrade declined or failed; installing packages now would be a partial upgrade."
+        error "Run 'sudo pacman -Syu' yourself, then run this script again."
+        exit 1
+      fi
+      ;;
+    # The sync is best effort on these distros; the warning reaches the summary
+    apt-get)
+      info "Updating package lists..."
+      as_root apt-get update -qq || warn "apt-get update failed; installing from the existing package lists"
+      ;;
+    apk)
+      info "Updating package index..."
+      as_root apk update || warn "apk update failed; installing from the existing package index"
+      ;;
+    dnf) ;;
+  esac
+  PKG_DB_SYNCED=true
+}
+
 pkg_is_installed() {
   case "$PKG_MGR" in
-    brew)    brew list --formula "$1" &>/dev/null ;;
-    apt-get) dpkg -s "$1" &>/dev/null 2>&1 ;;
+    apt-get) dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed' ;;
     dnf)     rpm -q "$1" &>/dev/null ;;
     pacman)  pacman -Q "$1" &>/dev/null ;;
     apk)     apk info -e "$1" &>/dev/null ;;
@@ -288,19 +468,30 @@ pkg_is_installed() {
 }
 
 pkg_install() {
+  sync_pkg_db_once
   case "$PKG_MGR" in
-    brew)    brew install "$@" ;;
-    apt-get) sudo apt-get install -y "$@" ;;
-    dnf)     sudo dnf install -y "$@" ;;
-    pacman)  sudo pacman -S --noconfirm "$@" ;;
-    apk)     sudo apk add "$@" ;;
+    apt-get) as_root apt-get install -y "$@" ;;
+    dnf)     as_root dnf install -y "$@" ;;
+    pacman)  as_root pacman -S --noconfirm "$@" ;;
+    apk)     as_root apk add "$@" ;;
   esac
 }
 
-install_hard() {
-  local label="$1"; shift
+# Install packages by package name, skipping installed ones.
+# "required" exits on failure; "optional" retries one by one and warns.
+install_pkgs() {
+  local mode="$1" label="$2"
+  shift 2
 
-  local missing=()
+  case "$mode" in
+    required | optional) ;;
+    *)
+      error "install_pkgs: unknown mode '$mode' (expected required or optional)"
+      exit 1
+      ;;
+  esac
+
+  local missing=() pkg
   for pkg in "$@"; do
     if ! pkg_is_installed "$pkg"; then
       missing+=("$pkg")
@@ -315,14 +506,33 @@ install_hard() {
   fi
 
   info "Installing $label..."
-  if ! pkg_install "${missing[@]}"; then
+  if pkg_install "${missing[@]}"; then
+    success "$label"
+    return
+  fi
+
+  if [[ "$mode" == "required" ]]; then
     error "Failed to install $label. Cannot continue."
     exit 1
   fi
-  success "$label"
+
+  if [[ ${#missing[@]} -eq 1 ]]; then
+    warn "${missing[0]}: install failed, skipping"
+    return
+  fi
+
+  # One bad package aborts the whole transaction, so retry individually
+  for pkg in "${missing[@]}"; do
+    if pkg_install "$pkg"; then
+      success "$pkg"
+    else
+      warn "$pkg: install failed, skipping"
+    fi
+  done
 }
 
-install_soft() {
+# Unless tool $1 is already on PATH, installs it by running "$@", and warns when that fails
+install_unless_on_path() {
   local name="$1"; shift
   if command -v "$name" >/dev/null 2>&1; then
     success "$name (already installed)"
@@ -335,6 +545,154 @@ install_soft() {
   fi
 }
 
+# GOBIN, else the first GOPATH entry's bin dir (go install writes there). Fails when go env does.
+go_bin_dir() {
+  local dir
+  dir="$(go env GOBIN)" || return 1
+  if [[ -z "$dir" ]]; then
+    dir="$(go env GOPATH)" || return 1
+    if [[ -z "$dir" ]]; then
+      return 1
+    fi
+    dir="${dir%%:*}/bin"
+  fi
+  printf '%s\n' "$dir"
+}
+
+# The line for the user's shell config that puts dir $2 on PATH, after the dirs already there ($1
+# append) or ahead of them ($1 prepend). The user-tool hints append, so user dirs never shadow system
+# binaries. fish gets --path either way, or fish_add_path puts the dir in fish_user_paths, which fish
+# places ahead of the system paths even with --append. Any other mode is an error (status 1).
+path_line() {
+  # shellcheck disable=SC2016  # $PATH is literal on purpose: the line goes into the user's shell config
+  case "$USER_SHELL:$1" in
+    fish:append)  printf 'fish_add_path --append --path %s\n' "$2" ;;
+    fish:prepend) printf 'fish_add_path --path %s\n' "$2" ;;
+    *:append)     printf 'export PATH="$PATH:%s"\n' "$2" ;;
+    *:prepend)    printf 'export PATH="%s:$PATH"\n' "$2" ;;
+    *)
+      error "path_line: unknown mode '$1' (expected append or prepend)"
+      return 1
+      ;;
+  esac
+}
+
+warn_if_not_on_path() {
+  local dir="$1" seen
+  if [[ -z "$dir" ]]; then
+    return
+  fi
+  case ":$PATH:" in
+    *":$dir:"*) return ;;
+  esac
+  for seen in "${PATH_WARNED_DIRS[@]}"; do
+    if [[ "$seen" == "$dir" ]]; then
+      return
+    fi
+  done
+  PATH_WARNED_DIRS+=("$dir")
+  warn "$dir is not on PATH; add this to your shell config: $(path_line append "$dir")"
+}
+
+# For go install / uv tool install: the binary lands in a user bin dir that may
+# not be on PATH, so check that dir too and warn when the binary there is unreachable.
+install_user_tool() {
+  local name="$1" bin_dir="$2"
+  shift 2
+  if [[ -x "$bin_dir/$name" ]]; then
+    success "$name (already installed in $bin_dir)"
+  else
+    install_unless_on_path "$name" "$@"
+  fi
+  if [[ -x "$bin_dir/$name" ]]; then
+    warn_if_not_on_path "$bin_dir"
+  fi
+}
+
+# Best-effort distros: Python CLI tools go into isolated uv environments
+# (PEP 668 blocks user-site installs on most distros).
+install_python_tool() {
+  local name="$1" bin_dir
+  if ! command -v uv >/dev/null 2>&1; then
+    warn "$name: install uv, then run: uv tool install $name"
+    return
+  fi
+  if ! bin_dir="$(uv tool dir --bin)" || [[ -z "$bin_dir" ]]; then
+    warn "$name: could not resolve uv's tool bin dir; run: uv tool install $name"
+    return
+  fi
+  install_user_tool "$name" "$bin_dir" uv tool install "$name"
+}
+
+# Best-effort distros: Go CLI tools go into Go's user bin dir.
+install_go_tool() {
+  local name="$1" module="$2" bin_dir
+  if ! command -v go >/dev/null 2>&1; then
+    warn "$name: install Go, then run: go install $module"
+    return
+  fi
+  if ! bin_dir="$(go_bin_dir)"; then
+    warn "$name: could not resolve Go's bin dir; run: go install $module"
+    return
+  fi
+  install_user_tool "$name" "$bin_dir" go install "$module"
+}
+
+# Warn once, listing the tools that are not on PATH and need a manual install.
+warn_manual() {
+  local missing=() tool list
+  for tool in "$@"; do
+    if ! command -v "$tool" >/dev/null 2>&1; then
+      missing+=("$tool")
+    fi
+  done
+  if [[ ${#missing[@]} -eq 0 ]]; then
+    return
+  fi
+  printf -v list '%s, ' "${missing[@]}"
+  warn "${list%, }: install manually"
+}
+
+# Succeeds when $1, with symlinks resolved, is a file whose package.json two levels up names
+# typescript and has a non-empty string version: the test the editor's ts_ls gate applies to a
+# tsserver.js (package_tsserver in lua/lsp_gates/typescript.lua). The fields are matched as text,
+# which is enough for a hint.
+typescript_package_tsserver() {
+  local js pkg_json meta
+  local name_re='"name"[[:space:]]*:[[:space:]]*"typescript"'
+  local version_re='"version"[[:space:]]*:[[:space:]]*"[^"]+"'
+  [[ -f "$1" ]] || return 1
+  js="$(readlink -f -- "$1")" || return 1
+  pkg_json="${js%/*}"
+  pkg_json="${pkg_json%/*}/package.json"
+  [[ -f "$pkg_json" && -r "$pkg_json" ]] || return 1
+  meta="$(<"$pkg_json")"
+  [[ $meta =~ $name_re && $meta =~ $version_re ]]
+}
+
+# Whether the editor's ts_ls gate finds a system TypeScript (system_tsserver in
+# lua/lsp_gates/typescript.lua): Arch's ($ARCH_TSSERVER), else the TypeScript package that the
+# tsserver on PATH, with symlinks resolved, belongs to (the nearest dir above it with a package.json,
+# whose lib/tsserver.js must pass typescript_package_tsserver). A version manager's shim or a wrapper
+# script belongs to no such package.
+has_system_typescript() {
+  local bin dir
+  if typescript_package_tsserver "$ARCH_TSSERVER"; then
+    return 0
+  fi
+  bin="$(command -v tsserver)" || return 1
+  bin="$(readlink -f -- "$bin")" || return 1
+  dir="$bin"
+  while [[ "$dir" == */* ]]; do
+    dir="${dir%/*}"
+    if [[ -e "$dir/package.json" ]]; then
+      typescript_package_tsserver "$dir/lib/tsserver.js"
+      return
+    fi
+  done
+  return 1
+}
+
 # ---------------------------------------------------------------------------
 # Dependency categories
 # ---------------------------------------------------------------------------
@@ -342,57 +700,57 @@ install_soft() {
 install_build_tools() {
   section "Build Tools"
 
-  if [[ "$OS" == "darwin" ]]; then
-    if xcode-select -p >/dev/null 2>&1; then
-      success "Xcode Command Line Tools (already installed)"
-    else
-      info "Installing Xcode Command Line Tools..."
-      xcode-select --install 2>/dev/null || true
-      warn "Xcode CLT installer launched. Re-run this script after installation completes."
-      exit 0
-    fi
-    return
-  fi
-
   case "$PKG_MGR" in
-    apt-get)
-      install_hard "build tools" build-essential curl tar gzip
-      ;;
-    dnf)
-      install_hard "build tools" gcc make curl tar gzip
-      ;;
-    pacman)
-      install_hard "build tools" base-devel curl
-      ;;
-    apk)
-      install_hard "build tools" build-base curl tar
-      ;;
+    apt-get) install_pkgs required "build tools" build-essential curl tar gzip unzip ;;
+    dnf)     install_pkgs required "build tools" gcc make curl tar gzip unzip ;;
+    pacman)  install_pkgs required "build tools" base-devel curl unzip ;;
+    apk)     install_pkgs required "build tools" build-base curl tar unzip ;;
   esac
 }
 
 install_core_tools() {
   section "Core Tools"
-  install_hard "core tools" ripgrep git
+  install_pkgs required "core tools" ripgrep git
+}
+
+install_clipboard() {
+  section "Clipboard"
+
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    install_pkgs optional "clipboard (Wayland)" wl-clipboard
+  elif [[ -n "${DISPLAY:-}" ]]; then
+    install_pkgs optional "clipboard (X11)" xclip
+  else
+    warn "No graphical session detected: install wl-clipboard (Wayland) or xclip (X11) for system clipboard support"
+  fi
 }
 
 install_runtimes() {
   section "Runtimes"
 
   case "$PKG_MGR" in
-    brew)
-      install_hard "runtimes" node go
-      ;;
-    apt-get)
-      install_hard "runtimes" nodejs npm golang
-      ;;
-    dnf)
-      install_hard "runtimes" nodejs npm golang
-      ;;
+    apt-get | dnf) install_pkgs required "runtimes" nodejs golang ;;
+    pacman | apk)  install_pkgs required "runtimes" nodejs go ;;
+  esac
+}
+
+install_language_servers() {
+  section "Language Servers"
+
+  # Node-based servers come from the system; Mason installs the native ones on first launch
+  case "$PKG_MGR" in
     pacman)
-      install_hard "runtimes" nodejs npm go
+      # Keep in sync with the system table in lua/lsp_gates/servers.lua
+      install_pkgs optional "language servers" \
+        bash-language-server dockerfile-language-server vscode-json-languageserver pyright \
+        typescript-language-server yaml-language-server
       ;;
-    apk)
-      install_hard "runtimes" nodejs npm go
+    *)
+      warn_manual bash-language-server docker-langserver vscode-json-language-server pyright-langserver \
+        typescript-language-server yaml-language-server
+      if ! has_system_typescript; then
+        warn "ts_ls also needs a system TypeScript: install your distribution's TypeScript package, which provides tsserver"
+      fi
       ;;
   esac
 }
@@ -401,31 +759,11 @@ install_formatters() {
   section "Formatters"
 
   case "$PKG_MGR" in
-    brew)
-      install_soft stylua brew install stylua
-      install_soft shfmt brew install shfmt
-      install_soft prettier brew install prettier
-      install_soft black brew install black
-      ;;
     pacman)
-      install_soft stylua sudo pacman -S --noconfirm stylua
-      install_soft shfmt sudo pacman -S --noconfirm shfmt
-      install_soft prettier npm install -g prettier
-      install_soft black pip install --user black
+      install_pkgs optional "formatters" stylua shfmt prettier python-black go-tools terraform
       ;;
     *)
-      install_soft prettier npm install -g prettier
-      install_soft black pip install --user black
-      if command -v go >/dev/null 2>&1; then
-        install_soft shfmt go install mvdan.cc/sh/v3/cmd/shfmt@latest
-      else
-        warn "shfmt: requires Go (skipping)"
-      fi
-      if command -v cargo >/dev/null 2>&1; then
-        install_soft stylua cargo install stylua
-      else
-        warn "stylua: no cargo on PATH, install manually from https://github.com/JohnnyMorganz/StyLua/releases"
-      fi
+      warn_manual stylua prettier terraform
       ;;
   esac
 }
@@ -434,103 +772,77 @@ install_linters() {
   section "Linters"
 
   case "$PKG_MGR" in
-    brew)
-      local linters=(selene hadolint shellcheck yamllint tflint golangci-lint ruff)
-      for l in "${linters[@]}"; do
-        install_soft "$l" brew install "$l"
-      done
-      ;;
     pacman)
-      install_soft shellcheck sudo pacman -S --noconfirm shellcheck
-      install_soft yamllint pip install --user yamllint
-      install_soft ruff pip install --user ruff
-      if command -v go >/dev/null 2>&1; then
-        install_soft golangci-lint go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-      fi
-      if command -v cargo >/dev/null 2>&1; then
-        install_soft selene cargo install selene
-      fi
-      warn "hadolint, tflint: install manually (not in pacman repos)"
+      install_pkgs optional "linters" selene shellcheck yamllint tflint golangci-lint ruff
+      ;;
+    dnf)
+      install_pkgs optional "shellcheck" ShellCheck
+      warn_manual selene tflint
       ;;
     *)
-      case "$PKG_MGR" in
-        apt-get) install_soft shellcheck sudo apt-get install -y shellcheck ;;
-        dnf)     install_soft shellcheck sudo dnf install -y shellcheck ;;
-        apk)     install_soft shellcheck sudo apk add shellcheck ;;
-      esac
-      install_soft yamllint pip install --user yamllint
-      install_soft ruff pip install --user ruff
-      if command -v go >/dev/null 2>&1; then
-        install_soft golangci-lint go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
-      fi
-      warn "selene, hadolint, tflint: install manually (not in distro repos)"
+      install_pkgs optional "shellcheck" shellcheck
+      warn_manual selene tflint
       ;;
   esac
+
+  if command -v hadolint >/dev/null 2>&1; then
+    return
+  fi
+  if [[ "$PKG_MGR" == pacman ]]; then
+    warn "hadolint: not in the official repos; review the PKGBUILD and run 'yay -S hadolint-bin', or run ':MasonInstall hadolint' in Neovim"
+  else
+    warn "hadolint: install manually, or run ':MasonInstall hadolint' in Neovim"
+  fi
 }
 
 install_tui_tools() {
   section "TUI Tools"
 
   case "$PKG_MGR" in
-    brew)
-      install_soft lazygit brew install lazygit
-      install_soft lazydocker brew install lazydocker
-      install_soft lazysql brew install lazysql
-      install_soft fortune brew install fortune
-      if command -v pipx >/dev/null 2>&1; then
-        install_soft posting pipx install posting
-      else
-        install_soft posting pip install --user posting
-      fi
-      ;;
     pacman)
-      install_soft lazygit sudo pacman -S --noconfirm lazygit
-      if command -v go >/dev/null 2>&1; then
-        install_soft lazydocker go install github.com/jesseduffield/lazydocker@latest
-        install_soft lazysql go install github.com/jorgerojas26/lazysql@latest
-      fi
-      install_soft fortune sudo pacman -S --noconfirm fortune-mod
-      if command -v pipx >/dev/null 2>&1; then
-        install_soft posting pipx install posting
-      else
-        install_soft posting pip install --user posting
-      fi
+      install_pkgs optional "TUI tools" lazygit lazydocker fortune-mod
+      ;;
+    apk)
+      install_pkgs optional "fortune" fortune
       ;;
     *)
-      if command -v go >/dev/null 2>&1; then
-        install_soft lazygit go install github.com/jesseduffield/lazygit@latest
-        install_soft lazydocker go install github.com/jesseduffield/lazydocker@latest
-        install_soft lazysql go install github.com/jorgerojas26/lazysql@latest
-      else
-        warn "lazygit, lazydocker, lazysql: requires Go (skipping)"
-      fi
-      case "$PKG_MGR" in
-        apt-get) install_soft fortune sudo apt-get install -y fortune-mod ;;
-        dnf)     install_soft fortune sudo dnf install -y fortune-mod ;;
-        apk)     install_soft fortune sudo apk add fortune-mod ;;
-      esac
-      if command -v pipx >/dev/null 2>&1; then
-        install_soft posting pipx install posting
-      else
-        install_soft posting pip install --user posting
-      fi
+      install_pkgs optional "fortune" fortune-mod
       ;;
   esac
+}
+
+# Best-effort distros: the formatters, linters, and TUI tools their repos lack, from uv tool install
+# and go install (latest upstream). They fetch and build code from the network, so main runs this
+# only after forget_sudo_credentials, and it runs no root command.
+install_user_tools() {
+  if [[ "$PKG_MGR" == pacman ]]; then
+    return
+  fi
+
+  section "User Tools"
+  install_python_tool black
+  install_python_tool yamllint
+  install_python_tool ruff
+  install_go_tool shfmt mvdan.cc/sh/v3/cmd/shfmt@latest
+  install_go_tool goimports golang.org/x/tools/cmd/goimports@latest
+  install_go_tool golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+  install_go_tool lazygit github.com/jesseduffield/lazygit@latest
+  install_go_tool lazydocker github.com/jesseduffield/lazydocker@latest
 }
 
 # ---------------------------------------------------------------------------
 # Dependency orchestrator
 # ---------------------------------------------------------------------------
 
+# System packages only, all under one sudo ticket, so sudo usually asks for a password once; it asks
+# again if one step, such as the upgrade, outlasts its timestamp_timeout. The user-level tools
+# (install_user_tools) run later, after main forgets the ticket.
 install_deps() {
-  if [[ "$PKG_MGR" == "apt-get" ]]; then
-    info "Updating package lists..."
-    sudo apt-get update -qq
-  fi
-
   install_build_tools
   install_core_tools
+  install_clipboard
   install_runtimes
+  install_language_servers
   install_formatters
   install_linters
   install_tui_tools
@@ -540,6 +852,75 @@ install_deps() {
 # Config setup
 # ---------------------------------------------------------------------------
 
+# True for this repo's HTTPS, SCP-style SSH, or ssh:// URL, with or without .git or a trailing slash.
+is_config_repo_url() {
+  local url="${1%/}"
+  url="${url%.git}"
+  case "$url" in
+    "https://github.com/$NVIM_REPO_SLUG" | "git@github.com:$NVIM_REPO_SLUG" | "ssh://git@github.com/$NVIM_REPO_SLUG")
+      return 0
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+# Remove the clone staging dir (cleanup() does the same when the run is interrupted)
+discard_clone_staging() {
+  rm -rf "$CLONE_STAGING"
+  CLONE_STAGING=""
+}
+
+# Clone the config into a sibling staging dir, then move a foreign config to $1 (when given) and
+# the clone into place. Nothing is moved unless the clone succeeded, and a failed final move puts
+# the foreign config back.
+clone_config() {
+  local backup="$1"
+  info "Cloning config to $NVIM_CONFIG_DIR..."
+  if ! mkdir -p "$(dirname "$NVIM_CONFIG_DIR")"; then
+    error "Cannot create parent directory for $NVIM_CONFIG_DIR"
+    exit 1
+  fi
+  # A sibling of the config dir, so the final mv is a rename on the same filesystem; cleanup()
+  # removes it if the run is interrupted
+  if ! CLONE_STAGING="$(mktemp -d "$(dirname "$NVIM_CONFIG_DIR")/.nvim-clone.XXXXXX")"; then
+    error "Cannot create a staging directory next to $NVIM_CONFIG_DIR"
+    CLONE_STAGING=""
+    exit 1
+  fi
+  if ! git clone "$NVIM_REPO" "$CLONE_STAGING/nvim"; then
+    discard_clone_staging
+    error "Failed to clone config repo; $NVIM_CONFIG_DIR was not changed"
+    exit 1
+  fi
+
+  if [[ -n "$backup" ]]; then
+    info "Backing up to $backup"
+    if ! mv -T "$NVIM_CONFIG_DIR" "$backup"; then
+      discard_clone_staging
+      error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
+      exit 1
+    fi
+  fi
+
+  if ! mv -T "$CLONE_STAGING/nvim" "$NVIM_CONFIG_DIR"; then
+    discard_clone_staging
+    if [[ -z "$backup" ]]; then
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; nothing else was changed"
+    elif mv -T "$backup" "$NVIM_CONFIG_DIR"; then
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is back in place there"
+    else
+      error "Failed to move the clone into $NVIM_CONFIG_DIR; your existing config is at $backup"
+    fi
+    exit 1
+  fi
+  discard_clone_staging
+
+  if [[ -n "$backup" ]]; then
+    success "Backed up existing config"
+  fi
+  success "Config cloned to $NVIM_CONFIG_DIR"
+}
+
 setup_config() {
   section "Configuration"
 
@@ -547,52 +928,45 @@ setup_config() {
     local existing_remote
     existing_remote="$(git -C "$NVIM_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")"
 
-    if [[ "$existing_remote" == "$NVIM_REPO" ]] || [[ "$existing_remote" == "$NVIM_REPO_HTTPS" ]]; then
+    if is_config_repo_url "$existing_remote"; then
       success "Config already present at $NVIM_CONFIG_DIR"
       return
     fi
 
-    local backup
-    backup="${NVIM_CONFIG_DIR}.bak.$(date +%s)"
-    warn "Existing config at $NVIM_CONFIG_DIR is not this repo."
-    info "Backing up to $backup"
-    if ! mv "$NVIM_CONFIG_DIR" "$backup"; then
-      error "Failed to back up existing config from $NVIM_CONFIG_DIR to $backup"
-      exit 1
-    fi
-    success "Backed up existing config"
-  fi
-
-  local script_remote
-  script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
-
-  if [[ "$script_remote" == "$NVIM_REPO" ]] || [[ "$script_remote" == "$NVIM_REPO_HTTPS" ]]; then
-    local resolved_script_dir
-    resolved_script_dir="$(cd "$SCRIPT_DIR" && pwd -P)"
-    local resolved_config_dir
-    resolved_config_dir="$(cd "$NVIM_CONFIG_DIR" 2>/dev/null && pwd -P || echo "$NVIM_CONFIG_DIR")"
-
-    if [[ "$resolved_script_dir" == "$resolved_config_dir" ]]; then
+    # Never move the checkout this script is running from (with no script file, there is none)
+    if [[ -n "$SCRIPT_DIR" ]] \
+      && [[ "$(cd "$NVIM_CONFIG_DIR" 2>/dev/null && pwd -P)" == "$(cd "$SCRIPT_DIR" && pwd -P)" ]]; then
       success "Running from $NVIM_CONFIG_DIR, no clone needed"
       return
     fi
+  fi
 
+  # Run from a clone elsewhere, the script never clones, so it must not move the config aside either
+  local script_remote=""
+  if [[ -n "$SCRIPT_DIR" ]]; then
+    script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
+  fi
+
+  if is_config_repo_url "$script_remote"; then
     info "This script is inside a clone of the config repo at $SCRIPT_DIR."
     info "Clone it to $NVIM_CONFIG_DIR or move it there manually."
-    warn "Skipping automatic config setup to avoid the old self-move bug."
+    warn "Skipping automatic config setup (running from $SCRIPT_DIR)"
     return
   fi
 
-  info "Cloning config to $NVIM_CONFIG_DIR..."
-  if ! mkdir -p "$(dirname "$NVIM_CONFIG_DIR")"; then
-    error "Cannot create parent directory for $NVIM_CONFIG_DIR"
-    exit 1
+  # Not run from a clone: ask before touching a foreign config, then clone first and move the foreign
+  # config aside only once the clone succeeded, so a failed clone leaves everything as it was
+  local backup=""
+  if [[ -d "$NVIM_CONFIG_DIR" ]]; then
+    backup="${NVIM_CONFIG_DIR}.bak.$(date +%s)"
+    warn "Existing config at $NVIM_CONFIG_DIR is not this repo."
+    if ! confirm "  Move it to $backup and clone this repo?"; then
+      warn "Left $NVIM_CONFIG_DIR in place; move it aside yourself and run this script again to clone the config."
+      return
+    fi
   fi
-  if ! git clone "$NVIM_REPO" "$NVIM_CONFIG_DIR"; then
-    error "Failed to clone config repo to $NVIM_CONFIG_DIR"
-    exit 1
-  fi
-  success "Config cloned to $NVIM_CONFIG_DIR"
+
+  clone_config "$backup"
 }
 
 # ---------------------------------------------------------------------------
@@ -608,42 +982,29 @@ setup_path() {
 
   local nvim_bin="${NVIM_INSTALL_DIR}/bin"
   local rc_file=""
-  local path_line=""
+  local line=""
 
   case "$USER_SHELL" in
-    bash)
-      if [[ "$OS" == "darwin" ]] && [[ -f "$HOME/.bash_profile" ]]; then
-        rc_file="$HOME/.bash_profile"
-      else
-        rc_file="$HOME/.bashrc"
-      fi
-      path_line="export PATH=\"\$PATH:${nvim_bin}\""
-      ;;
-    zsh)
-      rc_file="${ZDOTDIR:-$HOME}/.zshenv"
-      path_line="export PATH=\"\$PATH:${nvim_bin}\""
-      ;;
-    fish)
-      rc_file="${HOME}/.config/fish/config.fish"
-      path_line="fish_add_path ${nvim_bin}"
-      ;;
-    posix)
-      rc_file="$HOME/.profile"
-      path_line="export PATH=\"\$PATH:${nvim_bin}\""
-      ;;
+    bash)  rc_file="$HOME/.bashrc" ;;
+    zsh)   rc_file="${ZDOTDIR:-$HOME}/.zshenv" ;;
+    fish)  rc_file="${HOME}/.config/fish/config.fish" ;;
+    posix) rc_file="$HOME/.profile" ;;
   esac
+  # Prepended, unlike the user-tool dirs: the tarball is installed exactly when the packaged nvim is
+  # missing or too old, so its nvim must win over an older one in /usr/bin
+  line="$(path_line prepend "$nvim_bin")"
 
   if [[ -z "$rc_file" ]]; then
     warn "Could not determine rc file for shell: $USER_SHELL"
     info "Add this to your shell config manually:"
-    printf '  %s\n' "$path_line"
+    printf '  %s\n' "$line"
     return
   fi
 
   if [[ "$rc_file" != "$HOME/.profile" ]] && [[ ! -f "$rc_file" ]]; then
     warn "$rc_file does not exist."
     info "Add this to your shell config manually:"
-    printf '  %s\n' "$path_line"
+    printf '  %s\n' "$line"
     return
   fi
 
@@ -652,7 +1013,7 @@ setup_path() {
     return
   fi
 
-  printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$path_line" >> "$rc_file"
+  printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$line" >> "$rc_file"
   success "Added PATH entry to $rc_file"
   info "Run 'source $rc_file' or open a new terminal to apply."
 }
@@ -724,17 +1085,21 @@ usage() {
   cat <<'EOF'
 Usage: nvim-install.sh [--help]
 
-Cross-platform bootstrap script for Neovim 0.12+ with full dev environment.
+Bootstrap script for Neovim 0.12+ with a full dev environment on Linux.
 
-Installs Neovim, build tools, runtimes (Node, Go), formatters, linters,
-and TUI tools. Clones the Neovim configuration to ~/.config/nvim.
+Installs Neovim, build tools, a clipboard tool, runtimes (Node, Go),
+formatters, linters, and TUI tools, and on Arch the Node-based language
+servers (listed as manual steps elsewhere), then clones the Neovim
+configuration to ~/.config/nvim. Mason installs the remaining language
+servers on first launch.
 
 Supported platforms:
-  macOS        (Homebrew)
-  Debian/Ubuntu (apt)
-  Fedora/RHEL  (dnf)
-  Arch Linux   (pacman)
-  Alpine       (apk)
+  Arch Linux     (pacman)  first-class
+  Debian/Ubuntu  (apt)     best-effort
+  Fedora/RHEL    (dnf)     best-effort
+  Alpine         (apk)     best-effort
+
+Run it as your normal user; it calls sudo when it needs to.
 EOF
 }
 
@@ -744,11 +1109,18 @@ EOF
 
 main() {
   setup_colors
+  # On INT or TERM, run the EXIT cleanup and die by the same signal, so a calling shell or loop sees
+  # the interrupt (exit 130/143 would look like an ordinary failure and let a loop carry on)
+  trap cleanup EXIT
+  trap 'trap - INT; kill -s INT "$BASHPID"' INT
+  trap 'trap - TERM; kill -s TERM "$BASHPID"' TERM
 
   if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
     usage
     exit 0
   fi
+
+  require_non_root
 
   info "Neovim bootstrap starting"
 
@@ -759,10 +1131,19 @@ main() {
   confirm_proceed
   install_neovim
   install_deps
+  # The one privilege boundary: every root command runs above, none below, and no cached credentials
+  # reach the go and uv builds, the config clone, or Neovim's first launch
+  forget_sudo_credentials
+  install_user_tools
   setup_config
   setup_path
   verify_install
   print_summary
 }
 
-main "$@"
+# Runs main when the script is executed, directly or as bash -c "$(curl ...)" or through a pipe, and
+# not when it is sourced (the tests source it). Through a pipe, confirm reads the end of input (or the
+# script's own text), so the run stops at the first prompt: it needs a terminal to answer from.
+if ! (return 0 2>/dev/null); then
+  main "$@"
+fi

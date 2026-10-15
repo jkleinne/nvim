@@ -80,3 +80,8 @@ vim.diagnostic.config {
   severity_sort = true,
   float = { border = "rounded", source = true },
 }
+
+-- terraform runs started from Neovim (`terraform fmt` through conform, terraform-ls's own terraform
+-- calls) skip HashiCorp's update check, which sends the version, OS, architecture, and an install
+-- signature to checkpoint-api.hashicorp.com
+vim.env.CHECKPOINT_DISABLE = "1"

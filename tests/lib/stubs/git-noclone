@@ -1,0 +1,7 @@
+#!/bin/sh
+# git that refuses to clone (no network) and passes everything else to the real git, $REAL_GIT
+if [ "$1" = clone ]; then
+  echo "STUB GIT CLONE BLOCKED: $*" >&2
+  exit 1
+fi
+exec "${REAL_GIT:?}" "$@"

@@ -1,0 +1,9 @@
+#!/bin/sh
+# T17's go: logs "go <args>" to $EVENT_LOG, answers go env GOBIN with $SUITE_TMP/T17-gobin, and installs
+# nothing
+printf 'go %s\n' "$*" >>"${EVENT_LOG:?}"
+case "$*" in
+  "env GOBIN") printf '%s\n' "${SUITE_TMP:?}/T17-gobin" ;;
+  "install "*) ;;
+  *) echo "STUB GO: refusing $*" >&2; exit 1 ;;
+esac
