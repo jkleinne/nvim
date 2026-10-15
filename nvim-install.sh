@@ -856,12 +856,36 @@ install_deps() {
 is_config_repo_url() {
   local url="${1%/}"
   url="${url%.git}"
+  # A user name or token before the host (https://user:token@github.com/...) names the same repo
+  if [[ $url =~ ^https://[^/?#@]+@(.+)$ ]]; then
+    url="https://${BASH_REMATCH[1]}"
+  fi
   case "$url" in
     "https://github.com/$NVIM_REPO_SLUG" | "git@github.com:$NVIM_REPO_SLUG" | "ssh://git@github.com/$NVIM_REPO_SLUG")
       return 0
       ;;
     *) return 1 ;;
   esac
+}
+
+# True when the git checkout at $1 has this repo among its origin URLs: every URL stored for origin
+# (git fetches from the first; `git remote set-url --add` adds more), both as stored and as
+# url.<base>.insteadOf rules rewrite them (a rule can add a token or expand a short alias). --local
+# keeps a directory outside any repository from matching through the global git config.
+is_config_checkout() {
+  local url urls
+  [[ -n "$1" ]] || return 1
+  # errexit holds inside the substitution, so a read that finds nothing must not end it early
+  mapfile -t urls < <(
+    git -C "$1" config --local --get-all remote.origin.url 2>/dev/null || true
+    git -C "$1" remote get-url --all origin 2>/dev/null || true
+  )
+  for url in "${urls[@]}"; do
+    if is_config_repo_url "$url"; then
+      return 0
+    fi
+  done
+  return 1
 }
 
 # Remove the clone staging dir (cleanup() does the same when the run is interrupted)
@@ -925,10 +949,7 @@ setup_config() {
   section "Configuration"
 
   if [[ -d "$NVIM_CONFIG_DIR" ]]; then
-    local existing_remote
-    existing_remote="$(git -C "$NVIM_CONFIG_DIR" remote get-url origin 2>/dev/null || echo "")"
-
-    if is_config_repo_url "$existing_remote"; then
+    if is_config_checkout "$NVIM_CONFIG_DIR"; then
       success "Config already present at $NVIM_CONFIG_DIR"
       return
     fi
@@ -942,12 +963,7 @@ setup_config() {
   fi
 
   # Run from a clone elsewhere, the script never clones, so it must not move the config aside either
-  local script_remote=""
-  if [[ -n "$SCRIPT_DIR" ]]; then
-    script_remote="$(git -C "$SCRIPT_DIR" remote get-url origin 2>/dev/null || echo "")"
-  fi
-
-  if is_config_repo_url "$script_remote"; then
+  if is_config_checkout "$SCRIPT_DIR"; then
     info "This script is inside a clone of the config repo at $SCRIPT_DIR."
     info "Clone it to $NVIM_CONFIG_DIR or move it there manually."
     warn "Skipping automatic config setup (running from $SCRIPT_DIR)"
