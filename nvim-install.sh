@@ -10,6 +10,14 @@ readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/dow
 # Arch's TypeScript (a dependency of typescript-language-server), the first place the editor's ts_ls
 # gate looks; has_system_typescript makes the same check
 readonly ARCH_TSSERVER="/usr/lib/node_modules/typescript/lib/tsserver.js"
+# Go tools the distro repos lack (install_user_tools), pinned to exact releases: an update is a
+# deliberate change here, and Go's checksum database (GOSUMDB, sum.golang.org by default) verifies the
+# exact module. The releases current on 2026-10-28 (proxy.golang.org). A test checks the form.
+readonly GO_TOOL_SHFMT="mvdan.cc/sh/v3/cmd/shfmt@v3.14.1"
+readonly GO_TOOL_GOIMPORTS="golang.org/x/tools/cmd/goimports@v0.52.0"
+readonly GO_TOOL_GOLANGCI_LINT="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0"
+readonly GO_TOOL_LAZYGIT="github.com/jesseduffield/lazygit@v0.66.2"
+readonly GO_TOOL_LAZYDOCKER="github.com/jesseduffield/lazydocker@v0.25.2"
 
 # The directory this script is in, resolved without CDPATH. Empty when the script has no file (run as
 # bash -c "$(curl ...)", or through a pipe); setup_config then skips its checks for running from a
@@ -308,7 +316,7 @@ confirm_proceed() {
   printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
   printf '\n'
   if [[ "$PKG_TIER" == "best-effort" ]]; then
-    info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install or uv tool install when available (latest upstream), otherwise listed as manual steps at the end."
+    info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install (pinned versions) or uv tool install (latest upstream) when available, otherwise listed as manual steps at the end."
     printf '\n'
   fi
   info "This script will:"
@@ -624,15 +632,20 @@ install_python_tool() {
   install_user_tool "$name" "$bin_dir" uv tool install "$name"
 }
 
-# Best-effort distros: Go CLI tools go into Go's user bin dir.
+# Go CLI tools go into Go's user bin dir, at the exact version the module string ($2) pins.
+# GOTOOLCHAIN=local holds for every go call here (go env through go_bin_dir, and go install): Go's
+# default, auto, downloads a newer toolchain when a module asks for one; with local that is a failure,
+# reported as a skip. local -x scopes the export to this function, so the config clone and Neovim's
+# first launch never inherit it.
 install_go_tool() {
   local name="$1" module="$2" bin_dir
+  local -x GOTOOLCHAIN=local
   if ! command -v go >/dev/null 2>&1; then
-    warn "$name: install Go, then run: go install $module"
+    warn "$name: install Go, then run: GOTOOLCHAIN=local go install $module"
     return
   fi
   if ! bin_dir="$(go_bin_dir)"; then
-    warn "$name: could not resolve Go's bin dir; run: go install $module"
+    warn "$name: could not resolve Go's bin dir; run: GOTOOLCHAIN=local go install $module"
     return
   fi
   install_user_tool "$name" "$bin_dir" go install "$module"
@@ -812,8 +825,8 @@ install_tui_tools() {
 }
 
 # Best-effort distros: the formatters, linters, and TUI tools their repos lack, from uv tool install
-# and go install (latest upstream). They fetch and build code from the network, so main runs this
-# only after forget_sudo_credentials, and it runs no root command.
+# and go install (each Go module pinned by its GO_TOOL_* constant). They fetch and build code from the
+# network, so main runs this only after forget_sudo_credentials, and it runs no root command.
 install_user_tools() {
   if [[ "$PKG_MGR" == pacman ]]; then
     return
@@ -823,11 +836,11 @@ install_user_tools() {
   install_python_tool black
   install_python_tool yamllint
   install_python_tool ruff
-  install_go_tool shfmt mvdan.cc/sh/v3/cmd/shfmt@latest
-  install_go_tool goimports golang.org/x/tools/cmd/goimports@latest
-  install_go_tool golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-  install_go_tool lazygit github.com/jesseduffield/lazygit@latest
-  install_go_tool lazydocker github.com/jesseduffield/lazydocker@latest
+  install_go_tool shfmt "$GO_TOOL_SHFMT"
+  install_go_tool goimports "$GO_TOOL_GOIMPORTS"
+  install_go_tool golangci-lint "$GO_TOOL_GOLANGCI_LINT"
+  install_go_tool lazygit "$GO_TOOL_LAZYGIT"
+  install_go_tool lazydocker "$GO_TOOL_LAZYDOCKER"
 }
 
 # ---------------------------------------------------------------------------

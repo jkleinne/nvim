@@ -9,9 +9,10 @@
 # to run when one does not, as on a noexec temp dir, where bash's PATH search skips the stubs and finds
 # the real commands. Sourced tests and direct script runs start with sandbox: a fake HOME, which also
 # becomes the working directory (git never finds the caller's repository from there), then
-# hermetic_env, so inherited GIT_*, ZDOTDIR, XDG_*, BASH_ENV, ENV, and CDPATH variables are dropped (no
-# shell a test starts reads a startup file that could put other commands ahead of the stubs on PATH)
-# and git ignores the system and global config, refuses every protocol but file (no clone reaches the
+# hermetic_env, so inherited GIT_*, ZDOTDIR, XDG_*, BASH_ENV, ENV, CDPATH, and GOTOOLCHAIN variables
+# are dropped (no shell a test starts reads a startup file that could put other commands ahead of the
+# stubs on PATH, and T17's go stub logs the toolchain mode the script sets, never an inherited one) and
+# git ignores the system and global config, refuses every protocol but file (no clone reaches the
 # network, however git is invoked), and never looks above $TMP for a repository. DENY_BIN, which sandbox
 # puts on PATH, refuses sudo, curl, wget, go, uv, and the language package managers and AUR helpers T5
 # forbids, and logs each call to $TMP/refused.log; a test that needs one puts its stub ahead (a
@@ -89,10 +90,12 @@ expect_none() {
 done_ok() { [[ $1 -eq 0 && "$(tail -n1 <<<"$2")" == DONE ]]; }
 
 # Drops the variables that point git or the shell at real config or repos, or make a shell read a
-# startup file (BASH_ENV, ENV) or resolve cd elsewhere (CDPATH), and makes git ignore the system and
-# global config, refuse every protocol but file, and never look above $TMP for a repo
+# startup file (BASH_ENV, ENV) or resolve cd elsewhere (CDPATH), or could stand in for what the script
+# sets itself (GOTOOLCHAIN: T17's go stub records the toolchain mode the script sets, so an inherited
+# value must not satisfy T17), and makes git ignore the system and global config, refuse every protocol
+# but file, and never look above $TMP for a repo
 hermetic_env() {
-  unset "${!GIT_@}" ZDOTDIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME BASH_ENV ENV CDPATH
+  unset "${!GIT_@}" ZDOTDIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME BASH_ENV ENV CDPATH GOTOOLCHAIN
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=file GIT_CEILING_DIRECTORIES="$TMP"
 }
 
@@ -172,6 +175,18 @@ load_script_copy() {
     echo "NVIM_CONFIG_DIR=$NVIM_CONFIG_DIR SCRIPT_DIR=$SCRIPT_DIR"
     exit 1
   fi
+}
+
+# Prints the value of the script's variable $1 (a constant such as GO_TOOL_LAZYGIT), read by sourcing
+# the script in a sandbox, so nothing runs; fails (status 1, no output) when the script sets no such
+# variable, and the caller reports it
+script_constant() {
+  (
+    sandbox "constant-$1" ""
+    load_script
+    [[ -v "$1" ]] || exit 1
+    printf '%s\n' "${!1}"
+  ) </dev/null
 }
 
 # Prints the number of the first line of file $2 that matches the extended regex $1, or nothing
@@ -359,6 +374,9 @@ done
 T17_BIN="$TMP/bin-T17"
 add_stub "$T17_BIN" go t17-go
 add_stub "$T17_BIN" uv t17-uv
+
+# The Go tools install_user_tools installs, one GO_TOOL_<TOOL> constant each (T17 and T32 use it)
+GO_TOOLS="shfmt goimports golangci-lint lazygit lazydocker"
 
 # T19's go: it answers go env from T19_* variables
 T19_BIN="$TMP/bin-T19"
@@ -1154,31 +1172,50 @@ for answer in n eof; do
 done
 expect_none T16-decline-move-continues "$t16_fail"
 
+# The sandbox and log name of a T17 case: $1 = package manager, $2 = packages, $3 = the GOTOOLCHAIN
+# value the caller exports (optional)
+t17_case_name() {
+  printf 'T17-%s-%s%s\n' "$1" "$2" "${3:+-inherited-$3}"
+}
+
 # T17: main runs every package install first (install_deps), then forgets cached sudo credentials
 # once (sudo -k), then the go install and uv tool install user tools (install_user_tools), none of them
 # under sudo, and no sudo runs after the forget. A driver (tests/lib/driver-T17.sh) runs main with
 # install_deps and install_user_tools as they are and every other step stubbed. The forget runs also
 # when every package is already installed (all-installed), so no sudo -v ran: a ticket from before the
 # run may still be live. One event log records the sudo, go, and uv calls and the stubbed steps in
-# order; go and uv are stubs (T17_BIN) whose installs only log, so nothing real is installed. While main
-# runs, PATH is three stub dirs and nothing else (T17_BIN: go and uv; RECORD_BIN: sudo; DENY_BIN: curl
-# and wget, and refusals the others shadow), so no user tool name resolves and install_unless_on_path skips
-# none of them; the driver stubs the TypeScript check (T24 covers it), and nothing else on that code
-# path runs an external command. Run for every best-effort package manager.
-# $1 = package manager, $2 = missing (every package missing) or all-installed
+# order; go and uv are stubs (T17_BIN) whose installs only log, so nothing real is installed, and the go
+# stub also logs GOTOOLCHAIN after each call: every go call must run with GOTOOLCHAIN=local, even when
+# the caller exports another value (the inherited-auto case exports auto), every go install must name
+# the pinned module of the script's GO_TOOL_<TOOL> constant, and setup_config (which the driver stubs to
+# log the GOTOOLCHAIN it sees) must see what the caller had, unset or auto, so the setting never
+# outlives install_go_tool. While main runs, PATH is three stub dirs and nothing else (T17_BIN: go and
+# uv; RECORD_BIN: sudo; DENY_BIN: curl and wget, and refusals the others shadow), so no user tool name
+# resolves and install_unless_on_path skips none of them; the driver stubs the TypeScript check (T24
+# covers it), and nothing else on that code path runs an external command. Run for every non-pacman
+# package manager.
+# $1 = package manager, $2 = missing (every package missing) or all-installed, $3 = the GOTOOLCHAIN
+# value the caller exports (optional; unset when empty)
 t17_case() {
-  local mgr="$1" pkgs="$2"
+  local mgr="$1" pkgs="$2" inherited="${3:-}"
   (
-    recording_sandbox "T17-$mgr-$pkgs" "$T17_BIN"
+    recording_sandbox "$(t17_case_name "$mgr" "$pkgs" "$inherited")" "$T17_BIN"
+    [[ -z "$inherited" ]] || export GOTOOLCHAIN="$inherited"
     T17_MGR="$mgr" T17_PKGS="$pkgs" T17_PATH="$T17_BIN:$RECORD_BIN:$DENY_BIN"
     export T17_MGR T17_PKGS T17_PATH
     bash "$LIB/driver-T17.sh" "$SCRIPT"
     echo "driver rc=$?"
   ) </dev/null 2>&1
 }
-# Prints the problems with a T17 event log: $1 = log, $2 = the sudo -v calls expected
+# Prints the problems with a T17 event log: $1 = log, $2 = the sudo -v calls expected, $3 = the uv tools
+# expected (space-separated, may be empty), $4 = the Go tools expected (space-separated; each one's
+# module comes from the script's GO_TOOL_<TOOL> constant, with - read as _), $5 = the GOTOOLCHAIN value
+# the caller exported (optional; unset when empty). Each tool is installed once and nothing else is, the
+# module's path ends in the tool's name (or its name and a /vN major version), every go call runs with
+# GOTOOLCHAIN=local whatever the caller exported, and setup_config sees the caller's value again.
 t17_check_events() {
-  local log="$1" want_v="$2" k_line first_tool tool
+  local log="$1" want_v="$2" uv_tools="$3" go_tools="$4" k_line first_tool tool var module go_calls setup_config_lines
+  local want_setup_config="${5:-unset}"
   [[ "$(grep -cxF 'sudo -v' "$log")" -eq "$want_v" ]] || echo "[sudo -v count $(grep -cxF 'sudo -v' "$log"), want $want_v]"
   [[ "$(grep -cxF 'sudo -k' "$log")" -eq 1 ]] || echo "[sudo -k count $(grep -cxF 'sudo -k' "$log"), want 1]"
   k_line="$(first_line '^sudo -k$' "$log")"
@@ -1187,24 +1224,40 @@ t17_check_events() {
     || echo "[first sudo -k (line ${k_line:-none}) not before the first go or uv call (line ${first_tool:-none})]"
   no_sudo_after_final_forget "$log"
   ! grep -qE '^sudo (go|uv)( |$)' "$log" || echo "[go or uv ran under sudo]"
-  for tool in black yamllint ruff; do
+  for tool in $uv_tools; do
     [[ "$(grep -cxF "uv tool install $tool" "$log")" -eq 1 ]] || echo "[want one 'uv tool install $tool']"
   done
-  for tool in shfmt goimports golangci-lint lazygit lazydocker; do
-    [[ "$(grep -cE "^go install [^ ]*/$tool@latest\$" "$log")" -eq 1 ]] || echo "[want one 'go install .../$tool@latest']"
+  [[ "$(grep -c '^uv tool install ' "$log")" -eq "$(wc -w <<<"$uv_tools")" ]] \
+    || echo "[uv tool install count $(grep -c '^uv tool install ' "$log"), want $(wc -w <<<"$uv_tools")]"
+  for tool in $go_tools; do
+    var="GO_TOOL_${tool^^}"
+    module="$(script_constant "${var//-/_}")" || { echo "[no constant ${var//-/_} in the script]"; continue; }
+    [[ "${module%@*}" =~ /"$tool"(/v[0-9]+)?$ ]] \
+      || echo "[${var//-/_} is $module, whose path does not end in /$tool or /$tool/vN]"
+    [[ "$(grep -cxF "go install $module" "$log")" -eq 1 ]] || echo "[want one 'go install $module']"
   done
+  [[ "$(grep -c '^go install ' "$log")" -eq "$(wc -w <<<"$go_tools")" ]] \
+    || echo "[go install count $(grep -c '^go install ' "$log"), want $(wc -w <<<"$go_tools")]"
+  go_calls="$(grep -c '^go ' "$log")"
+  [[ "$(grep -cxF 'go-env GOTOOLCHAIN=local' "$log")" -eq "$go_calls" && "$(grep -c '^go-env ' "$log")" -eq "$go_calls" ]] \
+    || echo "[GOTOOLCHAIN=local not recorded for every go call: $(grep '^go-env ' "$log" | sort | uniq -c | tr -s ' \n' ' ')]"
+  setup_config_lines="$(grep '^setup_config' "$log" | tr '\n' ';')"
+  [[ "$setup_config_lines" == "setup_config GOTOOLCHAIN=$want_setup_config;" ]] \
+    || echo "[setup_config saw: ${setup_config_lines:-none}, want GOTOOLCHAIN=$want_setup_config]"
 }
+# Each case is packages:sudo -v calls expected:GOTOOLCHAIN the caller exports (empty for none)
 for mgr in apt-get dnf apk; do
-  for tc in missing:1 all-installed:0; do
-    pkgs="${tc%%:*}"
-    out="$(t17_case "$mgr" "$pkgs")"
-    events="$(event_log "T17-$mgr-$pkgs")"
+  for tc in missing:1: all-installed:0: missing:1:auto; do
+    IFS=: read -r pkgs want_v inherited <<<"$tc"
+    case_name="$(t17_case_name "$mgr" "$pkgs" "$inherited")"
+    out="$(t17_case "$mgr" "$pkgs" "$inherited")"
+    events="$(event_log "$case_name")"
     problems=""
     grep -qxF "driver rc=0" <<<"$out" || problems+="[$(tail -n2 <<<"$out" | tr '\n' ' ')] "
-    problems+="$(t17_check_events "$events" "${tc#*:}" | tr '\n' ' ')"
-    problems+="$(sudo_allowlist_problems "$(sudo_log "T17-$mgr-$pkgs")")"
+    problems+="$(t17_check_events "$events" "$want_v" "black yamllint ruff" "$GO_TOOLS" "$inherited" | tr '\n' ' ')"
+    problems+="$(sudo_allowlist_problems "$(sudo_log "$case_name")")"
     [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$events")"
-    expect_none "T17-sudo-dropped $mgr $pkgs" "$problems"
+    expect_none "T17-sudo-dropped $mgr $pkgs${inherited:+ inherited-$inherited}" "$problems"
   done
 done
 
@@ -1917,6 +1970,44 @@ grep -qxF "rc=1" <<<"$out" || problems+="[want exit 1: $(tail -n2 <<<"$out" | tr
 problems+="$(sudo_allowlist_problems "$t30_log")"
 [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$t30_events")"
 expect_none "T30-ticket-windows order" "$problems"
+
+# T32: every go install is pinned: the script has no @latest, and each GO_TOOL_* constant is
+# module/path@vX.Y.Z, the form go install resolves to one exact module version, which Go's checksum
+# database then verifies; the script has as many GO_TOOL_* constants as GO_TOOLS has tools, and T17
+# checks that each tool's own is the one it installs
+t32_fail=""
+t32_latest="$(grep -n '@latest' "$SCRIPT")"
+t32_consts="$(grep -E '^readonly GO_TOOL_[A-Z_]+=' "$SCRIPT")"
+t32_unpinned="$(grep -vE '^readonly GO_TOOL_[A-Z_]+="[a-z0-9./-]+@v[0-9]+\.[0-9]+\.[0-9]+"$' <<<"$t32_consts")"
+[[ -z "$t32_latest" ]] || t32_fail+="[@latest: $(tr '\n' ' ' <<<"$t32_latest")] "
+[[ "$(grep -c . <<<"$t32_consts")" -eq "$(wc -w <<<"$GO_TOOLS")" ]] \
+  || t32_fail+="[GO_TOOL_* constants: $(grep -c . <<<"$t32_consts"), want $(wc -w <<<"$GO_TOOLS")] "
+[[ -z "$t32_unpinned" ]] || t32_fail+="[unpinned: $(tr '\n' ' ' <<<"$t32_unpinned")] "
+expect_none T32-go-tools-pinned "$t32_fail"
+
+# T32b: the manual hints in install_go_tool (go missing, go env fails) carry GOTOOLCHAIN=local, so
+# following one never triggers the toolchain download the script avoids. PATH has no go (EMPTY_BIN) or
+# only T19's go stub, which answers GOBIN and so fails only when T19_GO_FAILS is set; nothing is
+# installed.
+t32b_fail=""
+for id in go-missing go-env-fails; do
+  case "$id" in
+    go-missing) t32b_bin="$EMPTY_BIN" t32b_go_fails="" t32b_hint="install Go, then run:" ;;
+    go-env-fails) t32b_bin="$T19_BIN" t32b_go_fails=1 t32b_hint="could not resolve Go's bin dir; run:" ;;
+  esac
+  out="$( (
+    sandbox "T32b-$id" ""
+    load_script
+    PATH="$t32b_bin" T19_GOBIN=/x/bin T19_GO_FAILS="$t32b_go_fails" \
+      install_go_tool lazygit "$GO_TOOL_LAZYGIT" >/dev/null
+    want="lazygit: $t32b_hint GOTOOLCHAIN=local go install $GO_TOOL_LAZYGIT"
+    [[ ${#WARNINGS[@]} -eq 1 && "${WARNINGS[0]}" == "$want" ]] \
+      || { echo "${#WARNINGS[@]} warnings: ${WARNINGS[*]}; want one: $want"; exit 1; }
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" || t32b_fail+="[$id hint: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T32b-go-hints-local "$t32b_fail"
 
 # T21 (last): no test reached a refusing DENY_BIN stub
 if [[ -e "$TMP/refused.log" ]]; then
