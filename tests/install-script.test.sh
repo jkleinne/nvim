@@ -21,8 +21,9 @@
 # functions through their real code (T12's deps cases, T17, T20's collection) set PATH to stub dirs and
 # at most a dir of the few real tools that code needs, so nothing else on the caller's PATH can run.
 # Every command a recording sudo logs must be on the allowlist (sudo_allowlist_problems): sudo -v, -n
-# -v, and -k, each package manager's refresh and install, and the tarball install's steps. So no test
-# can install, upgrade, or download anything, and load_script, run_script, run_script_args, and the main
+# -v, and -k, each package manager's refresh and install, and the tarball install's steps. So, apart
+# from T4 under RUN_FULL=1 (the plugins, into scratch dirs) and T33 under RUN_FEDORA=1, no test can
+# install, upgrade, or download anything, and load_script, run_script, run_script_args, and the main
 # drivers (tests/lib/driver-*.sh, which share tests/lib/driver-lib.sh) run the script only under a fake
 # HOME, so NVIM_CONFIG_DIR never points at a real config. The suite and driver-lib.sh share the helpers in
 # tests/lib/common.sh. T20 reads the server list with nvim --clean --headless -l
@@ -33,6 +34,8 @@
 # sudo -k (it never prompts or elevates) to drop this terminal's cached ticket. The only real package
 # manager queries are read-only: pacman -Q (T4's run and T20 (d)), pacman -Qlq (T20 (d)), and pacman
 # -Si (T20 (b0)). REQUIRE_ALL=1 turns T3's skip (no way to fake root here) into a failure.
+# RUN_FEDORA=1 adds T33 (see T33), which pulls the fedora:44 image into the user's podman storage (it
+# stays after the run) and installs packages only inside a throwaway container.
 # shellcheck source-path=SCRIPTDIR/..
 set -uo pipefail
 
@@ -2371,6 +2374,33 @@ for id in go-missing go-env-fails; do
   done_ok $? "$out" || t32b_fail+="[$id hint: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
 done
 expect_none T32b-go-hints-local "$t32b_fail"
+
+# T33 (RUN_FEDORA=1): the dnf path end to end in a fedora:44 container (tests/lib/fedora-container.sh:
+# a --packages-only run, then a full run, then its checks that nvim came from dnf, the two servers are
+# on PATH, weak dependencies stayed off (no npm), the two Go tools were built, and the full run's config
+# check passed, meaning its first headless launch exited 0). It pulls the image and installs packages
+# inside the container, so it needs podman and network; without the variable or podman it is skipped.
+# It passes only when the driver exits 0 and its output has the closing line. The driver runs without
+# BASH_ENV, ENV, and CDPATH like the rest of the suite, but keeps the other variables hermetic_env
+# drops (GIT_*, ZDOTDIR, the XDG_* dirs, GOTOOLCHAIN): podman reads its storage from XDG_DATA_HOME and
+# its containers.conf and storage.conf from XDG_CONFIG_HOME (containers.conf(5),
+# containers-storage.conf(5)), so the run uses the user's podman setup. T33 keeps only the last lines
+# of the output; to see all of it, run bash tests/lib/fedora-container.sh "$PWD" from the repository
+# root.
+if [[ "${RUN_FEDORA:-0}" != 1 ]]; then
+  echo "SKIP T33-fedora-container (set RUN_FEDORA=1 to run the dnf path in a fedora:44 container; needs podman and network)"
+elif ! command -v podman >/dev/null 2>&1; then
+  echo "SKIP T33-fedora-container (RUN_FEDORA=1, but podman is not installed)"
+else
+  out="$(env -u BASH_ENV -u ENV -u CDPATH bash "$LIB/fedora-container.sh" "$ROOT" 2>&1)"
+  rc=$?
+  t33_note=""
+  if [[ $rc -eq 0 ]] && ! grep -qxF "### all steps passed" <<<"$out"; then
+    rc=1
+    t33_note=" (no closing line)"
+  fi
+  result T33-fedora-container $rc "last step: $(grep -E '^### ' <<<"$out" | tail -n1); $(tail -n3 <<<"$out" | tr '\n' ' ')$t33_note"
+fi
 
 # T34: the driver library's lists are current. run_main_stubbed stops a driver, before anything runs,
 # when DRIVER_RUNS_REAL or DRIVER_STUBBED names a function main does not call (a step removed or renamed
