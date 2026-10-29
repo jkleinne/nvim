@@ -40,6 +40,8 @@ PKG_DB_SYNCED=false
 SUDO_TICKET_HELD=false
 PRIVILEGE_CLOSED=false
 USER_SHELL=""
+# --packages-only: stop after the system packages (no user tools, clone, PATH setup, or config check)
+PACKAGES_ONLY=false
 
 # ---------------------------------------------------------------------------
 # Color / output helpers
@@ -310,21 +312,26 @@ get_nvim_version() {
 }
 
 confirm_proceed() {
+  local mode="full"
+  if [[ "$PACKAGES_ONLY" == true ]]; then
+    mode="packages only"
+  fi
   section "Bootstrap Plan"
   printf '  %-18s %s\n' "OS:" "$OS"
   printf '  %-18s %s\n' "Architecture:" "$ARCH"
   printf '  %-18s %s\n' "Package manager:" "$PKG_MGR"
   printf '  %-18s %s\n' "Support tier:" "$PKG_TIER"
   printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
+  printf '  %-18s %s\n' "Mode:" "$mode"
   printf '\n'
   case "$PKG_TIER" in
     first-class) ;;
     supported)
-      info "$PKG_MGR is supported: packages come from the distro's repos; Neovim comes from the release tarball when the repo's is missing or older than $MIN_NVIM_VERSION; lazygit and lazydocker come from go install at pinned versions; tools the repos lack are listed at the end."
+      info "$PKG_MGR is supported: packages come from the distro's repos; Neovim comes from the release tarball when the repo's is missing or older than $MIN_NVIM_VERSION; lazygit and lazydocker come from go install at pinned versions in the full run; tools the repos lack are listed at the end."
       printf '\n'
       ;;
     best-effort)
-      info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install (pinned versions) or uv tool install (latest upstream) when available, otherwise listed as manual steps at the end."
+      info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install (pinned versions) or uv tool install (latest upstream) in the full run when available, otherwise listed as manual steps at the end."
       printf '\n'
       ;;
   esac
@@ -341,7 +348,9 @@ confirm_proceed() {
       printf '  %s\n' "2. Install build tools, clipboard, runtimes, formatters, linters, TUI tools (language servers: manual steps)"
       ;;
   esac
-  printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
+  if [[ "$PACKAGES_ONLY" != true ]]; then
+    printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
+  fi
   printf '\n'
 
   local answer=0
@@ -1092,12 +1101,16 @@ setup_path() {
 # Verification and summary
 # ---------------------------------------------------------------------------
 
-verify_install() {
+# Both modes: nvim is on PATH and new enough; otherwise the run stops
+verify_nvim() {
   section "Verification"
 
   if ! command -v nvim >/dev/null 2>&1; then
     error "nvim not found on PATH after installation."
-    if [[ "$NEED_PATH_SETUP" == true ]]; then
+    if [[ "$NEED_PATH_SETUP" == true && "$PACKAGES_ONLY" == true ]]; then
+      # setup_path does not run in this mode
+      error "nvim is in $NVIM_INSTALL_DIR/bin and could not be linked into /usr/local/bin; the full run adds that dir to your shell config."
+    elif [[ "$NEED_PATH_SETUP" == true ]]; then
       error "You may need to open a new terminal or source your shell config."
     fi
     exit 1
@@ -1110,7 +1123,11 @@ verify_install() {
     exit 1
   fi
   success "Neovim $installed_version on PATH"
+}
 
+# Full run only: the config loads (Neovim's first launch, which installs plugins and runs their build
+# steps, so main runs this after forget_sudo_credentials)
+verify_config() {
   if nvim --headless "+qa" 2>/dev/null; then
     success "Config loads cleanly"
   else
@@ -1120,19 +1137,28 @@ verify_install() {
 }
 
 print_summary() {
-  local installed_version
+  local installed_version title="Neovim Bootstrap Complete" config="$NVIM_CONFIG_DIR"
   installed_version="$(get_nvim_version 2>/dev/null || echo "unknown")"
+  if [[ "$PACKAGES_ONLY" == true ]]; then
+    title="Neovim Packages Installed"
+    config="not cloned (packages-only)"
+  fi
 
   printf '\n'
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
-  printf '%s\n' "${BOLD}${GREEN}  Neovim Bootstrap Complete${RESET}"
+  printf '%s\n' "${BOLD}${GREEN}  $title${RESET}"
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
   printf '  %-18s %s\n' "Version:" "$installed_version"
   printf '  %-18s %s\n' "Install method:" "$NVIM_INSTALL_METHOD"
-  printf '  %-18s %s\n' "Config:" "$NVIM_CONFIG_DIR"
+  printf '  %-18s %s\n' "Config:" "$config"
 
   if [[ "$NEED_PATH_SETUP" == true ]]; then
-    printf '  %-18s %s\n' "PATH updated:" "yes (restart shell to apply)"
+    if [[ "$PACKAGES_ONLY" == true ]]; then
+      # setup_path did not run, and whether the dir is already on PATH is not known here
+      printf '  %-18s %s\n' "PATH:" "nvim is not linked into /usr/local/bin; the full run adds $NVIM_INSTALL_DIR/bin to your shell config"
+    else
+      printf '  %-18s %s\n' "PATH updated:" "yes (restart shell to apply)"
+    fi
   fi
 
   if [[ ${#WARNINGS[@]} -gt 0 ]]; then
@@ -1144,7 +1170,11 @@ print_summary() {
 
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
   printf '\n'
-  info "Launch nvim to complete plugin installation."
+  if [[ "$PACKAGES_ONLY" == true ]]; then
+    info "Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config."
+  else
+    info "Launch nvim to complete plugin installation."
+  fi
 }
 
 # ---------------------------------------------------------------------------
@@ -1153,20 +1183,28 @@ print_summary() {
 
 usage() {
   cat <<'EOF'
-Usage: nvim-install.sh [--help]
+Usage: nvim-install.sh [--packages-only | --help]
 
 Bootstrap script for Neovim 0.12+ with a full dev environment on Linux.
 
 Installs Neovim, build tools, a clipboard tool, runtimes (Node, Go),
-formatters, linters, and TUI tools, and on Arch the Node-based language
-servers (listed as manual steps elsewhere), then clones the Neovim
-configuration to ~/.config/nvim. Mason installs the remaining language
-servers on first launch.
+formatters, linters, and TUI tools, and the language servers the distro
+packages (Arch: the Node-based ones; Fedora: bash-language-server and
+python-lsp-server; elsewhere: manual steps), then clones the Neovim
+configuration to ~/.config/nvim. Mason installs the native language
+servers on first launch; the others stay off until installed.
+On Fedora, python-lsp-server stands in for pyright.
+
+Options:
+  --packages-only  install the system packages and stop; run again
+                   without it where Neovim will run
+  --help, -h       show this help
 
 Supported platforms:
   Arch Linux     (pacman)  first-class
+  Fedora         (dnf)     supported
+  RHEL/CentOS    (dnf)     same path, fewer packages
   Debian/Ubuntu  (apt)     best-effort
-  Fedora/RHEL    (dnf)     best-effort
   Alpine         (apk)     best-effort
 
 Run it as your normal user; it calls sudo when it needs to.
@@ -1177,6 +1215,37 @@ EOF
 # Main
 # ---------------------------------------------------------------------------
 
+# Turns the command line into the run mode, or stops. No arguments: the full run. One argument: --help
+# or -h prints usage and exits 0, --packages-only sets the mode, and anything else (including the empty
+# argument) is an error. More than one argument is an error too. Errors print the arguments as given
+# (shell-quoted, so an empty one and a space inside one stay visible) and usage to stderr and exit 1,
+# before anything runs
+parse_args() {
+  if [[ $# -eq 0 ]]; then
+    return
+  fi
+  local shown
+  printf -v shown '%q ' "$@"
+  shown="${shown% }"
+  if [[ $# -gt 1 ]]; then
+    error "too many arguments: $shown (at most one: --packages-only, --help, or -h)"
+    usage >&2
+    exit 1
+  fi
+  case "$1" in
+    --help | -h)
+      usage
+      exit 0
+      ;;
+    --packages-only) PACKAGES_ONLY=true ;;
+    *)
+      error "unknown argument: $shown"
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
 main() {
   setup_colors
   # On INT or TERM, run the EXIT cleanup and die by the same signal, so a calling shell or loop sees
@@ -1185,11 +1254,7 @@ main() {
   trap 'trap - INT; kill -s INT "$BASHPID"' INT
   trap 'trap - TERM; kill -s TERM "$BASHPID"' TERM
 
-  if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
-    usage
-    exit 0
-  fi
-
+  parse_args "$@"
   require_non_root
 
   info "Neovim bootstrap starting"
@@ -1204,10 +1269,16 @@ main() {
   # The one privilege boundary: every root command runs above, none below, and no cached credentials
   # reach the go and uv builds, the config clone, or Neovim's first launch
   forget_sudo_credentials
+  if [[ "$PACKAGES_ONLY" == true ]]; then
+    verify_nvim
+    print_summary
+    return
+  fi
   install_user_tools
   setup_config
   setup_path
-  verify_install
+  verify_nvim
+  verify_config
   print_summary
 }
 

@@ -22,9 +22,9 @@
 # at most a dir of the few real tools that code needs, so nothing else on the caller's PATH can run.
 # Every command a recording sudo logs must be on the allowlist (sudo_allowlist_problems): sudo -v, -n
 # -v, and -k, each package manager's refresh and install, and the tarball install's steps. So no test
-# can install, upgrade, or download anything, and load_script, run_script, and the main drivers
-# (tests/lib/driver-*.sh, which share tests/lib/driver-lib.sh) run the script only under a fake HOME, so
-# NVIM_CONFIG_DIR never points at a real config. The suite and driver-lib.sh share the helpers in
+# can install, upgrade, or download anything, and load_script, run_script, run_script_args, and the main
+# drivers (tests/lib/driver-*.sh, which share tests/lib/driver-lib.sh) run the script only under a fake
+# HOME, so NVIM_CONFIG_DIR never points at a real config. The suite and driver-lib.sh share the helpers in
 # tests/lib/common.sh. T20 reads the server list with nvim --clean --headless -l
 # tests/lib/system-servers.lua, with scratch XDG dirs and TMPDIR. Each test sets up what it needs
 # itself, from the stubs and host facts the setup sections below provide, so the tests do not depend
@@ -137,6 +137,13 @@ load_script() {
 run_script() {
   require_sandbox_home "$TMP" run_script
   "$@" "$SCRIPT"
+}
+
+# Runs the script under test with the given arguments (no wrapper). Fails the test instead when HOME is
+# not a sandbox home.
+run_script_args() {
+  require_sandbox_home "$TMP" run_script_args
+  "$SCRIPT" "$@"
 }
 
 # Copies the script under test to file $1 with the one line that starts with $2 replaced by $3; fails
@@ -509,29 +516,32 @@ else
   result T2-plan-screen $? "rc=$rc eof_rc=$eof_rc absent=$absent; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
 fi
 
-# T2b: the plan screen for dnf, sourced so any host can run it: it names the supported tier and its
-# notice (which names no distro, since RHEL and CentOS reach this tier too, and gives the tarball
-# fallback for a repo Neovim that is missing or older than the script's MIN_NVIM_VERSION), lists the
-# language servers in step 2, has no upfront upgrade and no best-effort text, and "n" cancels with exit 0.
-# OS, ARCH and USER_SHELL are set by hand, as detection would set them.
-# $1 = case id
-t2_dnf_plan() {
+# Runs confirm_proceed, sourced so any host can run it, for package manager $2 and mode $3, answering "n",
+# and prints its output (stdout and stderr) followed by NOT REACHED when it did not exit. OS, ARCH and
+# USER_SHELL are set by hand, as detection would set them.
+# $1 = case id, $2 = package manager, $3 = PACKAGES_ONLY (true or false)
+t2_plan() {
   (
     sandbox "T2-$1" ""
     load_script
     # shellcheck disable=SC2030,SC2034  # confirm_proceed, in the script sourced into this subshell, reads them
-    OS=linux ARCH=x86_64 USER_SHELL=bash
-    set_pkg_manager dnf
+    OS=linux ARCH=x86_64 USER_SHELL=bash PACKAGES_ONLY="$3"
+    set_pkg_manager "$2"
     confirm_proceed <<<"n"
     echo "NOT REACHED"
   ) 2>&1
 }
+# T2b: the plan screen for dnf names the supported tier and its notice (which names no distro, since RHEL
+# and CentOS reach this tier too, and gives the tarball fallback for a repo Neovim that is missing or
+# older than the script's MIN_NVIM_VERSION), lists the language servers in step 2, has no upfront
+# upgrade and no best-effort text, shows Mode: full with the clone step, and "n" cancels with exit 0.
 t2_fail=""
-out="$(t2_dnf_plan dnf)"
+out="$(t2_plan dnf dnf false)"
 rc=$?
 t2_min_version="$(script_constant MIN_NVIM_VERSION)" || t2_fail+="[the script sets no MIN_NVIM_VERSION] "
-for want in 'Support tier: +supported' 'dnf is supported' \
+for want in 'Support tier: +supported' 'Mode: +full$' 'dnf is supported' \
   "Neovim comes from the release tarball when the repo's is missing or older than $(ere_escape "$t2_min_version")" \
+  'lazygit and lazydocker come from go install at pinned versions in the full run' \
   '1\. Install Neovim 0\.12\+ \(prefer dnf' \
   '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' \
   '3\. Clone config' 'Cancelled\.'; do
@@ -542,6 +552,33 @@ for unwanted in 'pacman -Syu' 'best-effort' 'manual steps\)' 'Fedora' 'NOT REACH
   ! grep -qE "$unwanted" <<<"$out" || t2_fail+="[dnf: shows $unwanted] "
 done
 expect_none T2b-dnf-plan-screen "$t2_fail"
+
+# T2c: in packages-only mode the plan screen says so and ends with the packages (no clone step)
+t2_fail=""
+out="$(t2_plan dnf-packages-only dnf true)"
+rc=$?
+for want in 'Support tier: +supported' 'Mode: +packages only$' '2\. Install build tools' 'Cancelled\.'; do
+  grep -qE "$want" <<<"$out" || t2_fail+="[packages-only: missing $want] "
+done
+[[ $rc -eq 0 ]] && ! grep -qE 'Clone config|NOT REACHED' <<<"$out" \
+  || t2_fail+="[packages-only: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+expect_none T2c-packages-only-plan-screen "$t2_fail"
+
+# T2d: the plan screen for apt-get names the best-effort tier and its notice, which says the go install and
+# uv tool install fallbacks happen in the full run (packages-only stops before them), and shows no dnf text
+t2_fail=""
+out="$(t2_plan apt-get-best-effort apt-get false)"
+rc=$?
+for want in 'Support tier: +best-effort' 'Mode: +full$' \
+  'apt-get is best-effort: tools missing from its repos are installed with go install \(pinned versions\) or uv tool install \(latest upstream\) in the full run when available, otherwise listed as manual steps at the end\.' \
+  'Cancelled\.'; do
+  grep -qE "$want" <<<"$out" || t2_fail+="[apt-get: missing $want] "
+done
+[[ $rc -eq 0 ]] || t2_fail+="[apt-get: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+for unwanted in 'dnf' 'pacman -Syu' 'NOT REACHED'; do
+  ! grep -qE "$unwanted" <<<"$out" || t2_fail+="[apt-get: shows $unwanted] "
+done
+expect_none T2d-best-effort-plan-screen "$t2_fail"
 
 # T3: root guard, under every wrapper that reports EUID 0 here: fakeroot, and unshare -r when this
 # kernel lets an unprivileged user map itself to root in a user namespace. With REQUIRE_ALL=1, having
@@ -1757,44 +1794,61 @@ expect_none "T20-server-list-sync (e) dnf" "$problems"
 
 # T22: main's single privilege boundary: install_neovim and install_deps, the steps that run root
 # commands, come first; then main forgets cached sudo credentials; then install_user_tools (go and uv
-# builds), setup_config, which clones the config, setup_path, verify_install, which launches Neovim
-# for the first time, and print_summary, and no sudo runs after the forget. A driver
+# builds), setup_config, which clones the config, setup_path, verify_nvim, verify_config, which launches
+# Neovim for the first time, and print_summary, and no sudo runs after the forget. In packages-only mode
+# the forget is followed by verify_nvim and print_summary only, and the summary says so. A driver
 # (tests/lib/driver-T22.sh) runs main with install_neovim taking a ticket through ensure_sudo_ticket (so
 # moved after the forget, it stops the run), install_deps and the steps before it stubbed to log their
-# names, and setup_path, verify_install, and print_summary logging their names and then running for
-# real, with T26's stub nvim (version 0.12.0) first on PATH, so a root command in them reaches the
-# recording sudo, which logs to the same event log; the real forget_sudo_credentials and cleanup run
-# against it. Cases: main-order, where install_neovim takes a ticket; T22b, the same where sudo is not
-# setuid (sudo -k and sudo -n -v both fail, so no ticket can be live), which still goes on to the end
-# and exits 0, under the errexit main runs with; T22c, where no step takes a ticket, as on a re-run
-# with nothing to install, but one from before the run may be live, so main still forgets it; and
-# T22d, the same, but sudo -k fails while sudo -n -v shows that ticket is still live, so the run stops
-# with exit 1 before install_user_tools, with sudo's message and the advice to wait for the ticket to
-# expire. Test name, whether install_neovim takes a ticket (1 or 0), the sudo arguments the recording
-# sudo fails on (';'-separated), and the exit status main must end with
-for tc in "T22-main-order:1::0" "T22b-forget-tolerates-failure:1:-k;-n -v:0" \
-  "T22c-forget-preexisting-ticket:0::0" "T22d-forget-refuses-live-ticket:0:-k:1"; do
-  IFS=: read -r t22_name t22_ticket t22_fail_on t22_want_rc <<<"$tc"
+# names, and setup_path, verify_nvim, verify_config, and print_summary logging their names and then
+# running for real, with T26's stub nvim (version 0.12.0) first on PATH, so a root command in them
+# reaches the recording sudo, which logs to the same event log; the real forget_sudo_credentials and
+# cleanup run against it, and main gets the words of T22_ARGS as its arguments. Cases: main-order, where
+# install_neovim takes a ticket; T22b, the same where sudo is not setuid (sudo -k and sudo -n -v both
+# fail, so no ticket can be live), which still goes on to the end and exits 0, under the errexit main
+# runs with; T22c, where no step takes a ticket, as on a re-run with nothing to install, but one from
+# before the run may be live, so main still forgets it; T22d, the same, but sudo -k fails while sudo -n
+# -v shows that ticket is still live, so the run stops with exit 1 before install_user_tools, with
+# sudo's message and the advice to wait for the ticket to expire; and T22e, main-order with
+# --packages-only. Test name, whether install_neovim takes a ticket (1 or 0), the sudo arguments the
+# recording sudo fails on (';'-separated), the exit status main must end with, and main's arguments
+for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
+  "T22c-forget-preexisting-ticket:0::0:" "T22d-forget-refuses-live-ticket:0:-k:1:" \
+  "T22e-packages-only:1::0:--packages-only"; do
+  IFS=: read -r t22_name t22_ticket t22_fail_on t22_want_rc t22_args <<<"$tc"
   t22_events="$(event_log "$t22_name")"
   t22_log="$(sudo_log "$t22_name")"
   out="$( (
     recording_sandbox "$t22_name" "$T26_BIN" "$t22_fail_on"
-    T22_TICKET="$t22_ticket" T26_VERSION=0.12.0
-    export T22_TICKET T26_VERSION
+    T22_TICKET="$t22_ticket" T26_VERSION=0.12.0 T22_ARGS="$t22_args"
+    export T22_TICKET T26_VERSION T22_ARGS
     bash "$LIB/driver-T22.sh" "$SCRIPT"
     echo "driver rc=$?"
   ) </dev/null 2>&1)"
   problems=""
   grep -qxF "driver rc=$t22_want_rc" <<<"$out" || problems+="[want exit $t22_want_rc: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-  if [[ "$t22_want_rc" == 0 ]]; then
-    problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" install_user_tools \
-      setup_config setup_path verify_install print_summary)"
-  else
-    problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k")"
-    grep -qF "sudo -k failed (STUB SUDO: failing -k)" <<<"$out" && grep -qF "timestamp_timeout" <<<"$out" \
-      || problems+="[no live-ticket error with sudo's message and the advice to wait] "
-    ! grep -qxE 'install_user_tools|setup_config' "$t22_events" || problems+="[main went on after the forget failed] "
-  fi
+  case "$t22_want_rc:$t22_args" in
+    0:)
+      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" install_user_tools \
+        setup_config setup_path verify_nvim verify_config print_summary)"
+      grep -qF 'Neovim Bootstrap Complete' <<<"$out" \
+        && ! grep -qE 'Packages Installed|not cloned \(packages-only\)|without --packages-only' <<<"$out" \
+        || problems+="[no full-run summary, or it is the packages-only one] "
+      ;;
+    0:--packages-only)
+      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" verify_nvim print_summary)"
+      ! grep -qxE 'install_user_tools|setup_config|setup_path|verify_config' "$t22_events" \
+        || problems+="[a full-run step ran in packages-only mode] "
+      grep -qF 'Neovim Packages Installed' <<<"$out" && grep -qF 'not cloned (packages-only)' <<<"$out" \
+        && grep -qF 'Run this script again without --packages-only' <<<"$out" \
+        || problems+="[no packages-only summary] "
+      ;;
+    *)
+      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k")"
+      grep -qF "sudo -k failed (STUB SUDO: failing -k)" <<<"$out" && grep -qF "timestamp_timeout" <<<"$out" \
+        || problems+="[no live-ticket error with sudo's message and the advice to wait] "
+      ! grep -qxE 'install_user_tools|setup_config' "$t22_events" || problems+="[main went on after the forget failed] "
+      ;;
+  esac
   problems+="$(no_sudo_after_final_forget "$t22_events")"
   [[ "$(grep -cxF -- -v "$t22_log")" -eq "$t22_ticket" ]] \
     || problems+="[sudo -v count $(grep -cxF -- -v "$t22_log"), want $t22_ticket] "
@@ -1802,6 +1856,75 @@ for tc in "T22-main-order:1::0" "T22b-forget-tolerates-failure:1:-k;-n -v:0" \
   [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$t22_events")"
   expect_none "$t22_name" "$problems"
 done
+
+# T22f: print_summary says what the mode skipped. A sourced case per mode, with T26's stub nvim (version
+# 0.12.0) first on PATH and NEED_PATH_SETUP true, as after a tarball install that could not link nvim into
+# /usr/local/bin: packages-only shows the title, the config line, the PATH note (setup_path did not run,
+# so nothing was added yet), and the closing line that asks for the full run; the full run shows its own
+# title, PATH updated, and the plugin line, and none of the packages-only texts (the bare word is not
+# checked: the config path in the output sits under the suite's temp dir, whose name could contain it).
+t22f_fail=""
+for mode in true false; do
+  out="$( (
+    sandbox "T22f-$mode" "$T26_BIN"
+    T26_VERSION=0.12.0
+    export T26_VERSION
+    load_script
+    PACKAGES_ONLY="$mode" NEED_PATH_SETUP=true
+    print_summary
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  if [[ "$mode" == true ]]; then
+    t22f_wanted=('Neovim Packages Installed' 'Config: +not cloned \(packages-only\)'
+      'PATH: +nvim is not linked into /usr/local/bin; the full run adds .*/bin to your shell config'
+      'Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config\.')
+    t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Launch nvim')
+  else
+    t22f_wanted=('Neovim Bootstrap Complete' 'PATH updated: +yes \(restart shell to apply\)' 'Launch nvim to complete plugin installation\.')
+    t22f_unwanted=('Packages Installed' 'not cloned \(packages-only\)' 'without --packages-only' 'PATH: +nvim is not linked')
+  fi
+  done_ok $rc "$out" || t22f_fail+="[packages_only=$mode: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  for want in "${t22f_wanted[@]}"; do
+    grep -qE -- "$want" <<<"$out" || t22f_fail+="[packages_only=$mode: missing $want] "
+  done
+  for want in "${t22f_unwanted[@]}"; do
+    ! grep -qE -- "$want" <<<"$out" || t22f_fail+="[packages_only=$mode: shows $want] "
+  done
+done
+expect_none T22f-summary-modes "$t22f_fail"
+
+# T22g: verify_nvim, with nvim missing from PATH (an empty dir; it uses only builtins), exits 1 and, when
+# NEED_PATH_SETUP is true (a tarball install that could not link into /usr/local/bin), hints at what to
+# do: in packages-only mode setup_path did not run, so the hint says the full run adds the dir to the
+# shell config; the full run keeps its hint to open a new terminal or source the shell config; with
+# NEED_PATH_SETUP false there is no hint. Cases: PACKAGES_ONLY, NEED_PATH_SETUP, whether the
+# packages-only hint is wanted, whether the full-run hint is wanted
+t22g_new_hint='nvim is in .*/bin and could not be linked into /usr/local/bin; the full run adds that dir to your shell config'
+t22g_old_hint='You may need to open a new terminal or source your shell config\.'
+t22g_fail=""
+for tc in "true:true:true:false" "false:true:false:true" "true:false:false:false" "false:false:false:false"; do
+  IFS=: read -r t22g_mode t22g_need t22g_want_new t22g_want_old <<<"$tc"
+  out="$( (
+    sandbox "T22g-$t22g_mode-$t22g_need" ""
+    load_script
+    # shellcheck disable=SC2030  # verify_nvim, in the script sourced into this subshell, reads both
+    PACKAGES_ONLY="$t22g_mode" NEED_PATH_SETUP="$t22g_need"
+    PATH="$EMPTY_BIN" run_errexit verify_nvim
+    echo "inner rc=$RC"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" \
+    && grep -qF 'nvim not found on PATH after installation.' <<<"$out" \
+    || t22g_fail+="[$tc: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  t22g_has_new=false t22g_has_old=false
+  ! grep -qE -- "$t22g_new_hint" <<<"$out" || t22g_has_new=true
+  ! grep -qE -- "$t22g_old_hint" <<<"$out" || t22g_has_old=true
+  [[ "$t22g_has_new" == "$t22g_want_new" && "$t22g_has_old" == "$t22g_want_old" ]] \
+    || t22g_fail+="[$tc: packages-only hint shown $t22g_has_new, full-run hint shown $t22g_has_old] "
+done
+expect_none T22g-verify-nvim-hints "$t22g_fail"
 
 # T23: a run that stops on an error after the script took a sudo ticket still drops it. A driver
 # (tests/lib/driver-T23.sh) runs main, so main's own EXIT trap is the one under test, with install_deps
@@ -2158,6 +2281,59 @@ problems+="$(sudo_allowlist_problems "$t30_log")"
 [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$t30_events")"
 expect_none "T30-ticket-windows order" "$problems"
 
+# T31: the script takes at most one argument, and it is --help, -h, or --packages-only. Anything else (an
+# unknown argument, the empty one, or a second argument beside --packages-only or --help) prints the error,
+# which shows each argument as given (quoted, so an empty one shows as '' and a space inside one stays
+# visible), and usage to stderr, and exits 1 before anything runs (nothing on stdout, and the recording
+# sudo logs nothing). --help and -h alone print usage to stdout and exit 0, naming the mode flag, the
+# Fedora tier row, what Mason installs, and the pylsp stand-in.
+
+# Prints a problem unless the script, run with the arguments after $2 in a recording sandbox named $1,
+# exits 1 with nothing on stdout, no sudo call, and on stderr the usage and the error message $2 (as
+# fixed text); the problem shows the first line of stderr, which is the error message
+t31_rejection_problems() {
+  local id="$1" want_message="$2" err out rc
+  shift 2
+  err="$TMP/$id.err"
+  out="$( (
+    recording_sandbox "$id"
+    run_script_args "$@" 2>"$err"
+  ) </dev/null)"
+  rc=$?
+  [[ $rc -eq 1 && -z "$out" && ! -s "$(sudo_log "$id")" ]] \
+    && grep -qF -- "$want_message" "$err" && grep -qF 'Usage: nvim-install.sh' "$err" \
+    || echo "[$id: rc=$rc stdout=$(tr '\n' ' ' <<<"$out") stderr=$(head -n1 "$err")] "
+}
+t31_fail=""
+for args in "--bogus" "--packages-only extra" "--help extra"; do
+  read -ra t31_argv <<<"$args"
+  t31_want="unknown argument: $args"
+  if [[ ${#t31_argv[@]} -gt 1 ]]; then
+    t31_want="too many arguments: $args"
+  fi
+  t31_fail+="$(t31_rejection_problems "T31-${args// /_}" "$t31_want" "${t31_argv[@]}")"
+done
+# The cases the word-splitting loop cannot express: an empty argument, and one with a space inside
+t31_fail+="$(t31_rejection_problems T31-empty "unknown argument: ''" "")"
+t31_fail+="$(t31_rejection_problems T31-quoted 'too many arguments: a\ b c' "a b" c)"
+for flag in --help -h; do
+  t31_err="$TMP/T31$flag.err"
+  out="$( (
+    sandbox "T31$flag" ""
+    run_script_args "$flag" 2>"$t31_err"
+  ) </dev/null)"
+  rc=$?
+  absent=""
+  for want in 'Usage: nvim-install.sh' '--packages-only' '^  Fedora +\(dnf\) +supported$' \
+    'Mason installs the native language' 'On Fedora, python-lsp-server stands in for pyright\.'; do
+    # -- : the second pattern starts with a dash, which grep would read as an option
+    grep -qE -- "$want" <<<"$out" || absent+="[$want] "
+  done
+  [[ $rc -eq 0 && -z "$absent" && ! -s "$t31_err" ]] \
+    || t31_fail+="[$flag: rc=$rc absent=$absent stderr=$(tr '\n' ' ' <"$t31_err")] "
+done
+expect_none T31-arguments "$t31_fail"
+
 # T32: every go install is pinned: the script has no @latest, and each GO_TOOL_* constant is
 # module/path@vX.Y.Z, the form go install resolves to one exact module version, which Go's checksum
 # database then verifies; the script has as many GO_TOOL_* constants as GO_TOOLS has tools, and T17
@@ -2195,6 +2371,29 @@ for id in go-missing go-env-fails; do
   done_ok $? "$out" || t32b_fail+="[$id hint: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
 done
 expect_none T32b-go-hints-local "$t32b_fail"
+
+# T34: the driver library's lists are current. run_main_stubbed stops a driver, before anything runs,
+# when DRIVER_RUNS_REAL or DRIVER_STUBBED names a function main does not call (a step removed or renamed
+# in main would otherwise leave its entry behind unnoticed), and the message names the list and the
+# entry. Each case runs T23's driver against a copy of tests/lib whose library has one stale name
+# appended to a list.
+t34_fail=""
+for list in DRIVER_RUNS_REAL DRIVER_STUBBED; do
+  t34_id="T34-stale-$list"
+  t34_lib="$TMP/lib-$t34_id"
+  mkdir -p "$t34_lib"
+  cp "$LIB/common.sh" "$LIB/driver-lib.sh" "$LIB/driver-T23.sh" "$t34_lib/"
+  printf '%s+=(retired_step)\n' "$list" >>"$t34_lib/driver-lib.sh"
+  out="$( (
+    recording_sandbox "$t34_id"
+    bash "$t34_lib/driver-T23.sh" "$SCRIPT"
+    echo "driver rc=$?"
+  ) </dev/null 2>&1)"
+  grep -qxF "driver rc=1" <<<"$out" && grep -qF "$list lists retired_step" <<<"$out" \
+    && [[ ! -s "$(event_log "$t34_id")" && ! -s "$(sudo_log "$t34_id")" ]] \
+    || t34_fail+="[$list: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T34-driver-lists-current "$t34_fail"
 
 # T21 (last): no test reached a refusing DENY_BIN stub
 if [[ -e "$TMP/refused.log" ]]; then
