@@ -195,7 +195,7 @@ detect_os() {
   kernel="$(uname -s)"
   if [[ "$kernel" != "Linux" ]]; then
     error "Unsupported operating system: $kernel"
-    error "This script supports Linux only (Arch Linux first-class, other distros best-effort)."
+    error "This script supports Linux only (Arch Linux first-class; Fedora supported; other distros best-effort)."
     exit 1
   fi
   OS="linux"
@@ -234,13 +234,15 @@ os_release_pkg_mgr() {
   esac
 }
 
-# Sets the package manager ($1) and its support tier together: pacman is first-class, the rest
-# best-effort. Behavior that only pacman gets keys on PKG_MGR; PKG_TIER is for display. Any other
-# manager stops the run: the install functions' case statements know only these four.
+# Sets the package manager ($1) and its support tier together: pacman is first-class, dnf is supported
+# (Fedora's repos cover the core tools, runtimes, and many formatters and linters; the script installs or
+# lists the rest), apt-get and apk are best-effort. Behavior keys on PKG_MGR; PKG_TIER is for display.
+# Any other manager stops the run: the install functions' case statements know only these four.
 set_pkg_manager() {
   case "$1" in
     pacman) PKG_TIER="first-class" ;;
-    apt-get | dnf | apk) PKG_TIER="best-effort" ;;
+    dnf) PKG_TIER="supported" ;;
+    apt-get | apk) PKG_TIER="best-effort" ;;
     *)
       error "set_pkg_manager: unknown package manager '$1' (expected pacman, apt-get, dnf, or apk)"
       exit 1
@@ -268,7 +270,7 @@ detect_pkg_manager() {
 
   if [[ -z "$found" ]]; then
     error "No supported package manager found."
-    error "Supported: pacman (Arch Linux, first-class); apt-get, dnf, apk (best-effort)."
+    error "Supported: pacman (Arch Linux, first-class); dnf (Fedora, supported); apt-get, apk (best-effort)."
     exit 1
   fi
 
@@ -315,20 +317,30 @@ confirm_proceed() {
   printf '  %-18s %s\n' "Support tier:" "$PKG_TIER"
   printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
   printf '\n'
-  if [[ "$PKG_TIER" == "best-effort" ]]; then
-    info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install (pinned versions) or uv tool install (latest upstream) when available, otherwise listed as manual steps at the end."
-    printf '\n'
-  fi
+  case "$PKG_TIER" in
+    first-class) ;;
+    supported)
+      info "$PKG_MGR is supported: packages come from the distro's repos; Neovim comes from the release tarball when the repo's is missing or older than $MIN_NVIM_VERSION; lazygit and lazydocker come from go install at pinned versions; tools the repos lack are listed at the end."
+      printf '\n'
+      ;;
+    best-effort)
+      info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install (pinned versions) or uv tool install (latest upstream) when available, otherwise listed as manual steps at the end."
+      printf '\n'
+      ;;
+  esac
   info "This script will:"
   if [[ "$PKG_MGR" == "pacman" ]]; then
     printf '  %s\n' "0. Upgrade the system first (pacman -Syu, with pacman's own prompt) if anything needs installing"
   fi
   printf '  %s\n' "1. Install Neovim 0.12+ (prefer $PKG_MGR, tarball fallback)"
-  if [[ "$PKG_MGR" == "pacman" ]]; then
-    printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
-  else
-    printf '  %s\n' "2. Install build tools, clipboard, runtimes, formatters, linters, TUI tools (language servers: manual steps)"
-  fi
+  case "$PKG_MGR" in
+    pacman | dnf)
+      printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
+      ;;
+    *)
+      printf '  %s\n' "2. Install build tools, clipboard, runtimes, formatters, linters, TUI tools (language servers: manual steps)"
+      ;;
+  esac
   printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
   printf '\n'
 
@@ -461,6 +473,8 @@ sync_pkg_db_once() {
       info "Updating package index..."
       as_root apk update || warn "apk update failed; installing from the existing package index"
       ;;
+    # dnf refreshes expired metadata itself before an install, and Fedora supports installing against a
+    # newer database without a full upgrade, so there is no upfront step
     dnf) ;;
   esac
   PKG_DB_SYNCED=true
@@ -479,7 +493,10 @@ pkg_install() {
   sync_pkg_db_once
   case "$PKG_MGR" in
     apt-get) as_root apt-get install -y "$@" ;;
-    dnf)     as_root dnf install -y "$@" ;;
+    # dnf installs Recommends by default, and Fedora's nodejs recommends its package manager, which this
+    # config never uses; with weak dependencies off, only the listed packages and their hard
+    # dependencies land
+    dnf)     as_root dnf install -y --setopt=install_weak_deps=False "$@" ;;
     pacman)  as_root pacman -S --noconfirm "$@" ;;
     apk)     as_root apk add "$@" ;;
   esac
@@ -750,13 +767,20 @@ install_runtimes() {
 install_language_servers() {
   section "Language Servers"
 
-  # Node-based servers come from the system; Mason installs the native ones on first launch
+  # The system servers in lua/lsp_gates/servers.lua come from the system package manager where it
+  # packages them and are listed as manual steps where it does not; a fallback is installed only where a
+  # distro packages one in place of its server. Mason installs the native ones on first launch
   case "$PKG_MGR" in
     pacman)
       # Keep in sync with the system table in lua/lsp_gates/servers.lua
       install_pkgs optional "language servers" \
         bash-language-server dockerfile-language-server vscode-json-languageserver pyright \
         typescript-language-server yaml-language-server
+      ;;
+    dnf)
+      # Keep in sync with the system and fallbacks tables in lua/lsp_gates/servers.lua (a test checks)
+      install_pkgs optional "language servers" nodejs-bash-language-server python3-lsp-server
+      warn "Fedora packages no server for dockerls, jsonls, ts_ls or yamlls: they stay off unless their commands are on PATH (ts_ls also needs a system TypeScript); python-lsp-server (pylsp) stands in for pyright"
       ;;
     *)
       warn_manual bash-language-server docker-langserver vscode-json-language-server pyright-langserver \
@@ -775,6 +799,10 @@ install_formatters() {
     pacman)
       install_pkgs optional "formatters" stylua shfmt prettier python-black go-tools terraform
       ;;
+    dnf)
+      install_pkgs optional "formatters" shfmt black golang-x-tools-goimports
+      warn_manual stylua prettier terraform
+      ;;
     *)
       warn_manual stylua prettier terraform
       ;;
@@ -789,7 +817,7 @@ install_linters() {
       install_pkgs optional "linters" selene shellcheck yamllint tflint golangci-lint ruff
       ;;
     dnf)
-      install_pkgs optional "shellcheck" ShellCheck
+      install_pkgs optional "linters" ShellCheck yamllint ruff golangci-lint hadolint
       warn_manual selene tflint
       ;;
     *)
@@ -815,6 +843,9 @@ install_tui_tools() {
     pacman)
       install_pkgs optional "TUI tools" lazygit lazydocker fortune-mod
       ;;
+    dnf)
+      install_pkgs optional "fortune" fortune-mod
+      ;;
     apk)
       install_pkgs optional "fortune" fortune
       ;;
@@ -824,23 +855,33 @@ install_tui_tools() {
   esac
 }
 
-# Best-effort distros: the formatters, linters, and TUI tools their repos lack, from uv tool install
-# and go install (each Go module pinned by its GO_TOOL_* constant). They fetch and build code from the
-# network, so main runs this only after forget_sudo_credentials, and it runs no root command.
+# The tools a distro's repos lack, installed as the user into Go's and uv's bin directories: on dnf,
+# lazygit and lazydocker from go install; on apt-get and apk, also the formatters and linters, from go
+# install and uv tool install. Each Go module is pinned by its GO_TOOL_* constant. They fetch and build
+# code from the network, so main runs this only after forget_sudo_credentials, and it runs no root
+# command. pacman installs all of them.
 install_user_tools() {
   if [[ "$PKG_MGR" == pacman ]]; then
     return
   fi
 
   section "User Tools"
-  install_python_tool black
-  install_python_tool yamllint
-  install_python_tool ruff
-  install_go_tool shfmt "$GO_TOOL_SHFMT"
-  install_go_tool goimports "$GO_TOOL_GOIMPORTS"
-  install_go_tool golangci-lint "$GO_TOOL_GOLANGCI_LINT"
-  install_go_tool lazygit "$GO_TOOL_LAZYGIT"
-  install_go_tool lazydocker "$GO_TOOL_LAZYDOCKER"
+  case "$PKG_MGR" in
+    dnf)
+      install_go_tool lazygit "$GO_TOOL_LAZYGIT"
+      install_go_tool lazydocker "$GO_TOOL_LAZYDOCKER"
+      ;;
+    *)
+      install_python_tool black
+      install_python_tool yamllint
+      install_python_tool ruff
+      install_go_tool shfmt "$GO_TOOL_SHFMT"
+      install_go_tool goimports "$GO_TOOL_GOIMPORTS"
+      install_go_tool golangci-lint "$GO_TOOL_GOLANGCI_LINT"
+      install_go_tool lazygit "$GO_TOOL_LAZYGIT"
+      install_go_tool lazydocker "$GO_TOOL_LAZYDOCKER"
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------

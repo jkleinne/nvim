@@ -35,7 +35,7 @@ My personal Neovim configuration
 
 ## Requirements
 
-This configuration targets **Arch Linux**. Other Linux distributions work on a best-effort basis through the [bootstrap script](#method-b-bootstrap-script-recommended), which lists the optional tools it cannot install. macOS and Windows are not supported.
+This configuration targets **Arch Linux**. Fedora is supported through the [bootstrap script](#method-b-bootstrap-script-recommended), which installs everything Fedora packages and lists the rest; other Linux distributions are best-effort through the same script. macOS and Windows are not supported.
 
 ### Arch Linux
 
@@ -57,6 +57,22 @@ Run `sudo -k` afterwards, so the cached sudo credentials do not reach the plugin
 ```bash
 yay -S hadolint-bin
 ```
+
+### Fedora
+
+One dnf command installs everything Fedora packages. Fedora 44 and newer package Neovim 0.12, while Fedora 43's is 0.11.6, so there the bootstrap script ([Method B](#method-b-bootstrap-script-recommended)) installs Neovim from the official release tarball; if you install by hand, leave `neovim` out of the dnf command on Fedora 43 (it would still install 0.11.6) and get Neovim 0.12 from the [Neovim releases](https://github.com/neovim/neovim/releases) instead. The script installs the same packages for you and picks the clipboard tool from your session; on an X11 session, replace `wl-clipboard` with `xclip`:
+
+```bash
+sudo dnf install --setopt=install_weak_deps=False neovim git ripgrep gcc make curl tar gzip unzip \
+  wl-clipboard nodejs golang nodejs-bash-language-server python3-lsp-server \
+  shfmt black golang-x-tools-goimports ShellCheck yamllint ruff golangci-lint hadolint fortune-mod
+```
+
+The option keeps dnf from also installing recommended packages, `npm` among them through Fedora's `nodejs`; the script does the same.
+
+Run `sudo -k` afterwards, so the cached sudo credentials do not reach the plugin builds on Neovim's first launch (the bootstrap script does this itself).
+
+Fedora has no package for `lazygit` or `lazydocker`: the script installs both with `go install` at pinned versions into Go's bin directory (`~/go/bin` by default), and tells you when that directory is not on your `PATH`. It lists `stylua`, `selene`, `prettier`, `tflint` and `terraform` as manual steps. Of the Node-based language servers Fedora packages only `bash-language-server`, so `dockerls`, `jsonls`, `ts_ls` and `yamlls` stay off unless you install their commands yourself (`ts_ls` also needs a system TypeScript; the script says so in a warning), and `python-lsp-server` (`pylsp`) stands in for `pyright` (see [Language servers](#what-each-package-is-for)). Install a [Nerd Font](https://www.nerdfonts.com/) yourself.
 
 ### What each package is for
 

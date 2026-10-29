@@ -201,8 +201,8 @@ ere_escape() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
 # Prints a problem when the sudo log $1 is missing or unreadable, or has a line that is not one of the
 # only commands the script may run under sudo, as a recording sudo logs them (its arguments joined by
 # spaces): sudo -v, -n -v (the checks for a live ticket), and -k, each package manager's refresh and
-# install of plain package names, and the tarball install's exact steps, as as_root runs them, for the
-# install dir $2 (default /opt/nvim); nothing otherwise
+# install of plain package names (dnf's only with weak dependencies off), and the tarball install's
+# exact steps, as as_root runs them, for the install dir $2 (default /opt/nvim); nothing otherwise
 sudo_pkgs='( [A-Za-z0-9][A-Za-z0-9@._+-]*)+'
 sudo_allowlist_problems() {
   local log="$1" dir outside allowlist
@@ -211,7 +211,7 @@ sudo_allowlist_problems() {
     -e '-v' -e '-n -v' -e '-k'
     -e 'pacman -Syu' -e "pacman -S --noconfirm$sudo_pkgs"
     -e 'apt-get update -qq' -e "apt-get install -y$sudo_pkgs"
-    -e "dnf install -y$sudo_pkgs"
+    -e "dnf install -y --setopt=install_weak_deps=False$sudo_pkgs"
     -e 'apk update' -e "apk add$sudo_pkgs"
     -e "rm -rf $dir" -e "mkdir -p $dir" -e "tar -C $dir --strip-components=1 -xzf /[^ ]+\\.tar\\.gz"
     -e "chown -R 0:0 $dir" -e "chmod -R go-w $dir"
@@ -509,6 +509,40 @@ else
   result T2-plan-screen $? "rc=$rc eof_rc=$eof_rc absent=$absent; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
 fi
 
+# T2b: the plan screen for dnf, sourced so any host can run it: it names the supported tier and its
+# notice (which names no distro, since RHEL and CentOS reach this tier too, and gives the tarball
+# fallback for a repo Neovim that is missing or older than the script's MIN_NVIM_VERSION), lists the
+# language servers in step 2, has no upfront upgrade and no best-effort text, and "n" cancels with exit 0.
+# OS, ARCH and USER_SHELL are set by hand, as detection would set them.
+# $1 = case id
+t2_dnf_plan() {
+  (
+    sandbox "T2-$1" ""
+    load_script
+    # shellcheck disable=SC2030,SC2034  # confirm_proceed, in the script sourced into this subshell, reads them
+    OS=linux ARCH=x86_64 USER_SHELL=bash
+    set_pkg_manager dnf
+    confirm_proceed <<<"n"
+    echo "NOT REACHED"
+  ) 2>&1
+}
+t2_fail=""
+out="$(t2_dnf_plan dnf)"
+rc=$?
+t2_min_version="$(script_constant MIN_NVIM_VERSION)" || t2_fail+="[the script sets no MIN_NVIM_VERSION] "
+for want in 'Support tier: +supported' 'dnf is supported' \
+  "Neovim comes from the release tarball when the repo's is missing or older than $(ere_escape "$t2_min_version")" \
+  '1\. Install Neovim 0\.12\+ \(prefer dnf' \
+  '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' \
+  '3\. Clone config' 'Cancelled\.'; do
+  grep -qE "$want" <<<"$out" || t2_fail+="[dnf: missing $want] "
+done
+[[ $rc -eq 0 ]] || t2_fail+="[dnf: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+for unwanted in 'pacman -Syu' 'best-effort' 'manual steps\)' 'Fedora' 'NOT REACHED'; do
+  ! grep -qE "$unwanted" <<<"$out" || t2_fail+="[dnf: shows $unwanted] "
+done
+expect_none T2b-dnf-plan-screen "$t2_fail"
+
 # T3: root guard, under every wrapper that reports EUID 0 here: fakeroot, and unshare -r when this
 # kernel lets an unprivileged user map itself to root in a user namespace. With REQUIRE_ALL=1, having
 # neither fails instead of skipping.
@@ -700,6 +734,7 @@ out="$( (
     "dnf:pacman first-class"; do
     OSR_MGR="${tc%%:*}"
     os_release_pkg_mgr() { printf '%s\n' "$OSR_MGR"; }
+    # shellcheck disable=SC2030  # os-release detection, in the script sourced into this subshell, sets both
     PKG_MGR="" PKG_TIER=""
     PATH="$PKG_BIN" detect_pkg_manager
     [[ "$PKG_MGR $PKG_TIER" == "${tc#*:}" ]] \
@@ -710,13 +745,17 @@ out="$( (
 done_ok $? "$out" && ! grep -nE 'OS_RELEASE_FILE|NVIM_INSTALL_OS_RELEASE' "$SCRIPT"
 result T8-detection $? "$(tail -n3 <<<"$out")"
 
-# T8b: set_pkg_manager takes only the four supported managers; anything else stops the run, so no install
+# T8b: set_pkg_manager takes only the four supported managers and sets each one's tier (pacman
+# first-class, dnf supported, apt-get and apk best-effort); anything else stops the run, so no install
 # function runs with a manager its case statements do not know (pkg_install would do nothing and succeed)
 out="$( (
   sandbox T8b ""
   load_script
-  for mgr in pacman apt-get dnf apk; do
-    set_pkg_manager "$mgr"
+  for tc in pacman:first-class dnf:supported apt-get:best-effort apk:best-effort; do
+    set_pkg_manager "${tc%%:*}"
+    # shellcheck disable=SC2031  # set_pkg_manager, in the script sourced into this subshell, sets both
+    [[ "$PKG_MGR" == "${tc%%:*}" && "$PKG_TIER" == "${tc#*:}" ]] \
+      || { echo "${tc%%:*}: PKG_MGR=$PKG_MGR PKG_TIER=$PKG_TIER, want tier ${tc#*:}"; exit 1; }
   done
   run_errexit set_pkg_manager bogus
   echo "bogus rc=$RC"
@@ -925,8 +964,9 @@ result T11b-no-script-dir-clones $? "$(tail -n3 <<<"$out" | tr '\n' ' ')"
 
 # T12: the first real install checks sudo once and runs pacman -Syu once, before any pacman -S;
 # installing Neovim goes through the same path, apt-get and apk refresh once (also across a whole
-# install_deps), nothing missing means no sudo, and a missing sudo binary stops the first install. A
-# whole install_deps runs on a PATH of the recording sudo, DENY_BIN, and TOOLS_BIN only.
+# install_deps), dnf never refreshes (its first install follows the ticket check directly) and installs
+# with weak dependencies off, nothing missing means no sudo, and a missing sudo binary stops the first
+# install. A whole install_deps runs on a PATH of the recording sudo, DENY_BIN, and TOOLS_BIN only.
 # $1 = case id, $2 = package manager, $3 = steps: pkgs, neovim, or deps with every package missing,
 # or installed-pkgs (pkgs with every package already installed)
 t12_case() {
@@ -948,23 +988,33 @@ t12_case() {
     echo DONE
   ) </dev/null 2>&1
 }
-# Prints the problems with a sudo log: $1 = log, $2 = refresh command, $3 = install command prefix
+# Prints the problems with a sudo log: $1 = log, $2 = refresh command, or empty for a manager with no
+# upfront refresh (the first install then follows -v directly, and no manager's refresh appears), $3 =
+# install command prefix
 t12_check_log() {
   local log="$1" refresh="$2" install="$3" first_refresh first_install
-  first_refresh="$(first_line "^$refresh\$" "$log")"
   first_install="$(first_line "^$install" "$log")"
   [[ "$(head -n1 "$log")" == "-v" ]] || echo "[first sudo call is not -v]"
   [[ "$(grep -cxF -- "-v" "$log")" -eq 1 ]] || echo "[-v count $(grep -cxF -- "-v" "$log")]"
-  [[ "$(grep -cxF -- "$refresh" "$log")" -eq 1 ]] || echo "[$refresh count $(grep -cxF -- "$refresh" "$log")]"
-  [[ -n "$first_refresh" && -n "$first_install" && $first_refresh -lt $first_install ]] \
-    || echo "[$refresh (line ${first_refresh:-none}) not before $install (line ${first_install:-none})]"
+  if [[ -z "$refresh" ]]; then
+    [[ "$first_install" == 2 ]] || echo "[$install (line ${first_install:-none}) does not follow -v directly]"
+    ! grep -qxE 'pacman -Syu|apt-get update -qq|apk update' "$log" \
+      || echo "[a refresh ran: $(grep -xE 'pacman -Syu|apt-get update -qq|apk update' "$log" | tr '\n' ';')]"
+  else
+    first_refresh="$(first_line "^$refresh\$" "$log")"
+    [[ "$(grep -cxF -- "$refresh" "$log")" -eq 1 ]] || echo "[$refresh count $(grep -cxF -- "$refresh" "$log")]"
+    [[ -n "$first_refresh" && -n "$first_install" && $first_refresh -lt $first_install ]] \
+      || echo "[$refresh (line ${first_refresh:-none}) not before $install (line ${first_install:-none})]"
+  fi
   sudo_allowlist_problems "$log"
 }
 t12_fail=""
 for tc in "pacman-pkgs:pacman:pkgs:pacman -Syu:pacman -S --noconfirm" \
   "pacman-neovim:pacman:neovim:pacman -Syu:pacman -S --noconfirm neovim" \
   "apt-neovim:apt-get:neovim:apt-get update -qq:apt-get install -y neovim" \
-  "apt-deps:apt-get:deps:apt-get update -qq:apt-get install -y" "apk-deps:apk:deps:apk update:apk add"; do
+  "apt-deps:apt-get:deps:apt-get update -qq:apt-get install -y" "apk-deps:apk:deps:apk update:apk add" \
+  "dnf-neovim:dnf:neovim::dnf install -y --setopt=install_weak_deps=False neovim" \
+  "dnf-deps:dnf:deps::dnf install -y --setopt=install_weak_deps=False"; do
   IFS=: read -r id mgr steps refresh install <<<"$tc"
   out="$(t12_case "$id" "$mgr" "$steps")"
   rc=$?
@@ -1193,7 +1243,8 @@ t17_case_name() {
 # uv; RECORD_BIN: sudo; DENY_BIN: curl and wget, and refusals the others shadow), so no user tool name
 # resolves and install_unless_on_path skips none of them; the driver stubs the TypeScript check (T24
 # covers it), and nothing else on that code path runs an external command. Run for every non-pacman
-# package manager.
+# package manager: dnf installs only lazygit and lazydocker, with Go and no uv; apt-get and apk install
+# the whole list.
 # $1 = package manager, $2 = missing (every package missing) or all-installed, $3 = the GOTOOLCHAIN
 # value the caller exports (optional; unset when empty)
 t17_case() {
@@ -1208,11 +1259,12 @@ t17_case() {
   ) </dev/null 2>&1
 }
 # Prints the problems with a T17 event log: $1 = log, $2 = the sudo -v calls expected, $3 = the uv tools
-# expected (space-separated, may be empty), $4 = the Go tools expected (space-separated; each one's
-# module comes from the script's GO_TOOL_<TOOL> constant, with - read as _), $5 = the GOTOOLCHAIN value
-# the caller exported (optional; unset when empty). Each tool is installed once and nothing else is, the
-# module's path ends in the tool's name (or its name and a /vN major version), every go call runs with
-# GOTOOLCHAIN=local whatever the caller exported, and setup_config sees the caller's value again.
+# expected (space-separated; when empty, no uv call of any kind), $4 = the Go tools expected
+# (space-separated; each one's module comes from the script's GO_TOOL_<TOOL> constant, with - read as _),
+# $5 = the GOTOOLCHAIN value the caller exported (optional; unset when empty). Each tool is installed
+# once and nothing else is, the module's path ends in the tool's name (or its name and a /vN major
+# version), every go call runs with GOTOOLCHAIN=local whatever the caller exported, and setup_config sees
+# the caller's value again.
 t17_check_events() {
   local log="$1" want_v="$2" uv_tools="$3" go_tools="$4" k_line first_tool tool var module go_calls setup_config_lines
   local want_setup_config="${5:-unset}"
@@ -1229,6 +1281,9 @@ t17_check_events() {
   done
   [[ "$(grep -c '^uv tool install ' "$log")" -eq "$(wc -w <<<"$uv_tools")" ]] \
     || echo "[uv tool install count $(grep -c '^uv tool install ' "$log"), want $(wc -w <<<"$uv_tools")]"
+  if [[ -z "$uv_tools" ]] && grep -q '^uv ' "$log"; then
+    echo "[uv ran although no uv tool is expected: $(grep '^uv ' "$log" | tr '\n' ';')]"
+  fi
   for tool in $go_tools; do
     var="GO_TOOL_${tool^^}"
     module="$(script_constant "${var//-/_}")" || { echo "[no constant ${var//-/_} in the script]"; continue; }
@@ -1247,6 +1302,10 @@ t17_check_events() {
 }
 # Each case is packages:sudo -v calls expected:GOTOOLCHAIN the caller exports (empty for none)
 for mgr in apt-get dnf apk; do
+  case "$mgr" in
+    dnf) t17_uv="" t17_go="lazygit lazydocker" ;;
+    *) t17_uv="black yamllint ruff" t17_go="$GO_TOOLS" ;;
+  esac
   for tc in missing:1: all-installed:0: missing:1:auto; do
     IFS=: read -r pkgs want_v inherited <<<"$tc"
     case_name="$(t17_case_name "$mgr" "$pkgs" "$inherited")"
@@ -1254,7 +1313,7 @@ for mgr in apt-get dnf apk; do
     events="$(event_log "$case_name")"
     problems=""
     grep -qxF "driver rc=0" <<<"$out" || problems+="[$(tail -n2 <<<"$out" | tr '\n' ' ')] "
-    problems+="$(t17_check_events "$events" "$want_v" "black yamllint ruff" "$GO_TOOLS" "$inherited" | tr '\n' ' ')"
+    problems+="$(t17_check_events "$events" "$want_v" "$t17_uv" "$t17_go" "$inherited" | tr '\n' ' ')"
     problems+="$(sudo_allowlist_problems "$(sudo_log "$case_name")")"
     [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$events")"
     expect_none "T17-sudo-dropped $mgr $pkgs${inherited:+ inherited-$inherited}" "$problems"
@@ -1568,6 +1627,133 @@ else
   fi
 fi
 
+# T20 (e), the same for dnf: the Fedora language-server packages are one for bash-language-server and one
+# per fallback (python-lsp-server); the warning that lists the servers Fedora cannot run names every
+# system server but bash-language-server's and the replaced ones before its ";", and each fallback as the
+# stand-in for the server it replaces after it; and the README's dnf command under Requirements starts
+# with the option that turns weak dependencies off (the script's dnf installs do the same) and names
+# exactly the packages the script installs on dnf (collected as for pacman: install_deps with a Wayland
+# display, install_clipboard with X11, and install_neovim), except xclip. The dnf collection runs in its
+# own subshell with fixed tags: install_pkgs prints DNF_SERVER_PKG during install_language_servers and
+# DNF_PKG afterwards, warn_manual prints DNF_MANUAL, and warn prints DNF_WARN, so manual steps and
+# warnings never land in a package list; the TypeScript check is stubbed as in the pacman collection (T24
+# covers it). The server names come from system-servers.lua: `system keys` (the names) and `fallbacks`
+# (name, replaced server, command).
+# Prints system-servers.lua's lines for its arguments ($1 = table, optional $2 = keys)
+t20_inventory() {
+  (
+    sandbox "T20-inventory-$1${2:+-$2}" ""
+    XDG_CONFIG_HOME="$t20_xdg/config" XDG_DATA_HOME="$t20_xdg/data" XDG_STATE_HOME="$t20_xdg/state" \
+      XDG_CACHE_HOME="$t20_xdg/cache" TMPDIR="$t20_xdg/tmp"
+    export XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR
+    nvim --clean --headless -l "$LIB/system-servers.lua" "$@"
+  ) </dev/null 2>>"$TMP/T20-nvim.err"
+}
+mapfile -t t20_system_keys < <(t20_inventory system keys | sed '/^$/d')
+mapfile -t t20_fallbacks < <(t20_inventory fallbacks | sed '/^$/d')
+out="$( (
+  sandbox T20-dnf-collect ""
+  load_script
+  must_override install_pkgs
+  must_override warn_manual
+  must_override warn
+  must_override has_system_typescript
+  must_override pkg_install
+  must_override install_neovim_tarball
+  # Prints each argument after the first $1 + 1, as "$T20_DNF_TAG <argument>"
+  t20_print() {
+    local skip="$1" item
+    shift
+    shift "$skip"
+    for item in "$@"; do
+      printf '%s %s\n' "$T20_DNF_TAG" "$item"
+    done
+  }
+  install_pkgs() { t20_print 2 "$@"; }
+  warn_manual() { T20_DNF_TAG=DNF_MANUAL t20_print 0 "$@"; }
+  warn() { printf 'DNF_WARN %s\n' "$1"; }
+  has_system_typescript() { return 0; }
+  pkg_install() {
+    t20_print 0 "$@"
+    return 1
+  }
+  install_neovim_tarball() { :; }
+  PATH="$DENY_BIN"
+  set_pkg_manager dnf
+  T20_DNF_TAG=DNF_SERVER_PKG install_language_servers
+  T20_DNF_TAG=DNF_PKG
+  WAYLAND_DISPLAY=wayland-0 install_deps
+  unset WAYLAND_DISPLAY
+  DISPLAY=:0 install_clipboard
+  install_neovim
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+mapfile -t dnf_server_pkgs < <(sed -n 's/^DNF_SERVER_PKG //p' <<<"$out")
+mapfile -t dnf_all_pkgs < <(sed -n 's/^DNF_PKG //p' <<<"$out" | sort -u)
+# install_language_servers runs twice (once directly, once inside install_deps), so the warning is
+# collected once per distinct text
+mapfile -t dnf_off_warn < <(sed -n 's/^DNF_WARN \(Fedora packages no .*\)$/\1/p' <<<"$out" | sort -u)
+t20_weak_deps_option="--setopt=install_weak_deps=False"
+# The words of the README's dnf command after `sudo dnf install`, one per line, in order
+mapfile -t readme_dnf_words < <(sed -n '/^## Requirements/,/^## Installation/p' "$ROOT/README.md" \
+  | awk '/^sudo dnf install / { on = 1; sub(/^sudo dnf install /, "") }
+      on { cont = sub(/\\$/, ""); printf "%s ", $0; if (!cont) exit }' \
+  | tr -s '[:space:]' '\n' | sed '/^$/d')
+# Its packages: the words but that option, sorted
+mapfile -t readme_dnf_pkgs < <(printf '%s\n' "${readme_dnf_words[@]}" | grep -vxF -- "$t20_weak_deps_option" \
+  | sed '/^$/d' | sort -u)
+problems=""
+done_ok $rc "$out" || problems+="[collecting the dnf names failed: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+[[ ${#t20_system_keys[@]} -gt 0 && ${#t20_fallbacks[@]} -gt 0 ]] \
+  || problems+="[system-servers.lua gave ${#t20_system_keys[@]} system keys and ${#t20_fallbacks[@]} fallbacks: $(grep -m1 E5113 "$TMP/T20-nvim.err" || tail -n1 "$TMP/T20-nvim.err")] "
+[[ "${dnf_server_pkgs[*]}" == "nodejs-bash-language-server python3-lsp-server" ]] \
+  || problems+="[(e) dnf language-server packages: ${dnf_server_pkgs[*]}] "
+if [[ ${#dnf_off_warn[@]} -ne 1 ]]; then
+  problems+="[(e) ${#dnf_off_warn[@]} 'Fedora packages no' warnings, want 1] "
+else
+  t20_warning="${dnf_off_warn[0]}"
+  t20_stay_off="${t20_warning%%;*}"
+  t20_stand_ins="${t20_warning#*;}"
+  [[ "$t20_warning" == *\;* ]] \
+    || problems+="[(e) the warning has no ';' between the servers that stay off and the stand-ins: $t20_warning] "
+  t20_replaced=" "
+  for entry in "${t20_fallbacks[@]}"; do
+    read -r _ replaces _ <<<"$entry"
+    t20_replaced+="$replaces "
+  done
+  for key in "${t20_system_keys[@]}"; do
+    if [[ "$key" == bashls || "$t20_replaced" == *" $key "* ]]; then
+      ! grep -qwF "$key" <<<"$t20_stay_off" \
+        || problems+="[(e) the warning names $key, which has a Fedora package or a stand-in, as off: $t20_stay_off] "
+    else
+      grep -qwF "$key" <<<"$t20_stay_off" || problems+="[(e) the warning does not name $key as off: $t20_stay_off] "
+    fi
+  done
+  for entry in "${t20_fallbacks[@]}"; do
+    read -r name replaces _ <<<"$entry"
+    grep -qF "($name) stands in for $replaces" <<<"$t20_stand_ins" \
+      || problems+="[(e) the warning does not name $name as the stand-in for $replaces: $t20_stand_ins] "
+  done
+fi
+for pkg in "${dnf_server_pkgs[@]}" wl-clipboard xclip neovim; do
+  [[ " ${dnf_all_pkgs[*]} " == *" $pkg "* ]] || problems+="[(e) $pkg not among the collected dnf names] "
+done
+if [[ ${#readme_dnf_words[@]} -eq 0 ]]; then
+  problems+="[(e) no 'sudo dnf install' command under Requirements in README.md] "
+else
+  [[ "${readme_dnf_words[0]}" == "$t20_weak_deps_option" ]] \
+    || problems+="[(e) the README's dnf command does not turn weak dependencies off] "
+  t20_dnf_script_only="$(comm -23 <(printf '%s\n' "${dnf_all_pkgs[@]}") <(printf '%s\n' "${readme_dnf_pkgs[@]}") \
+    | grep -vxF xclip)"
+  t20_dnf_readme_only="$(comm -13 <(printf '%s\n' "${dnf_all_pkgs[@]}") <(printf '%s\n' "${readme_dnf_pkgs[@]}"))"
+  [[ -z "$t20_dnf_script_only" ]] \
+    || problems+="[(e) the script installs on dnf, the README does not: $(tr '\n' ' ' <<<"$t20_dnf_script_only")] "
+  [[ -z "$t20_dnf_readme_only" ]] \
+    || problems+="[(e) the README lists for Fedora, the script does not install: $(tr '\n' ' ' <<<"$t20_dnf_readme_only")] "
+fi
+expect_none "T20-server-list-sync (e) dnf" "$problems"
+
 
 # T22: main's single privilege boundary: install_neovim and install_deps, the steps that run root
 # commands, come first; then main forgets cached sudo credentials; then install_user_tools (go and uv
@@ -1709,6 +1895,7 @@ t25_case() {
     [[ "$NVIM_INSTALL_DIR" == "$dir" ]] || { echo "NVIM_INSTALL_DIR=$NVIM_INSTALL_DIR"; exit 1; }
     detect_os
     detect_arch
+    # shellcheck disable=SC2031  # detect_arch, in the script sourced into this subshell, sets it
     echo "ARCH=$ARCH"
     # shellcheck disable=SC2329  # run_errexit calls it
     tarball_and_report() {
