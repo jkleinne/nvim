@@ -1126,9 +1126,16 @@ verify_nvim() {
 }
 
 # Full run only: the config loads (Neovim's first launch, which installs plugins and runs their build
-# steps, so main runs this after forget_sudo_credentials)
+# steps, so main runs this after forget_sudo_credentials). Neovim exits 0 even when the config errors at
+# startup, so the launch reads v:errmsg before +qa and quits with an error status when it is set.
+# Some plugins, lazy.nvim among them, report errors through vim.schedule, so the launch first runs the
+# callbacks startup queued (a 0 ms vim.wait, which a deferred-error test checks). Errors from a timer
+# (vim.defer_fn) not yet due when that wait runs, or from anything during +qa, go unchecked. An error
+# hidden with :silent! (in init.lua or a plugin) still sets v:errmsg, so it makes this warn.
 verify_config() {
-  if nvim --headless "+qa" 2>/dev/null; then
+  local run_scheduled_callbacks="+lua vim.wait(0)"
+  local quit_if_startup_error="+if v:errmsg != '' | cquit | endif"
+  if nvim --headless "$run_scheduled_callbacks" "$quit_if_startup_error" "+qa" 2>/dev/null; then
     success "Config loads cleanly"
   else
     warn "Config reported errors (expected on first run before plugins sync)"

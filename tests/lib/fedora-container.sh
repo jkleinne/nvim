@@ -10,9 +10,10 @@
 # nodejs*npm* package, no npm on PATH); pylsp and bash-language-server land on PATH; the Go tools build
 # into ~/go/bin (T32 owns the pins, and --version shows "unversioned"); and the full run's config check
 # passes (the "Config loads cleanly" line, not verify_config's warning), which means Neovim's first
-# headless launch of this checkout's config, installing and building the plugins, exits 0. It does not
-# show that the config loaded without errors: verify_config reads only the exit status, and Neovim
-# leaves it at 0 when the config errors.
+# headless launch of this checkout's config gave no error message (verify_config's v:errmsg check).
+# That covers errors raised while init.lua, lazy's setup (its plugin installs and builds), and the start
+# plugins run, and errors those queue with vim.schedule. It does not cover timers, the plugins lazy
+# loads later, or VimEnter.
 # $1 is the repository root: a directory that holds nvim-install.sh and has no ':' in its resolved path.
 # podman reads a -v source that does not start with . or / as a named volume (created, and not removed
 # by --rm), and a ':' would split the spec (podman-run(1)). So each refusal says what was attempted and

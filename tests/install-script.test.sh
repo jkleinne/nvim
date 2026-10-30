@@ -27,7 +27,8 @@
 # drivers (tests/lib/driver-*.sh, which share tests/lib/driver-lib.sh) run the script only under a fake
 # HOME, so NVIM_CONFIG_DIR never points at a real config. The suite and driver-lib.sh share the helpers in
 # tests/lib/common.sh. T20 reads the server list with nvim --clean --headless -l
-# tests/lib/system-servers.lua, with scratch XDG dirs and TMPDIR. Each test sets up what it needs
+# tests/lib/system-servers.lua, with scratch XDG dirs and TMPDIR, and T35 runs verify_config's headless
+# nvim on a config it writes under a sandbox HOME, with a scratch TMPDIR. Each test sets up what it needs
 # itself, from the stubs and host facts the setup sections below provide, so the tests do not depend
 # on each other's order (T21, which reads what every test left, runs last). RUN_FULL=1 adds T4, an
 # end-to-end run on this machine (see T4), which also reads the real ~/.config/nvim and runs the real
@@ -2378,15 +2379,16 @@ expect_none T32b-go-hints-local "$t32b_fail"
 # T33 (RUN_FEDORA=1): the dnf path end to end in a fedora:44 container (tests/lib/fedora-container.sh:
 # a --packages-only run, then a full run, then its checks that nvim came from dnf, the two servers are
 # on PATH, weak dependencies stayed off (no npm), the two Go tools were built, and the full run's config
-# check passed, meaning its first headless launch exited 0). It pulls the image and installs packages
-# inside the container, so it needs podman and network; without the variable or podman it is skipped.
-# It passes only when the driver exits 0 and its output has the closing line. The driver runs without
-# BASH_ENV, ENV, and CDPATH like the rest of the suite, but keeps the other variables hermetic_env
-# drops (GIT_*, ZDOTDIR, the XDG_* dirs, GOTOOLCHAIN): podman reads its storage from XDG_DATA_HOME and
-# its containers.conf and storage.conf from XDG_CONFIG_HOME (containers.conf(5),
-# containers-storage.conf(5)), so the run uses the user's podman setup. T33 keeps only the last lines
-# of the output; to see all of it, run bash tests/lib/fedora-container.sh "$PWD" from the repository
-# root.
+# check passed, meaning its first headless launch gave no error message). That covers errors raised
+# while init.lua, lazy's setup (installs and builds), and the start plugins run, and errors those queue
+# with vim.schedule, but not timers, plugins lazy loads later, or VimEnter. It pulls the image and
+# installs packages inside the container, so it needs podman and network; without the variable or
+# podman it is skipped. It passes only when the driver exits 0 and its output has the closing line. The
+# driver runs without BASH_ENV, ENV, and CDPATH like the rest of the suite, but keeps the other
+# variables hermetic_env drops (GIT_*, ZDOTDIR, the XDG_* dirs, GOTOOLCHAIN): podman reads its storage
+# from XDG_DATA_HOME and its containers.conf and storage.conf from XDG_CONFIG_HOME (containers.conf(5),
+# containers-storage.conf(5)), so the run uses the user's podman setup. T33 keeps only the last lines of
+# the output; to see all of it, run bash tests/lib/fedora-container.sh "$PWD" from the repository root.
 if [[ "${RUN_FEDORA:-0}" != 1 ]]; then
   echo "SKIP T33-fedora-container (set RUN_FEDORA=1 to run the dnf path in a fedora:44 container; needs podman and network)"
 elif ! command -v podman >/dev/null 2>&1; then
@@ -2424,6 +2426,54 @@ for list in DRIVER_RUNS_REAL DRIVER_STUBBED; do
     || t34_fail+="[$list: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
 done
 expect_none T34-driver-lists-current "$t34_fail"
+
+# T35: verify_config warns when the config errors at startup, which Neovim's exit status does not show
+# (it exits 0), and not when the config only prints. Each case runs the script's verify_config with the
+# real nvim, on a sandbox HOME whose ~/.config/nvim/init.lua is the case's: one with only a comment
+# (clean), one that prints with print and with vim.notify at INFO (messages: headless Neovim writes both
+# to stderr, so a check that read stderr would fail it), one that calls error() (error), and one that
+# calls error() from a vim.schedule callback (deferred: lazy.nvim reports a plugin config's error that
+# way, so the launch must run the queued callbacks before it reads v:errmsg). hermetic_env unsets
+# XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, and XDG_CACHE_HOME, so Neovim reads that config and
+# writes its data and state under the sandbox HOME; it still reads the host's system dirs
+# (XDG_CONFIG_DIRS and XDG_DATA_DIRS, a sysinit.vim in /etc/xdg/nvim, for example), as the real run
+# does. TMPDIR is a scratch dir under $TMP, and NVIM_APPNAME and VIMINIT (which would make Neovim read
+# another config) and NVIM_LOG_FILE (which would put its log elsewhere) are unset. Without nvim on PATH,
+# T35 fails and says so.
+t35_fail=""
+t35_loads="Config loads cleanly" t35_errors="Config reported errors"
+if ! type -P nvim >/dev/null; then
+  t35_fail="[nvim not on PATH] "
+else
+  for id in clean messages error deferred; do
+    case "$id" in
+      clean) t35_init='-- no settings' t35_want="$t35_loads" t35_unwanted="$t35_errors" ;;
+      messages)
+        t35_init=$'print("loading")\nvim.notify("loaded", vim.log.levels.INFO)'
+        t35_want="$t35_loads" t35_unwanted="$t35_errors"
+        ;;
+      error) t35_init='error("broken config")' t35_want="$t35_errors" t35_unwanted="$t35_loads" ;;
+      deferred)
+        t35_init='vim.schedule(function() error("deferred") end)'
+        t35_want="$t35_errors" t35_unwanted="$t35_loads"
+        ;;
+    esac
+    out="$( (
+      sandbox "T35-$id" ""
+      load_script
+      unset NVIM_APPNAME VIMINIT NVIM_LOG_FILE
+      TMPDIR="$TMP/T35-$id-tmp"
+      export TMPDIR
+      mkdir -p "$TMPDIR" "$HOME/.config/nvim"
+      printf '%s\n' "$t35_init" >"$HOME/.config/nvim/init.lua"
+      verify_config
+      echo DONE
+    ) </dev/null 2>&1)"
+    done_ok $? "$out" && grep -qF "$t35_want" <<<"$out" && ! grep -qF "$t35_unwanted" <<<"$out" \
+      || t35_fail+="[$id: want \"$t35_want\", got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  done
+fi
+expect_none T35-config-errors "$t35_fail"
 
 # T21 (last): no test reached a refusing DENY_BIN stub
 if [[ -e "$TMP/refused.log" ]]; then
