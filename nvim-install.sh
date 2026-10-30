@@ -492,7 +492,10 @@ sync_pkg_db_once() {
 pkg_is_installed() {
   case "$PKG_MGR" in
     apt-get) dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed' ;;
-    dnf)     rpm -q "$1" &>/dev/null ;;
+    # dnf install matches a name against package names and then Provides (on Fedora 44, nodejs is a
+    # Provides of nodejs22), but rpm -q matches package names only; every package also provides its own
+    # name, so --whatprovides finds both
+    dnf)     rpm -q --whatprovides "$1" &>/dev/null ;;
     pacman)  pacman -Q "$1" &>/dev/null ;;
     apk)     apk info -e "$1" &>/dev/null ;;
   esac

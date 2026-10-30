@@ -5,7 +5,9 @@
 # "install failed, skipping" warning an optional package gets); Neovim 0.12 comes from dnf (the
 # --packages-only run reports "installed via dnf", rpm knows the neovim package, and the user's nvim is
 # /usr/bin/nvim, so a tarball fallback linked into /usr/local/bin fails); --packages-only stops where it
-# says (it builds no Go tool and runs no config check); with dnf set to install weak dependencies, as a
+# says (it builds no Go tool and runs no config check); the full run finds every package the
+# --packages-only run installed and installs none again (it prints no "Installing" step), though
+# nodejs is a Provides of nodejs22 on Fedora 44; with dnf set to install weak dependencies, as a
 # default host has it, the script's own --setopt=install_weak_deps=False still keeps npm out (no
 # nodejs*npm* package, no npm on PATH); pylsp and bash-language-server land on PATH; the Go tools build
 # into ~/go/bin (T32 owns the pins, and --version shows "unversioned"); and the full run's config check
@@ -123,6 +125,7 @@ step "full run"
 full_out="$(su - "$user" -c 'cd ~/.config/nvim && printf "y\n" | ./nvim-install.sh' 2>&1 | tee /dev/stderr)"
 require_match 'Config loads cleanly' "$full_out"
 require_no_match "$skipped_package_pattern" "$full_out"
+require_no_match '==>.*Installing ' "$full_out"
 
 step "check: nvim 0.12+ from dnf"
 rpm -q neovim

@@ -422,6 +422,11 @@ tar -C "$TMP/T25-src" -czf "$TMP/T25-nvim.tar.gz" nvim-linux
 T26_BIN="$TMP/bin-T26"
 add_stub "$T26_BIN" nvim t26-nvim
 
+# T36's rpm: it answers rpm -q and rpm -q --whatprovides, as Fedora's rpm does, for the packages in
+# $T36_INSTALLED
+T36_BIN="$TMP/bin-T36"
+add_stub "$T36_BIN" rpm t36-rpm
+
 # The main drivers (T9, T17, T22, T23, T30) are committed scripts in tests/lib, each run as its own
 # process inside a sandbox with the script under test as $1; they share tests/lib/driver-lib.sh, whose
 # run_main_stubbed runs main itself (so main's real traps run) with each step main calls stubbed to log
@@ -2377,9 +2382,10 @@ done
 expect_none T32b-go-hints-local "$t32b_fail"
 
 # T33 (RUN_FEDORA=1): the dnf path end to end in a fedora:44 container (tests/lib/fedora-container.sh:
-# a --packages-only run, then a full run, then its checks that nvim came from dnf, the two servers are
-# on PATH, weak dependencies stayed off (no npm), the two Go tools were built, and the full run's config
-# check passed, meaning its first headless launch gave no error message). That covers errors raised
+# a --packages-only run, then a full run, then its checks that the full run installed no package again
+# (Fedora 44's nodejs is a Provides of nodejs22), nvim came from dnf, the two servers are on PATH, weak
+# dependencies stayed off (no npm), the two Go tools were built, and the full run's config check
+# passed, meaning its first headless launch gave no error message). That covers errors raised
 # while init.lua, lazy's setup (installs and builds), and the start plugins run, and errors those queue
 # with vim.schedule, but not timers, plugins lazy loads later, or VimEnter. It pulls the image and
 # installs packages inside the container, so it needs podman and network; without the variable or
@@ -2474,6 +2480,32 @@ else
   done
 fi
 expect_none T35-config-errors "$t35_fail"
+
+# T36: on dnf, pkg_is_installed finds a package by what an installed package provides, as dnf install
+# resolves a name, and not only by the installed package names. Fedora 44's nodejs is a Provides of
+# nodejs22, so rpm -q nodejs fails with nodejs22 installed, and a check by name alone made every rerun
+# install nodejs again. rpm is a stub (T36_BIN) that answers as Fedora's rpm does for nodejs22, which
+# also provides nodejs, and ripgrep, which provides only itself; a name nothing provides stays missing.
+t36_fail=""
+for tc in nodejs:installed ripgrep:installed not-a-package:missing; do
+  t36_name="${tc%%:*}" t36_want="${tc#*:}"
+  out="$( (
+    sandbox "T36-$t36_name" "$T36_BIN"
+    load_script
+    set_pkg_manager dnf
+    T36_INSTALLED="nodejs22:nodejs ripgrep"
+    export T36_INSTALLED
+    if pkg_is_installed "$t36_name"; then
+      echo "found installed"
+    else
+      echo "found missing"
+    fi
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" && grep -qxF "found $t36_want" <<<"$out" \
+    || t36_fail+="[$t36_name: want $t36_want, got: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T36-dnf-installed-by-provides "$t36_fail"
 
 # T21 (last): no test reached a refusing DENY_BIN stub
 if [[ -e "$TMP/refused.log" ]]; then
