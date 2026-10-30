@@ -2002,9 +2002,11 @@ end)
 -- ---------------------------------------------------------------------------
 -- Cases that load settings.lua or init.lua
 -- ---------------------------------------------------------------------------
--- They set global options, autocmds, and environment that no other case should inherit, so they
--- stay at the end of the file: add new cases above this section. L15c stays last, because running
--- init.lua also enables vim.loader and prepends a scratch lazy.nvim dir to 'runtimepath'.
+-- They set global options, autocmds, keymaps, and environment that no other case should inherit,
+-- so they stay at the end of the file: add new cases above this section. L15c stays last, because
+-- running init.lua also enables vim.loader, prepends a scratch lazy.nvim dir to 'runtimepath', and
+-- leaves settings and mappings in package.loaded. vim.loader then caches into the scratch dir, so
+-- after the final vim.fn.delete(tmp, "rf") nothing may load a Lua module for the first time.
 
 -- L15: terraform runs started from Neovim skip HashiCorp's update check (id predates L16 and L17).
 case("L15-checkpoint-disabled", function()
@@ -2034,9 +2036,10 @@ case("L15c-settings-before-lazy", function()
   vim.env.GOTOOLCHAIN = "auto"
   package.loaded.settings, package.loaded.mappings = nil, nil
   vim.fn.mkdir(vim.fn.stdpath "data" .. "/lazy/lazy.nvim", "p")
-  local seen
+  local setup_ran, seen = false, nil
   package.loaded.lazy = {
     setup = function()
+      setup_ran = true
       seen = vim.env.GOTOOLCHAIN
     end,
   }
@@ -2046,6 +2049,9 @@ case("L15c-settings-before-lazy", function()
   package.loaded.lazy = nil
   if not ok then
     return "init.lua failed: " .. (tostring(err):gsub("\n%s*", " | "))
+  end
+  if not setup_ran then
+    return "init.lua never called lazy.setup"
   end
   if seen ~= "local" then
     return "GOTOOLCHAIN when lazy.setup ran = " .. show(seen)
