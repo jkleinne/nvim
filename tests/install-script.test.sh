@@ -2439,31 +2439,38 @@ expect_none T34-driver-lists-current "$t34_fail"
 # (clean), one that prints with print and with vim.notify at INFO (messages: headless Neovim writes both
 # to stderr, so a check that read stderr would fail it), one that calls error() (error), and one that
 # calls error() from a vim.schedule callback (deferred: lazy.nvim reports a plugin config's error that
-# way, so the launch must run the queued callbacks before it reads v:errmsg). hermetic_env unsets
-# XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, and XDG_CACHE_HOME, so Neovim reads that config and
-# writes its data and state under the sandbox HOME; it still reads the host's system dirs
+# way, so the launch must run the queued callbacks before it reads v:errmsg). The two that error must
+# leave exactly verify_config's two warnings in WARNINGS (the list the summary repeats), in order, and
+# no "Config loads cleanly" line; the other two must leave no warning and that line once. hermetic_env
+# unsets XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, and XDG_CACHE_HOME, so Neovim reads that config
+# and writes its data and state under the sandbox HOME; it still reads the host's system dirs
 # (XDG_CONFIG_DIRS and XDG_DATA_DIRS, a sysinit.vim in /etc/xdg/nvim, for example), as the real run
 # does. TMPDIR is a scratch dir under $TMP, and NVIM_APPNAME and VIMINIT (which would make Neovim read
 # another config) and NVIM_LOG_FILE (which would put its log elsewhere) are unset. Without nvim on PATH,
 # T35 fails and says so.
 t35_fail=""
-t35_loads="Config loads cleanly" t35_errors="Config reported errors"
+t35_loads="Config loads cleanly"
+# verify_config's warnings for a config that errors, one per line
+t35_error_warnings=$'Config reported errors at startup\nLaunch nvim to see them (lazy.nvim retries failed downloads, not failed builds)'
 if ! type -P nvim >/dev/null; then
   t35_fail="[nvim not on PATH] "
 else
+  # Each case sets its init.lua, the warnings it wants (one per line), and how many "Config loads
+  # cleanly" lines it wants
   for id in clean messages error deferred; do
     case "$id" in
-      clean) t35_init='-- no settings' t35_want="$t35_loads" t35_unwanted="$t35_errors" ;;
+      clean) t35_init='-- no settings' t35_want_warnings="" t35_want_loads_lines=1 ;;
       messages)
         t35_init=$'print("loading")\nvim.notify("loaded", vim.log.levels.INFO)'
-        t35_want="$t35_loads" t35_unwanted="$t35_errors"
+        t35_want_warnings="" t35_want_loads_lines=1
         ;;
-      error) t35_init='error("broken config")' t35_want="$t35_errors" t35_unwanted="$t35_loads" ;;
+      error) t35_init='error("broken config")' t35_want_warnings="$t35_error_warnings" t35_want_loads_lines=0 ;;
       deferred)
         t35_init='vim.schedule(function() error("deferred") end)'
-        t35_want="$t35_errors" t35_unwanted="$t35_loads"
+        t35_want_warnings="$t35_error_warnings" t35_want_loads_lines=0
         ;;
     esac
+    t35_want="$t35_want_loads_lines '$t35_loads' line(s) and warnings '${t35_want_warnings//$'\n'/; }'"
     out="$( (
       sandbox "T35-$id" ""
       load_script
@@ -2473,10 +2480,14 @@ else
       mkdir -p "$TMPDIR" "$HOME/.config/nvim"
       printf '%s\n' "$t35_init" >"$HOME/.config/nvim/init.lua"
       verify_config
+      for warning in "${WARNINGS[@]}"; do
+        printf 'WARNING %s\n' "$warning"
+      done
       echo DONE
     ) </dev/null 2>&1)"
-    done_ok $? "$out" && grep -qF "$t35_want" <<<"$out" && ! grep -qF "$t35_unwanted" <<<"$out" \
-      || t35_fail+="[$id: want \"$t35_want\", got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+    done_ok $? "$out" && [[ "$(sed -n 's/^WARNING //p' <<<"$out")" == "$t35_want_warnings" ]] \
+      && [[ "$(grep -cF "$t35_loads" <<<"$out")" -eq "$t35_want_loads_lines" ]] \
+      || t35_fail+="[$id: want $t35_want; got: $(tr '\n' ' ' <<<"$out")] "
   done
 fi
 expect_none T35-config-errors "$t35_fail"

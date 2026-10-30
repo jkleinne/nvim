@@ -1141,8 +1141,8 @@ verify_config() {
   if nvim --headless "$run_scheduled_callbacks" "$quit_if_startup_error" "+qa" 2>/dev/null; then
     success "Config loads cleanly"
   else
-    warn "Config reported errors (expected on first run before plugins sync)"
-    warn "Launch nvim interactively to complete plugin installation"
+    warn "Config reported errors at startup"
+    warn "Launch nvim to see them (lazy.nvim retries failed downloads, not failed builds)"
   fi
 }
 
