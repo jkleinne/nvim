@@ -6,6 +6,8 @@ readonly NVIM_REPO_SLUG="jkleinne/nvim"
 readonly NVIM_REPO="https://github.com/${NVIM_REPO_SLUG}.git"
 readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
+# Where install_neovim_tarball links the tarball's nvim, so it is on PATH without a shell config entry
+readonly NVIM_LINK_DIR="/usr/local/bin"
 readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
 # Arch's TypeScript (a dependency of typescript-language-server), the first place the editor's ts_ls
 # gate looks; has_system_typescript makes the same check
@@ -414,9 +416,9 @@ install_neovim_tarball() {
   as_root chown -R 0:0 "$NVIM_INSTALL_DIR"
   as_root chmod -R go-w "$NVIM_INSTALL_DIR"
 
-  if [[ -w "/usr/local/bin" ]] || as_root test -w "/usr/local/bin"; then
-    as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" /usr/local/bin/nvim
-    success "Symlinked nvim to /usr/local/bin/nvim"
+  if [[ -w "$NVIM_LINK_DIR" ]] || as_root test -w "$NVIM_LINK_DIR"; then
+    as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" "${NVIM_LINK_DIR}/nvim"
+    success "Symlinked nvim to $NVIM_LINK_DIR/nvim"
   else
     NEED_PATH_SETUP=true
   fi
@@ -450,7 +452,7 @@ install_neovim() {
     warn "Neovim $current_version found, but $MIN_NVIM_VERSION+ is required."
   fi
 
-  # An earlier tarball install can leave its nvim only in $NVIM_INSTALL_DIR/bin: the /usr/local/bin link
+  # An earlier tarball install can leave its nvim only in $NVIM_INSTALL_DIR/bin: the $NVIM_LINK_DIR link
   # failed, or neither the link nor setup_path's shell config entry is in effect for this run. A new
   # enough nvim there counts when only root can write the tree, which is checked before that nvim runs;
   # setup_path's shell config entry then puts its dir first on PATH in new shells, not in this run. The
@@ -1147,7 +1149,7 @@ verify_nvim() {
     error "nvim not found on PATH after installation."
     if [[ "$NEED_PATH_SETUP" == true && "$PACKAGES_ONLY" == true ]]; then
       # setup_path does not run in this mode
-      error "nvim is in $NVIM_INSTALL_DIR/bin and could not be linked into /usr/local/bin; the full run adds that dir to your shell config."
+      error "nvim is in $NVIM_INSTALL_DIR/bin and could not be linked into $NVIM_LINK_DIR; the full run adds that dir to your shell config."
     elif [[ "$NEED_PATH_SETUP" == true ]]; then
       error "You may need to open a new terminal or source your shell config."
     fi
@@ -1200,7 +1202,7 @@ print_summary() {
   if [[ "$NEED_PATH_SETUP" == true ]]; then
     if [[ "$PACKAGES_ONLY" == true ]]; then
       # setup_path did not run, and whether the dir is already on PATH is not known here
-      printf '  %-18s %s\n' "PATH:" "nvim is not linked into /usr/local/bin; the full run adds $NVIM_INSTALL_DIR/bin to your shell config"
+      printf '  %-18s %s\n' "PATH:" "nvim is not linked into $NVIM_LINK_DIR; the full run adds $NVIM_INSTALL_DIR/bin to your shell config"
     else
       printf '  %-18s %s\n' "PATH updated:" "yes (restart shell to apply)"
     fi
