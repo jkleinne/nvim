@@ -1564,9 +1564,9 @@ result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 # as no more of them than packages are missing (one package per server). Both pacman queries are
 # read-only and need no root. The server list comes from Neovim itself: tests/lib/system-servers.lua,
 # run with --clean (no config or plugins), points package.path at the repo's lua/ and requires the
-# module; the run gets scratch XDG dirs and TMPDIR, so it writes nothing outside $TMP. The script's
-# lists come from running it, not from parsing its source, on a PATH of DENY_BIN only, with each
-# installing function stubbed to print what it was given: install_language_servers for pacman
+# module; t20_inventory gives each run scratch XDG dirs and TMPDIR, so it writes nothing outside $TMP.
+# The script's lists come from running it, not from parsing its source, on a PATH of DENY_BIN only,
+# with each installing function stubbed to print what it was given: install_language_servers for pacman
 # (install_pkgs stubbed) gives (b)'s packages, and for apt-get (warn_manual stubbed, and the TypeScript
 # check, which T24 covers) (a)'s binaries; install_deps (a Wayland display), install_clipboard again (an
 # X11 display only), and install_neovim (pkg_install stubbed to fail, and the tarball fallback stubbed)
@@ -1575,18 +1575,32 @@ result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 # compares in byte order, as Lua's table.sort sorts.
 t20_xdg="$TMP/T20-xdg"
 mkdir -p "$t20_xdg/config" "$t20_xdg/data" "$t20_xdg/state" "$t20_xdg/cache" "$t20_xdg/tmp"
-t20_servers="$( (
-  sandbox T20-servers ""
-  XDG_CONFIG_HOME="$t20_xdg/config" XDG_DATA_HOME="$t20_xdg/data" XDG_STATE_HOME="$t20_xdg/state" \
-    XDG_CACHE_HOME="$t20_xdg/cache" TMPDIR="$t20_xdg/tmp"
-  export XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR
-  nvim --clean --headless -l "$LIB/system-servers.lua"
-) </dev/null 2>"$TMP/T20-nvim.err")"
+# Prints system-servers.lua's lines for its arguments (none, or $1 = table and optional $2 = keys) and
+# returns nvim's status; each run gets its own sandbox and appends its stderr to $TMP/T20-nvim.err
+t20_inventory() {
+  (
+    sandbox "T20-inventory${1:+-$1}${2:+-$2}" ""
+    XDG_CONFIG_HOME="$t20_xdg/config" XDG_DATA_HOME="$t20_xdg/data" XDG_STATE_HOME="$t20_xdg/state" \
+      XDG_CACHE_HOME="$t20_xdg/cache" TMPDIR="$t20_xdg/tmp"
+    export XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR
+    nvim --clean --headless -l "$LIB/system-servers.lua" "$@"
+  ) </dev/null 2>>"$TMP/T20-nvim.err"
+}
+t20_servers="$(t20_inventory)"
 t20_nvim_rc=$?
 lsp_bins=()
 if [[ $t20_nvim_rc -eq 0 ]]; then
   mapfile -t lsp_bins < <(sed '/^$/d' <<<"$t20_servers")
 fi
+# Prints each argument after the first $2 + 2 as "$1 <argument>", for the stubs in T20's collections
+t20_print_tagged() {
+  local tag="$1" skip="$2" item
+  shift 2
+  shift "$skip"
+  for item in "$@"; do
+    printf '%s %s\n' "$tag" "$item"
+  done
+}
 out="$( (
   sandbox T20-collect ""
   load_script_with "$TMP/T20-collect/script/nvim-install.sh" NVIM_INSTALL_DIR "$TMP/T20-collect/opt-nvim"
@@ -1595,19 +1609,10 @@ out="$( (
   must_override has_system_typescript
   must_override pkg_install
   must_override install_neovim_tarball
-  # Prints each argument after the first $1 + 1, as "$T20_TAG <argument>"
-  t20_print() {
-    local skip="$1" item
-    shift
-    shift "$skip"
-    for item in "$@"; do
-      printf '%s %s\n' "$T20_TAG" "$item"
-    done
-  }
-  install_pkgs() { t20_print 2 "$@"; }
-  warn_manual() { t20_print 0 "$@"; }
+  install_pkgs() { t20_print_tagged "$T20_TAG" 2 "$@"; }
+  warn_manual() { t20_print_tagged "$T20_TAG" 0 "$@"; }
   pkg_install() {
-    t20_print 0 "$@"
+    t20_print_tagged "$T20_TAG" 0 "$@"
     return 1
   }
   has_system_typescript() { return 0; }
@@ -1704,18 +1709,8 @@ fi
 # install_pkgs prints DNF_SERVER_PKG during install_language_servers and DNF_PKG afterwards,
 # warn_manual prints DNF_MANUAL, and warn prints DNF_WARN, so manual steps and warnings never land in a
 # package list; the TypeScript check is stubbed as in the pacman collection (T24 covers it). The
-# server names come from system-servers.lua: `system keys` (the names) and `fallbacks` (name, replaced
+# server names come from t20_inventory: `system keys` (the names) and `fallbacks` (name, replaced
 # server, command).
-# Prints system-servers.lua's lines for its arguments ($1 = table, optional $2 = keys)
-t20_inventory() {
-  (
-    sandbox "T20-inventory-$1${2:+-$2}" ""
-    XDG_CONFIG_HOME="$t20_xdg/config" XDG_DATA_HOME="$t20_xdg/data" XDG_STATE_HOME="$t20_xdg/state" \
-      XDG_CACHE_HOME="$t20_xdg/cache" TMPDIR="$t20_xdg/tmp"
-    export XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR
-    nvim --clean --headless -l "$LIB/system-servers.lua" "$@"
-  ) </dev/null 2>>"$TMP/T20-nvim.err"
-}
 mapfile -t t20_system_keys < <(t20_inventory system keys | sed '/^$/d')
 mapfile -t t20_fallbacks < <(t20_inventory fallbacks | sed '/^$/d')
 out="$( (
@@ -1727,21 +1722,12 @@ out="$( (
   must_override has_system_typescript
   must_override pkg_install
   must_override install_neovim_tarball
-  # Prints each argument after the first $1 + 1, as "$T20_DNF_TAG <argument>"
-  t20_print() {
-    local skip="$1" item
-    shift
-    shift "$skip"
-    for item in "$@"; do
-      printf '%s %s\n' "$T20_DNF_TAG" "$item"
-    done
-  }
-  install_pkgs() { t20_print 2 "$@"; }
-  warn_manual() { T20_DNF_TAG=DNF_MANUAL t20_print 0 "$@"; }
+  install_pkgs() { t20_print_tagged "$T20_DNF_TAG" 2 "$@"; }
+  warn_manual() { t20_print_tagged DNF_MANUAL 0 "$@"; }
   warn() { printf 'DNF_WARN %s\n' "$1"; }
   has_system_typescript() { return 0; }
   pkg_install() {
-    t20_print 0 "$@"
+    t20_print_tagged "$T20_DNF_TAG" 0 "$@"
     return 1
   }
   install_neovim_tarball() { :; }
