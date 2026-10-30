@@ -1990,13 +1990,23 @@ case("L17b-lua_ls-logpath", function()
 end)
 
 -- L15: terraform runs started from Neovim skip HashiCorp's update check. It keeps its id from before
--- L16 and L17 but runs last, because settings.lua sets global options and autocmds that later cases
--- would inherit.
+-- L16 and L17 but runs at the end (with L15b), because settings.lua sets global options and autocmds
+-- that later cases would inherit.
 case("L15-checkpoint-disabled", function()
   vim.env.CHECKPOINT_DISABLE = nil
   dofile(root .. "/lua/settings.lua")
   if vim.env.CHECKPOINT_DISABLE ~= "1" then
     return "CHECKPOINT_DISABLE = " .. show(vim.env.CHECKPOINT_DISABLE)
+  end
+end)
+
+-- L15b: Go commands started from Neovim never download a toolchain, even when Neovim inherits
+-- GOTOOLCHAIN=auto. It runs at the end for the same reason as L15.
+case("L15b-gotoolchain-local", function()
+  vim.env.GOTOOLCHAIN = "auto"
+  dofile(root .. "/lua/settings.lua")
+  if vim.env.GOTOOLCHAIN ~= "local" then
+    return "GOTOOLCHAIN = " .. show(vim.env.GOTOOLCHAIN)
   end
 end)
 
