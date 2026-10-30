@@ -2758,47 +2758,93 @@ done
 expect_none T34-driver-lists-current "$t34_fail"
 
 # T35: verify_config warns when the config errors at startup, which Neovim's exit status does not show
-# (it exits 0), and not when the config only prints. Each case runs the script's verify_config with the
-# real nvim, on a sandbox HOME whose ~/.config/nvim/init.lua is the case's: one with only a comment
-# (clean), one that prints with print and with vim.notify at INFO (messages: headless Neovim writes both
-# to stderr, so a check that read stderr would fail it), one that calls error() (error), and one that
-# calls error() from a vim.schedule callback (deferred: lazy.nvim reports a plugin config's error that
-# way, so the launch must run the queued callbacks before it reads v:errmsg). The two that error must
-# leave exactly verify_config's two warnings in WARNINGS (the list the summary repeats), in order, and
-# no "Config loads cleanly" line; the other two must leave no warning and that line once. hermetic_env
-# unsets XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, and XDG_CACHE_HOME, so Neovim reads that config
-# and writes its data and state under the sandbox HOME. It keeps XDG_CONFIG_DIRS and XDG_DATA_DIRS,
-# which each case points at an empty scratch dir under $TMP, because T35 checks verify_config's
-# detection on a config it writes and the host's sysinit.vim and plugins must not count
+# (it exits 0), shows the error, and keeps the launch's messages in a log; it does not warn when the
+# config only prints. Each case runs the script's verify_config with the real nvim, on a sandbox HOME
+# whose ~/.config/nvim/init.lua is the case's: one with only a comment (clean), one that prints with
+# print and with vim.notify at INFO (messages: headless Neovim writes both to stderr, so a check that
+# judged by stderr would fail it), one that calls error() (error), one that calls error() from a
+# vim.schedule callback (deferred: lazy.nvim reports a plugin config's error that way, so the launch
+# must run the queued callbacks before it reads v:errmsg), and one that queues a 15-line vim.notify at
+# ERROR and then more prints than the warning shows lines (long-report-then-prints: lazy's report of a
+# failed plugin config is that long, and the log's last lines would hold only the prints, so the check
+# must echo v:errmsg last). Every launch's stderr goes to nvim-install-config-check.log in the state dir
+# under the sandbox HOME. The two clean cases must leave exactly their messages in the log, no warning,
+# no shown lines, and the "Config loads cleanly" line once. The three that error must leave their error
+# text in the log and in the lines shown indented under the first warning, exactly verify_config's two
+# warnings in WARNINGS (the list the summary repeats), in order, the first naming the log, and no
+# "Config loads cleanly" line. A sixth case (unwritable-state-dir) points XDG_STATE_HOME at a file, so
+# the log cannot be created: verify_config must skip the launch with one warning naming the log, and
+# print no "Config loads cleanly" line. hermetic_env unsets XDG_CONFIG_HOME, XDG_DATA_HOME,
+# XDG_STATE_HOME (only unwritable-state-dir sets it again), and XDG_CACHE_HOME, so Neovim reads that
+# config and writes its data and state under the sandbox HOME. It keeps XDG_CONFIG_DIRS and
+# XDG_DATA_DIRS, which each case points at an empty scratch dir under $TMP, because T35 checks
+# verify_config's detection on a config it writes and the host's sysinit.vim and plugins must not count
 # (XDG_CONFIG_DIRS can list a dir under the real HOME, and Arch's /etc/xdg/nvim/sysinit.vim adds
-# /usr/share/vim/vimfiles to the runtimepath): a host plugin that errors would fail clean and messages,
-# and pass error and deferred for the wrong reason. Neovim still finds its own runtime ($VIMRUNTIME
-# does not come from those dirs). TMPDIR is a scratch dir under $TMP too, and NVIM_APPNAME and VIMINIT
-# (which would make Neovim read another config) and NVIM_LOG_FILE (which would put its log elsewhere)
-# are unset. Without nvim on PATH, T35 fails and says so.
+# /usr/share/vim/vimfiles to the runtimepath): a host plugin that errors would fail the clean cases, and
+# pass the three that error for the wrong reason. Neovim still finds its own runtime ($VIMRUNTIME does
+# not come from those dirs). TMPDIR is a scratch dir under $TMP too, and NVIM_APPNAME and VIMINIT (which
+# would make Neovim read another config) and NVIM_LOG_FILE (which would put its log elsewhere) are
+# unset. Without nvim on PATH, T35 fails and says so.
 t35_fail=""
 t35_loads="Config loads cleanly"
-# verify_config's warnings for a config that errors, one per line
-t35_error_warnings=$'Config reported errors at startup\nLaunch nvim to see them (lazy.nvim retries failed downloads, not failed builds)'
+t35_log_name="nvim-install-config-check.log"
+# verify_config prints the log's last lines with this indent, under its first warning
+t35_shown_indent="      "
+# As long as lazy.nvim's report of a failed plugin config (15 lines of v:errmsg), queued, then followed
+# by more prints (25) than verify_config shows lines, so the report stays shown only when the check
+# echoes v:errmsg after them
+t35_long_report_head="long report: config failed"
+t35_long_report_init="$(
+  cat <<EOF
+local report = { "$t35_long_report_head" }
+for frame = 2, 15 do report[frame] = "  - report frame " .. frame end
+vim.schedule(function() vim.notify(table.concat(report, "\n"), vim.log.levels.ERROR) end)
+vim.schedule(function() for line = 1, 25 do print("after the report " .. line) end end)
+EOF
+)"
 if ! type -P nvim >/dev/null; then
   t35_fail="[nvim not on PATH] "
 else
-  # Each case sets its init.lua, the warnings it wants (one per line), and how many "Config loads
-  # cleanly" lines it wants
-  for id in clean messages error deferred; do
+  # Each case sets its init.lua, its kind (clean, error, or skipped), and what its kind checks: the
+  # exact log a clean case leaves, or the text a case that errors must leave in the log and the shown
+  # lines. Only unwritable-state-dir sets XDG_STATE_HOME (to a file).
+  for id in clean messages error deferred long-report-then-prints unwritable-state-dir; do
+    t35_home="$(sandbox_home "T35-$id")"
+    t35_state_home="$t35_home/.local/state" t35_state_home_is_file=false
+    t35_init='-- no settings' t35_want_log="" t35_error=""
     case "$id" in
-      clean) t35_init='-- no settings' t35_want_warnings="" t35_want_loads_lines=1 ;;
+      clean) t35_kind=clean ;;
       messages)
         t35_init=$'print("loading")\nvim.notify("loaded", vim.log.levels.INFO)'
-        t35_want_warnings="" t35_want_loads_lines=1
+        t35_kind=clean t35_want_log=$'loading\nloaded'
         ;;
-      error) t35_init='error("broken config")' t35_want_warnings="$t35_error_warnings" t35_want_loads_lines=0 ;;
+      error) t35_init='error("broken config")' t35_kind=error t35_error="broken config" ;;
       deferred)
-        t35_init='vim.schedule(function() error("deferred") end)'
-        t35_want_warnings="$t35_error_warnings" t35_want_loads_lines=0
+        t35_init='vim.schedule(function() error("queued failure") end)'
+        t35_kind=error t35_error="queued failure"
+        ;;
+      long-report-then-prints)
+        t35_init="$t35_long_report_init"
+        t35_kind=error t35_error="$t35_long_report_head"
+        ;;
+      unwritable-state-dir)
+        t35_state_home="$t35_home/state-file" t35_state_home_is_file=true
+        t35_kind=skipped
         ;;
     esac
-    t35_want="$t35_want_loads_lines '$t35_loads' line(s) and warnings '${t35_want_warnings//$'\n'/; }'"
+    t35_log="$t35_state_home/nvim/$t35_log_name"
+    case "$t35_kind" in
+      clean) t35_want_warnings="" t35_want_loads_lines=1 ;;
+      error)
+        t35_want_warnings="Config reported errors at startup (full log: $t35_log)"
+        t35_want_warnings+=$'\nLaunch nvim to see them'
+        t35_want_loads_lines=0
+        ;;
+      skipped)
+        t35_want_warnings="Skipped the config check: could not write its log $t35_log"
+        t35_want_loads_lines=0
+        ;;
+    esac
     out="$( (
       sandbox "T35-$id" ""
       load_script
@@ -2808,6 +2854,11 @@ else
       XDG_DATA_DIRS="$TMP/T35-$id-system-dirs"
       export TMPDIR XDG_CONFIG_DIRS XDG_DATA_DIRS
       mkdir -p "$TMPDIR" "$XDG_CONFIG_DIRS" "$HOME/.config/nvim"
+      if [[ "$t35_state_home_is_file" == true ]]; then
+        XDG_STATE_HOME="$t35_state_home"
+        export XDG_STATE_HOME
+        : >"$XDG_STATE_HOME"
+      fi
       printf '%s\n' "$t35_init" >"$HOME/.config/nvim/init.lua"
       verify_config
       for warning in "${WARNINGS[@]}"; do
@@ -2815,9 +2866,34 @@ else
       done
       echo DONE
     ) </dev/null 2>&1)"
-    done_ok $? "$out" && [[ "$(sed -n 's/^WARNING //p' <<<"$out")" == "$t35_want_warnings" ]] \
-      && [[ "$(grep -cF "$t35_loads" <<<"$out")" -eq "$t35_want_loads_lines" ]] \
-      || t35_fail+="[$id: want $t35_want; got: $(tr '\n' ' ' <<<"$out")] "
+    t35_rc=$?
+    t35_shown="$(sed -n "s/^$t35_shown_indent//p" <<<"$out")"
+    t35_problems=""
+    [[ "$(sed -n 's/^WARNING //p' <<<"$out")" == "$t35_want_warnings" ]] \
+      || t35_problems+="want warnings '${t35_want_warnings//$'\n'/; }'; "
+    [[ "$(grep -cF "$t35_loads" <<<"$out")" -eq "$t35_want_loads_lines" ]] \
+      || t35_problems+="want $t35_want_loads_lines '$t35_loads' line(s); "
+    case "$t35_kind" in
+      clean)
+        [[ -f "$t35_log" && "$(<"$t35_log")" == "$t35_want_log" ]] \
+          || t35_problems+="want the log $t35_log to hold exactly '${t35_want_log//$'\n'/; }'; "
+        [[ -z "$t35_shown" ]] || t35_problems+="want no shown lines; "
+        ;;
+      error)
+        if [[ ! -f "$t35_log" ]]; then
+          t35_problems+="want the log $t35_log; "
+        elif ! grep -qF -- "$t35_error" "$t35_log"; then
+          t35_problems+="want '$t35_error' in the log; "
+        fi
+        grep -qF -- "$t35_error" <<<"$t35_shown" \
+          || t35_problems+="want '$t35_error' in the shown lines; "
+        ;;
+      skipped)
+        [[ ! -e "$t35_log" && -z "$t35_shown" ]] || t35_problems+="want no log and no shown lines; "
+        ;;
+    esac
+    done_ok "$t35_rc" "$out" && [[ -z "$t35_problems" ]] \
+      || t35_fail+="[$id: ${t35_problems}got: $(tr '\n' ' ' <<<"$out")] "
   done
 fi
 expect_none T35-config-errors "$t35_fail"

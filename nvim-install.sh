@@ -1197,20 +1197,42 @@ verify_nvim() {
 
 # Full run only: the config loads (Neovim's first launch, which installs plugins and runs their build
 # steps, so main runs this after forget_sudo_credentials). Neovim exits 0 even when the config errors at
-# startup, so the launch reads v:errmsg before +qa and quits with an error status when it is set.
-# Some plugins, lazy.nvim among them, report errors through vim.schedule, so the launch first runs the
-# callbacks startup queued (a 0 ms vim.wait, which a deferred-error test checks). Errors from a timer
-# (vim.defer_fn) not yet due when that wait runs, or from anything during +qa, go unchecked. An error
-# hidden with :silent! (in init.lua or a plugin) still sets v:errmsg, so it makes this warn.
+# startup, so the launch reads v:errmsg before +qa and, when it is set, echoes it and quits with an
+# error status. Some plugins, lazy.nvim among them, report errors through vim.schedule, so the launch
+# first runs the callbacks startup queued (a 0 ms vim.wait, which a deferred-error test checks). That
+# catches errors raised while init.lua, lazy's setup, and the start plugins run, and errors they queue,
+# but not a failed plugin build: in headless mode lazy prints build output to stdout and does not record
+# a failed make as an error (lazy.nvim 306a055: lua/lazy/manage/task/init.lua:153 and :197-224,
+# task/plugin.lua:31-40). Errors from a timer (vim.defer_fn) not yet due when that wait runs, or from
+# anything during +qa, go unchecked. An error hidden with :silent! (in init.lua or a plugin) still sets
+# v:errmsg, so it makes this warn. Headless Neovim writes its messages to stderr, which goes to a log in
+# Neovim's state dir, overwritten each run. On an error the warning names the log and shows its last
+# lines, which end with the echoed message, so later messages cannot push it out of view (a test
+# checks a long report). When the log cannot be written, the check is skipped with a warning.
 verify_config() {
+  local log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/nvim"
+  local log_file="$log_dir/nvim-install-config-check.log"
+  # Covers lazy.nvim's 15-line report of a failed plugin config, with a few lines before it
+  local shown_line_count=20
   local run_scheduled_callbacks="+lua vim.wait(0)"
-  local quit_if_startup_error="+if v:errmsg != '' | cquit | endif"
-  if nvim --headless "$run_scheduled_callbacks" "$quit_if_startup_error" "+qa" 2>/dev/null; then
-    success "Config loads cleanly"
-  else
-    warn "Config reported errors at startup"
-    warn "Launch nvim to see them (lazy.nvim retries failed downloads, not failed builds)"
+  local report_startup_error="+if v:errmsg != '' | echo 'Last error message:' v:errmsg | cquit | endif"
+  local shown_lines
+
+  if ! mkdir -p -- "$log_dir" || ! : >"$log_file"; then
+    warn "Skipped the config check: could not write its log $log_file"
+    return
   fi
+  if nvim --headless "$run_scheduled_callbacks" "$report_startup_error" "+qa" 2>"$log_file"; then
+    success "Config loads cleanly"
+    return
+  fi
+
+  warn "Config reported errors at startup (full log: $log_file)"
+  mapfile -t shown_lines < <(tail -n "$shown_line_count" -- "$log_file")
+  if [[ ${#shown_lines[@]} -gt 0 ]]; then
+    printf '      %s\n' "${shown_lines[@]}"
+  fi
+  warn "Launch nvim to see them"
 }
 
 print_summary() {
