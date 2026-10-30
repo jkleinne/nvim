@@ -1183,7 +1183,7 @@ print_summary() {
   if [[ "$PACKAGES_ONLY" == true ]]; then
     info "Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config."
   else
-    info "Launch nvim to complete plugin installation."
+    info "Open a file in nvim once so Mason installs its language servers."
   fi
 }
 

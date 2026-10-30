@@ -1870,7 +1870,7 @@ done
 # 0.12.0) first on PATH and NEED_PATH_SETUP true, as after a tarball install that could not link nvim into
 # /usr/local/bin: packages-only shows the title, the config line, the PATH note (setup_path did not run,
 # so nothing was added yet), and the closing line that asks for the full run; the full run shows its own
-# title, PATH updated, and the plugin line, and none of the packages-only texts (the bare word is not
+# title, PATH updated, and the Mason line, and none of the packages-only texts (the bare word is not
 # checked: the config path in the output sits under the suite's temp dir, whose name could contain it).
 t22f_fail=""
 for mode in true false; do
@@ -1888,9 +1888,9 @@ for mode in true false; do
     t22f_wanted=('Neovim Packages Installed' 'Config: +not cloned \(packages-only\)'
       'PATH: +nvim is not linked into /usr/local/bin; the full run adds .*/bin to your shell config'
       'Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config\.')
-    t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Launch nvim')
+    t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Mason installs')
   else
-    t22f_wanted=('Neovim Bootstrap Complete' 'PATH updated: +yes \(restart shell to apply\)' 'Launch nvim to complete plugin installation\.')
+    t22f_wanted=('Neovim Bootstrap Complete' 'PATH updated: +yes \(restart shell to apply\)' 'Open a file in nvim once so Mason installs its language servers\.')
     t22f_unwanted=('Packages Installed' 'not cloned \(packages-only\)' 'without --packages-only' 'PATH: +nvim is not linked')
   fi
   done_ok $rc "$out" || t22f_fail+="[packages_only=$mode: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
