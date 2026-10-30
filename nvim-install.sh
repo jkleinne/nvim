@@ -781,7 +781,8 @@ install_language_servers() {
 
   # The system servers in lua/lsp_gates/servers.lua come from the system package manager where it
   # packages them and are listed as manual steps where it does not; a fallback is installed only where a
-  # distro packages one in place of its server. Mason installs the native ones on first launch
+  # distro packages one in place of its server. Mason installs the native ones the first time nvim
+  # opens a file
   case "$PKG_MGR" in
     pacman)
       # Keep in sync with the system table in lua/lsp_gates/servers.lua
@@ -1202,7 +1203,8 @@ formatters, linters, and TUI tools, and the language servers the distro
 packages (Arch: the Node-based ones; Fedora: bash-language-server and
 python-lsp-server; elsewhere: manual steps), then clones the Neovim
 configuration to ~/.config/nvim. Mason installs the native language
-servers on first launch; the others stay off until installed.
+servers the first time nvim opens a file; the others stay off until
+installed.
 On Fedora, python-lsp-server stands in for pyright.
 
 Options:

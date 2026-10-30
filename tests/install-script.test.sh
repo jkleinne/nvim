@@ -2295,7 +2295,8 @@ expect_none "T30-ticket-windows order" "$problems"
 # which shows each argument as given (quoted, so an empty one shows as '' and a space inside one stays
 # visible), and usage to stderr, and exits 1 before anything runs (nothing on stdout, and the recording
 # sudo logs nothing). --help and -h alone print usage to stdout and exit 0, naming the mode flag, the
-# Fedora tier row, what Mason installs, and the pylsp stand-in.
+# Fedora tier row, what Mason installs and when (the first time nvim opens a file, a phrase the usage
+# keeps on one line), and the pylsp stand-in.
 
 # Prints a problem unless the script, run with the arguments after $2 in a recording sandbox named $1,
 # exits 1 with nothing on stdout, no sudo call, and on stderr the usage and the error message $2 (as
@@ -2334,7 +2335,8 @@ for flag in --help -h; do
   rc=$?
   absent=""
   for want in 'Usage: nvim-install.sh' '--packages-only' '^  Fedora +\(dnf\) +supported$' \
-    'Mason installs the native language' 'On Fedora, python-lsp-server stands in for pyright\.'; do
+    'Mason installs the native language' 'the first time nvim opens a file;' \
+    'On Fedora, python-lsp-server stands in for pyright\.'; do
     # -- : the second pattern starts with a dash, which grep would read as an option
     grep -qE -- "$want" <<<"$out" || absent+="[$want] "
   done
