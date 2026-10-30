@@ -2594,11 +2594,15 @@ expect_none T34-driver-lists-current "$t34_fail"
 # leave exactly verify_config's two warnings in WARNINGS (the list the summary repeats), in order, and
 # no "Config loads cleanly" line; the other two must leave no warning and that line once. hermetic_env
 # unsets XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME, and XDG_CACHE_HOME, so Neovim reads that config
-# and writes its data and state under the sandbox HOME; it still reads the host's system dirs
-# (XDG_CONFIG_DIRS and XDG_DATA_DIRS, a sysinit.vim in /etc/xdg/nvim, for example), as the real run
-# does. TMPDIR is a scratch dir under $TMP, and NVIM_APPNAME and VIMINIT (which would make Neovim read
-# another config) and NVIM_LOG_FILE (which would put its log elsewhere) are unset. Without nvim on PATH,
-# T35 fails and says so.
+# and writes its data and state under the sandbox HOME. It keeps XDG_CONFIG_DIRS and XDG_DATA_DIRS,
+# which each case points at an empty scratch dir under $TMP, because T35 checks verify_config's
+# detection on a config it writes and the host's sysinit.vim and plugins must not count
+# (XDG_CONFIG_DIRS can list a dir under the real HOME, and Arch's /etc/xdg/nvim/sysinit.vim adds
+# /usr/share/vim/vimfiles to the runtimepath): a host plugin that errors would fail clean and messages,
+# and pass error and deferred for the wrong reason. Neovim still finds its own runtime ($VIMRUNTIME
+# does not come from those dirs). TMPDIR is a scratch dir under $TMP too, and NVIM_APPNAME and VIMINIT
+# (which would make Neovim read another config) and NVIM_LOG_FILE (which would put its log elsewhere)
+# are unset. Without nvim on PATH, T35 fails and says so.
 t35_fail=""
 t35_loads="Config loads cleanly"
 # verify_config's warnings for a config that errors, one per line
@@ -2627,8 +2631,10 @@ else
       load_script
       unset NVIM_APPNAME VIMINIT NVIM_LOG_FILE
       TMPDIR="$TMP/T35-$id-tmp"
-      export TMPDIR
-      mkdir -p "$TMPDIR" "$HOME/.config/nvim"
+      XDG_CONFIG_DIRS="$TMP/T35-$id-system-dirs"
+      XDG_DATA_DIRS="$TMP/T35-$id-system-dirs"
+      export TMPDIR XDG_CONFIG_DIRS XDG_DATA_DIRS
+      mkdir -p "$TMPDIR" "$XDG_CONFIG_DIRS" "$HOME/.config/nvim"
       printf '%s\n' "$t35_init" >"$HOME/.config/nvim/init.lua"
       verify_config
       for warning in "${WARNINGS[@]}"; do
