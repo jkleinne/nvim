@@ -1,6 +1,6 @@
 -- Tests for the editor settings that keep repo code from running and tools from phoning home
 -- (lua/plugins/lsp.lua with its server list and gates in lua/lsp_gates/, lua/plugins/lint.lua,
--- lua/plugins/conform.lua, lua/settings.lua):
+-- lua/plugins/conform.lua, lua/settings.lua, and init.lua's load order):
 -- nvim --clean --headless -l tests/editor-config.test.lua
 --
 -- Hermetic: XDG_STATE_HOME, XDG_DATA_HOME, and XDG_CACHE_HOME point at a scratch dir (removed at the
@@ -10,18 +10,20 @@
 -- symlinks in the names of existing files, and TMPDIR may be a symlink. It must not be inside a
 -- project (a .terraform or .git above it would change the roots the cases expect), and
 -- 'runtimepath' holds only $VIMRUNTIME (--clean keeps the system site dirs, where an lsp/*.lua
--- would change what vim.lsp.config resolves). The plugins are stub modules in package.loaded; the
--- lsp_gates modules are the real ones. Every case starts with PATH set to an empty scratch dir and
--- Arch's TypeScript path (lsp_gates.typescript.ARCH_TSSERVER) pointing at a missing scratch path;
--- the cases that depend on which commands exist set PATH to scratch dirs of stub commands (they
--- exit 1 and no test runs them), and the TypeScript cases point ARCH_TSSERVER at a scratch package.
--- The trust cases use the real vim.secure functions on the scratch trust database. Stubbed per case
--- and restored after it: vim.notify, vim.fn.confirm (a trust prompt is recorded and cancelled, so
--- it never waits for input), vim.secure.read (wrapped to record its calls), vim.lsp.enable and
--- vim.cmd.doautoall (recorded instead of run in the :TerraformTrust cases), vim.secure.trust
--- (L10f), vim.uv.getuid (L8b, L9k, L10c, L10h), vim.uv.os_get_passwd (L10c), HOME, and
--- EDITOR_TEST_ALIAS (L9m, L9n, L10i); the gates' per-session notices are reset. L10g wraps vim.lsp's
--- functions around one call and restores them itself. Nothing is installed or downloaded, and no
+-- would change what vim.lsp.config resolves) until L15c, the last case, prepends a scratch
+-- lazy.nvim dir. The plugins are stub modules in package.loaded; the lsp_gates modules are the real
+-- ones. Every case starts with PATH set to an empty scratch dir and Arch's TypeScript path
+-- (lsp_gates.typescript.ARCH_TSSERVER) pointing at a missing scratch path; the cases that depend on
+-- which commands exist set PATH to scratch dirs of stub commands (they exit 1 and no test runs
+-- them), and the TypeScript cases point ARCH_TSSERVER at a scratch package. The trust cases use the
+-- real vim.secure functions on the scratch trust database. Stubbed per case and restored after it:
+-- vim.notify, vim.fn.confirm (a trust prompt is recorded and cancelled, so it never waits for
+-- input), vim.secure.read (wrapped to record its calls), vim.lsp.enable and vim.cmd.doautoall
+-- (recorded instead of run in the :TerraformTrust cases), vim.secure.trust (L10f), vim.uv.getuid
+-- (L8b, L9k, L10c, L10h), vim.uv.os_get_passwd (L10c), HOME, and EDITOR_TEST_ALIAS (L9m, L9n,
+-- L10i); the gates' per-session notices are reset. L10g wraps vim.lsp's functions around one call
+-- and restores them itself. L15c stubs the lazy module and removes the stub itself; it leaves
+-- vim.loader enabled, with its cache in the scratch dir. Nothing is installed or downloaded, and no
 -- language server starts. Exits nonzero when a test fails.
 
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:gsub("^@", ""), ":p:h:h")
@@ -44,6 +46,14 @@ for _, kind in ipairs { "state", "data", "cache" } do
   if not vim.startswith(vim.fn.stdpath(kind), tmp .. "/") then
     setup_failure(("stdpath(%q) is %s, not under %s"):format(kind, vim.fn.stdpath(kind), tmp))
   end
+end
+
+-- L15c runs init.lua, which enables vim.loader. Its byte cache path is fixed when vim.loader first
+-- loads, so it must already point under the scratch dir (vim.loader.path is a private field, hence
+-- the type check).
+local loader_path = vim.loader.path
+if type(loader_path) ~= "string" or not vim.startswith(loader_path, tmp .. "/") then
+  setup_failure(("vim.loader.path is %s, not under %s"):format(tostring(loader_path), tmp))
 end
 
 -- lsp.lua requires its gates from lua/lsp_gates/, and --clean leaves this config off 'runtimepath'
@@ -1989,14 +1999,62 @@ case("L17b-lua_ls-logpath", function()
   end
 end)
 
--- L15: terraform runs started from Neovim skip HashiCorp's update check. It keeps its id from before
--- L16 and L17 but runs last, because settings.lua sets global options and autocmds that later cases
--- would inherit.
+-- ---------------------------------------------------------------------------
+-- Cases that load settings.lua or init.lua
+-- ---------------------------------------------------------------------------
+-- They set global options, autocmds, keymaps, and environment that no other case should inherit,
+-- so they stay at the end of the file: add new cases above this section. L15c stays last, because
+-- running init.lua also enables vim.loader, prepends a scratch lazy.nvim dir to 'runtimepath', and
+-- leaves settings and mappings in package.loaded. vim.loader then caches into the scratch dir, so
+-- after the final vim.fn.delete(tmp, "rf") nothing may load a Lua module for the first time.
+
+-- L15: terraform runs started from Neovim skip HashiCorp's update check (id predates L16 and L17).
 case("L15-checkpoint-disabled", function()
   vim.env.CHECKPOINT_DISABLE = nil
   dofile(root .. "/lua/settings.lua")
   if vim.env.CHECKPOINT_DISABLE ~= "1" then
     return "CHECKPOINT_DISABLE = " .. show(vim.env.CHECKPOINT_DISABLE)
+  end
+end)
+
+-- L15b: Go commands started from Neovim never download a toolchain, even when Neovim inherits
+-- GOTOOLCHAIN=auto.
+case("L15b-gotoolchain-local", function()
+  vim.env.GOTOOLCHAIN = "auto"
+  dofile(root .. "/lua/settings.lua")
+  if vim.env.GOTOOLCHAIN ~= "local" then
+    return "GOTOOLCHAIN = " .. show(vim.env.GOTOOLCHAIN)
+  end
+end)
+
+-- L15c: init.lua loads settings.lua before lazy.setup, so plugins that copy Neovim's environment
+-- when they first load (Mason) start with GOTOOLCHAIN=local. lazy.setup is a stub that records the
+-- value; the lazy.nvim dir already exists under the scratch data dir, so init.lua never clones it
+-- (and PATH holds no git). settings and mappings are cleared from package.loaded first, so
+-- init.lua runs them again.
+case("L15c-settings-before-lazy", function()
+  vim.env.GOTOOLCHAIN = "auto"
+  package.loaded.settings, package.loaded.mappings = nil, nil
+  vim.fn.mkdir(vim.fn.stdpath "data" .. "/lazy/lazy.nvim", "p")
+  local setup_ran, seen = false, nil
+  package.loaded.lazy = {
+    setup = function()
+      setup_ran = true
+      seen = vim.env.GOTOOLCHAIN
+    end,
+  }
+  local ok, err = xpcall(function()
+    return dofile(root .. "/init.lua")
+  end, debug.traceback)
+  package.loaded.lazy = nil
+  if not ok then
+    return "init.lua failed: " .. (tostring(err):gsub("\n%s*", " | "))
+  end
+  if not setup_ran then
+    return "init.lua never called lazy.setup"
+  end
+  if seen ~= "local" then
+    return "GOTOOLCHAIN when lazy.setup ran = " .. show(seen)
   end
 end)
 
