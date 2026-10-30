@@ -87,7 +87,7 @@ vim.diagnostic.config {
 vim.env.CHECKPOINT_DISABLE = "1"
 
 -- Go's default GOTOOLCHAIN, auto, downloads and runs a newer toolchain when a module's go.mod asks
--- for one. With local, Go commands started from Neovim (Mason's builds of gopls and sqls, gopls's
--- own go calls) use the installed Go or fail with Go's error. Mason copies Neovim's environment
--- when it first loads, so this stays here, before lazy.setup in init.lua.
+-- for one. With local, Go commands started from Neovim (for example Mason's builds of gopls and
+-- sqls, and gopls's own go calls) use the installed Go or fail with Go's error. Mason copies
+-- Neovim's environment when it first loads, so this stays here, before lazy.setup in init.lua.
 vim.env.GOTOOLCHAIN = "local"

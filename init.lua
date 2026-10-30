@@ -18,7 +18,8 @@ end
 -- Add lazy.nvim to runtime path
 vim.opt.rtp:prepend(lazypath)
 
--- Load general settings
+-- Load general settings. They come before lazy.setup: lazy needs mapleader set before it loads,
+-- and Mason copies Neovim's environment (GOTOOLCHAIN among it) when it first loads.
 require "settings"
 
 -- Load key mappings
