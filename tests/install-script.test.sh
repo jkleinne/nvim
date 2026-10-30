@@ -272,6 +272,16 @@ order_problems() {
   ((ok)) || echo "[order (first line of each): ${report% }] "
 }
 
+# Prints how PATH differs from $1, a PATH saved earlier: "unchanged", "install dir first" ($2/bin, the
+# bin dir of install dir $2, then $1), or "other: <PATH>" (T25, T26)
+path_change() {
+  case "$PATH" in
+    "$1") echo "unchanged" ;;
+    "$2/bin:$1") echo "install dir first" ;;
+    *) echo "other: $PATH" ;;
+  esac
+}
+
 # Prints its input with the credentials in URLs (anything between :// and @) replaced by ***
 redact_urls() { sed -E 's#(://)[^/@]*@#\1***@#g'; }
 
@@ -1731,6 +1741,7 @@ out="$( (
     return 1
   }
   install_neovim_tarball() { :; }
+  # shellcheck disable=SC2030  # the functions of the script sourced into this subshell run on it
   PATH="$DENY_BIN"
   set_pkg_manager dnf
   T20_DNF_TAG=DNF_SERVER_PKG install_language_servers
@@ -1809,24 +1820,27 @@ expect_none "T20-server-list-sync (e) dnf" "$problems"
 
 
 # T22: main's single privilege boundary: install_neovim and install_deps, the steps that run root
-# commands, come first; then main forgets cached sudo credentials; then install_user_tools (go and uv
-# builds), setup_config, which clones the config, setup_path, verify_nvim, verify_config, which launches
-# Neovim for the first time, and print_summary, and no sudo runs after the forget. In packages-only mode
-# the forget is followed by verify_nvim and print_summary only, and the summary says so. A driver
-# (tests/lib/driver-T22.sh) runs main with install_neovim taking a ticket through ensure_sudo_ticket (so
-# moved after the forget, it stops the run), install_deps and the steps before it stubbed to log their
-# names, and setup_path, verify_nvim, verify_config, and print_summary logging their names and then
-# running for real, with T26's stub nvim (version 0.12.0) first on PATH, so a root command in them
-# reaches the recording sudo, which logs to the same event log; the real forget_sudo_credentials and
-# cleanup run against it, and main gets the words of T22_ARGS as its arguments. Cases: main-order, where
-# install_neovim takes a ticket; T22b, the same where sudo is not setuid (sudo -k and sudo -n -v both
-# fail, so no ticket can be live), which still goes on to the end and exits 0, under the errexit main
-# runs with; T22c, where no step takes a ticket, as on a re-run with nothing to install, but one from
-# before the run may be live, so main still forgets it; T22d, the same, but sudo -k fails while sudo -n
-# -v shows that ticket is still live, so the run stops with exit 1 before install_user_tools, with
-# sudo's message and the advice to wait for the ticket to expire; and T22e, main-order with
-# --packages-only. Test name, whether install_neovim takes a ticket (1 or 0), the sudo arguments the
-# recording sudo fails on (';'-separated), the exit status main must end with, and main's arguments
+# commands, come first; then main forgets cached sudo credentials; then put_install_dir_first_on_path
+# (only after the forget, so no root command and no lookup of sudo ever searches NVIM_INSTALL_DIR/bin),
+# install_user_tools (go and uv builds), setup_config, which clones the config, setup_path,
+# verify_nvim, verify_config, which launches Neovim for the first time, and print_summary, and no sudo
+# runs after the forget. In packages-only mode the forget is followed by put_install_dir_first_on_path,
+# verify_nvim, and print_summary only, and the summary says so. A driver (tests/lib/driver-T22.sh) runs
+# main with install_neovim taking a ticket through ensure_sudo_ticket (so moved after the forget, it
+# stops the run), install_deps and the steps before it stubbed to log their names, and
+# put_install_dir_first_on_path, setup_path, verify_nvim, verify_config, and print_summary logging their
+# names and then running for real, with T26's stub nvim (version 0.12.0) first on PATH, so a root
+# command in them reaches the recording sudo, which logs to the same event log; the real
+# forget_sudo_credentials and cleanup run against it, and main gets the words of T22_ARGS as its
+# arguments. Cases: main-order, where install_neovim takes a ticket; T22b, the same where sudo is not
+# setuid (sudo -k and sudo -n -v both fail, so no ticket can be live), which still goes on to the end
+# and exits 0, under the errexit main runs with; T22c, where no step takes a ticket, as on a re-run with
+# nothing to install, but one from before the run may be live, so main still forgets it; T22d, the
+# same, but sudo -k fails while sudo -n -v shows that ticket is still live, so the run stops with exit 1
+# before put_install_dir_first_on_path, with sudo's message and the advice to wait for the ticket to
+# expire; and T22e, main-order with --packages-only. Test name, whether install_neovim takes a ticket (1
+# or 0), the sudo arguments the recording sudo fails on (';'-separated), the exit status main must end
+# with, and main's arguments
 for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
   "T22c-forget-preexisting-ticket:0::0:" "T22d-forget-refuses-live-ticket:0:-k:1:" \
   "T22e-packages-only:1::0:--packages-only"; do
@@ -1844,14 +1858,15 @@ for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
   grep -qxF "driver rc=$t22_want_rc" <<<"$out" || problems+="[want exit $t22_want_rc: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
   case "$t22_want_rc:$t22_args" in
     0:)
-      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" install_user_tools \
-        setup_config setup_path verify_nvim verify_config print_summary)"
+      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" put_install_dir_first_on_path \
+        install_user_tools setup_config setup_path verify_nvim verify_config print_summary)"
       grep -qF 'Neovim Bootstrap Complete' <<<"$out" \
         && ! grep -qE 'Packages Installed|not cloned \(packages-only\)|without --packages-only' <<<"$out" \
         || problems+="[no full-run summary, or it is the packages-only one] "
       ;;
     0:--packages-only)
-      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" verify_nvim print_summary)"
+      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" put_install_dir_first_on_path \
+        verify_nvim print_summary)"
       ! grep -qxE 'install_user_tools|setup_config|setup_path|verify_config' "$t22_events" \
         || problems+="[a full-run step ran in packages-only mode] "
       grep -qF 'Neovim Packages Installed' <<<"$out" && grep -qF 'not cloned (packages-only)' <<<"$out" \
@@ -1862,7 +1877,8 @@ for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
       problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k")"
       grep -qF "sudo -k failed (STUB SUDO: failing -k)" <<<"$out" && grep -qF "timestamp_timeout" <<<"$out" \
         || problems+="[no live-ticket error with sudo's message and the advice to wait] "
-      ! grep -qxE 'install_user_tools|setup_config' "$t22_events" || problems+="[main went on after the forget failed] "
+      ! grep -qxE 'put_install_dir_first_on_path|install_user_tools|setup_config' "$t22_events" \
+        || problems+="[main went on after the forget failed] "
       ;;
   esac
   problems+="$(no_sudo_after_final_forget "$t22_events")"
@@ -1873,54 +1889,91 @@ for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
   expect_none "$t22_name" "$problems"
 done
 
-# T22f: print_summary says what the mode skipped. A sourced case per mode, with T26's stub nvim (version
-# 0.12.0) first on PATH and NEED_PATH_SETUP true, as after a tarball install that could not link nvim into
-# /usr/local/bin: packages-only shows the title, the config line, the PATH note (setup_path did not run,
-# so nothing was added yet), and the closing line that asks for the full run; the full run shows its own
-# title, PATH updated, and the Mason line, and none of the packages-only texts (the bare word is not
-# checked: the config path in the output sits under the suite's temp dir, whose name could contain it).
+# T22f: print_summary says what the mode skipped, and why NVIM_INSTALL_DIR/bin goes on PATH. A sourced
+# case per mode and install method, with T26's stub nvim (version 0.12.0) first on PATH and
+# NEED_PATH_SETUP true, as after a tarball install that could not link nvim into /usr/local/bin
+# (tarball) or a reuse of the install dir's nvim, which PATH did not reach first (reused): packages-only
+# shows the title, the config line, the PATH note with that cause (setup_path did not run, so nothing
+# was added yet), and the closing line that asks for the full run; the full run shows its own title,
+# PATH updated with that cause, and the Mason line, and none of the packages-only texts (the bare word
+# is not checked: the config path in the output sits under the suite's temp dir, whose name could
+# contain it). Neither shows the other method's cause.
+t22f_cause_tarball='nvim could not be linked into /usr/local/bin'
+t22f_cause_reused='the reused nvim was not first on PATH'
 t22f_fail=""
 for mode in true false; do
-  out="$( (
-    sandbox "T22f-$mode" "$T26_BIN"
-    T26_VERSION=0.12.0
-    export T26_VERSION
-    load_script
-    PACKAGES_ONLY="$mode" NEED_PATH_SETUP=true
-    print_summary
-    echo DONE
-  ) </dev/null 2>&1)"
-  rc=$?
-  if [[ "$mode" == true ]]; then
-    t22f_wanted=('Neovim Packages Installed' 'Config: +not cloned \(packages-only\)'
-      'PATH: +nvim is not linked into /usr/local/bin; the full run adds .*/bin to your shell config'
-      'Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config\.')
-    t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Mason installs')
-  else
-    t22f_wanted=('Neovim Bootstrap Complete' 'PATH updated: +yes \(restart shell to apply\)' 'Open a file in nvim once so Mason installs its language servers\.')
-    t22f_unwanted=('Packages Installed' 'not cloned \(packages-only\)' 'without --packages-only' 'PATH: +nvim is not linked')
-  fi
-  done_ok $rc "$out" || t22f_fail+="[packages_only=$mode: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-  for want in "${t22f_wanted[@]}"; do
-    grep -qE -- "$want" <<<"$out" || t22f_fail+="[packages_only=$mode: missing $want] "
-  done
-  for want in "${t22f_unwanted[@]}"; do
-    ! grep -qE -- "$want" <<<"$out" || t22f_fail+="[packages_only=$mode: shows $want] "
+  for method in tarball reused; do
+    out="$( (
+      sandbox "T22f-$mode-$method" "$T26_BIN"
+      T26_VERSION=0.12.0
+      export T26_VERSION
+      load_script
+      # shellcheck disable=SC2030  # print_summary, in the script sourced into this subshell, reads them
+      PACKAGES_ONLY="$mode" NEED_PATH_SETUP=true NVIM_INSTALL_METHOD="$method"
+      print_summary
+      echo DONE
+    ) </dev/null 2>&1)"
+    rc=$?
+    if [[ "$method" == tarball ]]; then
+      t22f_cause="$t22f_cause_tarball" t22f_other_cause="$t22f_cause_reused"
+    else
+      t22f_cause="$t22f_cause_reused" t22f_other_cause="$t22f_cause_tarball"
+    fi
+    if [[ "$mode" == true ]]; then
+      t22f_wanted=('Neovim Packages Installed' 'Config: +not cloned \(packages-only\)'
+        "PATH: +$t22f_cause; the full run adds /opt/nvim/bin to your shell config"
+        'Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config\.')
+      t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Mason installs' "$t22f_other_cause")
+    else
+      t22f_wanted=('Neovim Bootstrap Complete'
+        "PATH updated: +yes, /opt/nvim/bin first, as $t22f_cause \\(restart shell to apply\\)"
+        'Open a file in nvim once so Mason installs its language servers\.')
+      t22f_unwanted=('Packages Installed' 'not cloned \(packages-only\)' 'without --packages-only' 'PATH: '
+        "$t22f_other_cause")
+    fi
+    done_ok $rc "$out" || t22f_fail+="[packages_only=$mode $method: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+    for want in "${t22f_wanted[@]}"; do
+      grep -qE -- "$want" <<<"$out" || t22f_fail+="[packages_only=$mode $method: missing $want] "
+    done
+    for want in "${t22f_unwanted[@]}"; do
+      ! grep -qE -- "$want" <<<"$out" || t22f_fail+="[packages_only=$mode $method: shows $want] "
+    done
   done
 done
 expect_none T22f-summary-modes "$t22f_fail"
 
-# T22g: verify_nvim, with nvim missing from PATH (an empty dir; it uses only builtins), exits 1 and, when
-# NEED_PATH_SETUP is true (a tarball install that could not link into /usr/local/bin), hints at what to
-# do: in packages-only mode setup_path did not run, so the hint says the full run adds the dir to the
-# shell config; the full run keeps its hint to open a new terminal or source the shell config; with
-# NEED_PATH_SETUP false there is no hint. Cases: PACKAGES_ONLY, NEED_PATH_SETUP, whether the
-# packages-only hint is wanted, whether the full-run hint is wanted
-t22g_new_hint='nvim is in .*/bin and could not be linked into /usr/local/bin; the full run adds that dir to your shell config'
-t22g_old_hint='You may need to open a new terminal or source your shell config\.'
+# T22h: NEED_PATH_SETUP comes only with the reused or tarball method, so print_summary, given it with
+# any other method (existing here), has no cause to name: it stops with exit 1 and an error naming the
+# method, in both modes, instead of printing an empty cause
+t22h_fail=""
+for mode in true false; do
+  out="$( (
+    sandbox "T22h-$mode" "$T26_BIN"
+    T26_VERSION=0.12.0
+    export T26_VERSION
+    load_script
+    # shellcheck disable=SC2030  # print_summary, in the script sourced into this subshell, reads them
+    PACKAGES_ONLY="$mode" NEED_PATH_SETUP=true NVIM_INSTALL_METHOD=existing
+    run_errexit print_summary
+    echo "inner rc=$RC"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" \
+    && grep -qxF "  x print_summary: NEED_PATH_SETUP is true for install method 'existing' (expected reused or tarball)" <<<"$out" \
+    || t22h_fail+="[packages_only=$mode: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  ! grep -qE 'PATH( updated)?: ' <<<"$out" || t22h_fail+="[packages_only=$mode: printed a PATH line] "
+done
+expect_none T22h-summary-path-cause-invariant "$t22h_fail"
+
+# T22g: verify_nvim, with nvim missing from PATH (an empty dir; it uses only builtins), exits 1 with one
+# error line, "nvim not found on PATH after installation.", in both modes and whatever NEED_PATH_SETUP
+# says: an install that leaves its nvim only in NVIM_INSTALL_DIR/bin puts that dir first on this run's
+# PATH (T25, T26), so a missing nvim here has no cause that state could name. Cases: PACKAGES_ONLY,
+# NEED_PATH_SETUP
 t22g_fail=""
-for tc in "true:true:true:false" "false:true:false:true" "true:false:false:false" "false:false:false:false"; do
-  IFS=: read -r t22g_mode t22g_need t22g_want_new t22g_want_old <<<"$tc"
+for tc in "true:true" "false:true" "true:false" "false:false"; do
+  IFS=: read -r t22g_mode t22g_need <<<"$tc"
   out="$( (
     sandbox "T22g-$t22g_mode-$t22g_need" ""
     load_script
@@ -1932,15 +1985,12 @@ for tc in "true:true:true:false" "false:true:false:true" "true:false:false:false
   ) </dev/null 2>&1)"
   rc=$?
   done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" \
-    && grep -qF 'nvim not found on PATH after installation.' <<<"$out" \
+    && grep -qxF '  x nvim not found on PATH after installation.' <<<"$out" \
     || t22g_fail+="[$tc: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
-  t22g_has_new=false t22g_has_old=false
-  ! grep -qE -- "$t22g_new_hint" <<<"$out" || t22g_has_new=true
-  ! grep -qE -- "$t22g_old_hint" <<<"$out" || t22g_has_old=true
-  [[ "$t22g_has_new" == "$t22g_want_new" && "$t22g_has_old" == "$t22g_want_old" ]] \
-    || t22g_fail+="[$tc: packages-only hint shown $t22g_has_new, full-run hint shown $t22g_has_old] "
+  t22g_errors="$(grep -c '^  x ' <<<"$out")"
+  [[ "$t22g_errors" -eq 1 ]] || t22g_fail+="[$tc: $t22g_errors error lines, want 1: $(grep '^  x ' <<<"$out" | tr '\n' ';')] "
 done
-expect_none T22g-verify-nvim-hints "$t22g_fail"
+expect_none T22g-verify-nvim-not-found "$t22g_fail"
 
 # T23: a run that stops on an error after the script took a sudo ticket still drops it. A driver
 # (tests/lib/driver-T23.sh) runs main, so main's own EXIT trap is the one under test, with install_deps
@@ -2013,8 +2063,12 @@ done
 # preceded by the ticket check (sudo -n -v); keep, an existing dir and answer n: exit 1 with "Cannot
 # install without removing" and no root command; replace, answer y: the same as fresh with rm -rf of
 # the dir first; no-symlink: the /usr/local/bin check fails, so the same as fresh without the symlink,
-# and NEED_PATH_SETUP is set, so setup_path adds the dir to PATH (skipped for a user who can write
-# /usr/local/bin, where the check never runs).
+# and NEED_PATH_SETUP is set (skipped for a user who can write /usr/local/bin, where the check never
+# runs). The install method is tarball, and the install leaves PATH as it was: only
+# put_install_dir_first_on_path, which main runs after the privileged phase and each case runs next,
+# changes it. In no-symlink it puts the dir's bin first, where verify_nvim then finds its nvim (T26's
+# install dir stub, standing in for the one the recording sudo never extracted); the cases that link
+# leave PATH as it was.
 # $1 = case id (fresh, keep, replace, or no-symlink)
 t25_case() {
   local id="$1" fail_on=""
@@ -2038,9 +2092,25 @@ t25_case() {
     echo "ARCH=$ARCH"
     # shellcheck disable=SC2329  # run_errexit calls it
     tarball_and_report() {
+      # shellcheck disable=SC2031  # this subshell's PATH, before install_neovim_tarball runs
+      local path_before="$PATH"
       install_neovim_tarball
       # shellcheck disable=SC2031  # install_neovim_tarball, in the script sourced into this subshell, sets it
       echo "NEED_PATH_SETUP=$NEED_PATH_SETUP"
+      # shellcheck disable=SC2031  # install_neovim_tarball, in the script sourced into this subshell, sets it
+      echo "METHOD=$NVIM_INSTALL_METHOD"
+      echo "PATH after the tarball: $(path_change "$path_before" "$dir")"
+      # As main runs it, after the privileged phase
+      put_install_dir_first_on_path
+      echo "PATH after the step: $(path_change "$path_before" "$dir")"
+      if [[ "$id" == no-symlink ]]; then
+        add_stub "$dir/bin" nvim t26-install-dir-nvim
+        # A version no real nvim later on PATH has, so only the install dir's stub passes the check
+        T26_INSTALL_DIR_VERSION=0.98.7
+        export T26_INSTALL_DIR_VERSION
+        echo "NVIM_FOUND=$(type -P nvim)"
+        verify_nvim
+      fi
     }
     case "$id" in
       keep) run_errexit tarball_and_report <<<n ;;
@@ -2096,10 +2166,17 @@ for id in fresh keep replace no-symlink; do
     grep -qxF "tarball rc=0" <<<"$out" || problems+="[want exit 0] "
     [[ "$(<"$t25_log")" == "$(t25_want_log "$id" "$t25_dir" "$t25_file")" ]] \
       || problems+="[want sudo log: $(t25_want_log "$id" "$t25_dir" "$t25_file" | tr '\n' ';')] "
+    grep -qxF "METHOD=tarball" <<<"$out" || problems+="[want install method tarball] "
+    grep -qxF "PATH after the tarball: unchanged" <<<"$out" || problems+="[install_neovim_tarball changed PATH] "
     if [[ "$id" == no-symlink ]]; then
       grep -qxF "NEED_PATH_SETUP=true" <<<"$out" || problems+="[NEED_PATH_SETUP not set] "
+      grep -qxF "PATH after the step: install dir first" <<<"$out" \
+        || problems+="[put_install_dir_first_on_path did not put the install dir's bin first] "
+      grep -qxF "NVIM_FOUND=$t25_dir/bin/nvim" <<<"$out" || problems+="[nvim on PATH is not the install dir's] "
+      grep -qF 'Neovim 0.98.7 on PATH' <<<"$out" || problems+="[verify_nvim did not pass on the install dir's nvim] "
     else
       grep -qxF "NEED_PATH_SETUP=false" <<<"$out" || problems+="[NEED_PATH_SETUP set although the symlink was made] "
+      grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[PATH changed although the symlink was made] "
     fi
   fi
   problems+="$(sudo_allowlist_problems "$t25_log" "$t25_dir")"
@@ -2110,86 +2187,108 @@ done
 # T26: install_neovim keeps a new enough nvim; otherwise it installs the neovim package and checks the
 # version again: new enough is done, still too old falls back to the tarball, and so does a failed
 # package install. When PATH has no nvim, or only one older than MIN_NVIM_VERSION, a new enough nvim in
-# NVIM_INSTALL_DIR/bin counts as installed too, when only root can write that tree: an earlier tarball
-# install can leave its nvim only there (the /usr/local/bin link failed, or neither it nor setup_path's
-# shell config entry is in effect for this run). Then nothing is installed, and NEED_PATH_SETUP is set,
-# so setup_path's shell config entry puts that dir first on PATH in new shells, not in this run. An
-# older nvim there, a broken one (it fails --version), a tree that is not root-owned (with a warning
-# that says so), or none leaves the flow as it was, and a new enough nvim on PATH wins over the install
-# dir. Each case runs a copy of the script whose NVIM_INSTALL_DIR is a scratch dir, so a host's
-# /opt/nvim never counts. The cases that need a root-owned tree override is_root_owned_tree to succeed,
-# so the flow cases run on every host, with or without a fake-root wrapper; T26b checks the real
-# function, on root-owned trees under one. The not-root-owned case runs the real check on the sandbox
-# tree, which the user owns, and the install dir's nvim must not run there: the ownership check comes
-# before its version is read. The PATH nvim is a stub (T26_BIN), first on PATH, that prints version
-# $T26_VERSION, or PATH has none (T26_NO_NVIM_BIN, then DENY_BIN); the install dir's nvim is a stub that
-# prints version $T26_INSTALL_DIR_VERSION and creates the file $T26_INSTALL_DIR_RAN whenever it runs.
-# pkg_install (which prints its arguments, then fails or sets the version the package left) and
+# NVIM_INSTALL_DIR/bin is reused, when only root can write that tree: an earlier tarball install can
+# leave its nvim only there (the /usr/local/bin link failed, or neither it nor setup_path's shell config
+# entry is in effect for this run). Then nothing is installed, the install method is reused, and
+# NEED_PATH_SETUP is set. An older nvim there, a broken one (it fails --version), a tree that is not
+# root-owned (with a warning that says so), or none leaves the flow as it was, and a new enough nvim on
+# PATH wins over the install dir. install_neovim never changes PATH: each case then runs
+# put_install_dir_first_on_path, as main does after the privileged phase, which puts the dir's bin first
+# on PATH after a reuse and leaves PATH as it was otherwise, and setup_path's shell config entry (not run
+# here) does the same in new shells. Whenever the tarball does not run (here it is overridden, and
+# installs nothing), verify_nvim then passes in the same process. Each case runs a
+# copy of the script whose NVIM_INSTALL_DIR is a scratch dir, so a host's /opt/nvim never counts. The
+# cases that need a root-owned tree override is_root_owned_tree to succeed, so the flow cases run on
+# every host, with or without a fake-root wrapper; T26b checks the real function, on root-owned trees
+# under one. The not-root-owned case runs the real check on the sandbox tree, which the user owns, and
+# the install dir's nvim must not run there: the ownership check comes before its version is read. The
+# PATH nvim is a stub (T26_BIN), first on PATH, that prints version $T26_VERSION, or PATH has none
+# (T26_NO_NVIM_BIN, then DENY_BIN); the install dir's nvim is a stub that prints version
+# $T26_INSTALL_DIR_VERSION and creates the file $T26_INSTALL_DIR_RAN whenever it runs. pkg_install
+# (which prints its arguments, then fails or sets the version the package left) and
 # install_neovim_tarball (which prints TARBALL) are overridden. No case may hit a missing command.
-# $1 = case id, $2 = the PATH nvim's version, or none; $3 = the install dir nvim's version, none, or
-# broken; $4 = root (is_root_owned_tree overridden to succeed), user (the real check), or "-" (no
-# install dir nvim, so no check runs); $5 = the version after the package install, or fail
+#
+# Sets up T26 case $1 in the calling subshell: a sandbox, and a sourced copy of the script whose
+# NVIM_INSTALL_DIR is $t26_install_dir (set here, with $t26_ran_marker), with the PATH nvim, the install
+# dir's nvim, its ownership check, and the overrides as $2 to $5 say. $2 = the PATH nvim's version, or
+# none; $3 = the install dir nvim's version, none, or broken; $4 = root (is_root_owned_tree overridden
+# to succeed), user (the real check), or "-" (no install dir nvim, so no check runs); $5 = the version
+# after the package install, or fail
+t26_load() {
+  sandbox "T26-$1" "$T26_BIN"
+  t26_install_dir="$TMP/T26-$1/opt-nvim" t26_ran_marker="$TMP/T26-$1/install-dir-nvim-ran"
+  load_script_with "$TMP/T26-$1/script/nvim-install.sh" NVIM_INSTALL_DIR "$t26_install_dir"
+  set_pkg_manager pacman
+  if [[ "$4" == root ]]; then
+    must_override is_root_owned_tree
+    # shellcheck disable=SC2329  # install_neovim calls it
+    is_root_owned_tree() { return 0; }
+  fi
+  if [[ "$3" != none ]]; then
+    add_stub "$t26_install_dir/bin" nvim t26-install-dir-nvim
+    T26_INSTALL_DIR_VERSION="$3" T26_INSTALL_DIR_RAN="$t26_ran_marker"
+    export T26_INSTALL_DIR_VERSION T26_INSTALL_DIR_RAN
+  fi
+  if [[ "$2" == none ]]; then
+    PATH="$T26_NO_NVIM_BIN:$DENY_BIN"
+  fi
+  T26_VERSION="$2" T26_AFTER="$5"
+  export T26_VERSION
+  must_override pkg_install
+  must_override install_neovim_tarball
+  pkg_install() {
+    echo "PKG_INSTALL $*"
+    if [[ "$T26_AFTER" == fail ]]; then
+      return 1
+    fi
+    T26_VERSION="$T26_AFTER"
+  }
+  install_neovim_tarball() { echo TARBALL; }
+}
+# Runs install_neovim, put_install_dir_first_on_path, and verify_nvim, in main's order, for T26 case $1
+# ($2 to $5 as t26_load takes them)
 t26_case() {
   (
-    sandbox "T26-$1" "$T26_BIN"
-    t26_install_dir="$TMP/T26-$1/opt-nvim" t26_ran_marker="$TMP/T26-$1/install-dir-nvim-ran"
-    load_script_with "$TMP/T26-$1/script/nvim-install.sh" NVIM_INSTALL_DIR "$t26_install_dir"
-    set_pkg_manager pacman
-    if [[ "$4" == root ]]; then
-      must_override is_root_owned_tree
-      # shellcheck disable=SC2329  # install_neovim calls it
-      is_root_owned_tree() { return 0; }
-    fi
-    if [[ "$3" != none ]]; then
-      add_stub "$t26_install_dir/bin" nvim t26-install-dir-nvim
-      T26_INSTALL_DIR_VERSION="$3" T26_INSTALL_DIR_RAN="$t26_ran_marker"
-      export T26_INSTALL_DIR_VERSION T26_INSTALL_DIR_RAN
-    fi
-    if [[ "$2" == none ]]; then
-      PATH="$T26_NO_NVIM_BIN:$DENY_BIN"
-    fi
-    T26_VERSION="$2" T26_AFTER="$5"
-    export T26_VERSION
-    must_override pkg_install
-    must_override install_neovim_tarball
-    pkg_install() {
-      echo "PKG_INSTALL $*"
-      if [[ "$T26_AFTER" == fail ]]; then
-        return 1
-      fi
-      T26_VERSION="$T26_AFTER"
-    }
-    install_neovim_tarball() { echo TARBALL; }
+    t26_load "$@"
+    t26_path_before="$PATH"
     install_neovim
+    # shellcheck disable=SC2031  # install_neovim, in the script sourced into this subshell, sets it
     echo "METHOD=$NVIM_INSTALL_METHOD"
     # shellcheck disable=SC2031  # install_neovim, in the script sourced into this subshell, sets it
     echo "NEED_PATH_SETUP=$NEED_PATH_SETUP"
+    echo "PATH after install_neovim: $(path_change "$t26_path_before" "$t26_install_dir")"
     if [[ -e "$t26_ran_marker" ]]; then
       echo "INSTALL_DIR_NVIM_RAN=yes"
     else
       echo "INSTALL_DIR_NVIM_RAN=no"
     fi
+    put_install_dir_first_on_path
+    echo "PATH after the step: $(path_change "$t26_path_before" "$t26_install_dir")"
+    run_errexit verify_nvim
+    echo "VERIFY rc=$RC"
     echo DONE
   ) </dev/null 2>&1
 }
 # Case id, the PATH nvim's version (or none), the install dir nvim's version (or none, or broken), the
 # install dir's ownership check (root, user, or "-"), the version after the package install (or fail,
 # or "-" when it never runs), whether pkg_install neovim runs, whether the tarball runs, the install
-# method when it does not (or "-"), and NEED_PATH_SETUP afterwards
+# method when it does not (or "-"), NEED_PATH_SETUP afterwards, and PATH after
+# put_install_dir_first_on_path (unchanged, or install-dir: the install dir's bin first, then PATH as it
+# was)
 t26_not_reused="Not reusing the nvim in"
 t26_not_reused_why="something in it is not owned by root, or is writable by group or others; installing Neovim instead"
-for tc in "current:0.12.0:none:-:-:no:no:existing:false" \
-  "old-package-new:0.11.4:none:-:0.12.6:yes:no:pacman:false" \
-  "old-package-old:0.11.4:none:-:0.11.5:yes:yes:-:false" \
-  "package-fails:0.11.4:none:-:fail:yes:yes:-:false" \
-  "no-nvim:none:none:-:fail:yes:yes:-:false" \
-  "install-dir-only:none:0.12.6:root:fail:no:no:existing:true" \
-  "old-path-install-dir-new:0.11.4:0.12.6:root:fail:no:no:existing:true" \
-  "old-path-install-dir-old:0.11.4:0.11.6:root:0.11.5:yes:yes:-:false" \
-  "install-dir-broken:none:broken:root:fail:yes:yes:-:false" \
-  "install-dir-not-root-owned:none:0.12.6:user:fail:yes:yes:-:false" \
-  "new-path-install-dir-new:0.12.0:0.12.6:root:-:no:no:existing:false"; do
-  IFS=: read -r id before install_dir tree after want_pkg want_tarball want_method want_path_setup <<<"$tc"
+for tc in "current:0.12.0:none:-:-:no:no:existing:false:unchanged" \
+  "old-package-new:0.11.4:none:-:0.12.6:yes:no:pacman:false:unchanged" \
+  "old-package-old:0.11.4:none:-:0.11.5:yes:yes:-:false:unchanged" \
+  "package-fails:0.11.4:none:-:fail:yes:yes:-:false:unchanged" \
+  "no-nvim:none:none:-:fail:yes:yes:-:false:unchanged" \
+  "install-dir-only:none:0.12.6:root:fail:no:no:reused:true:install-dir" \
+  "old-path-install-dir-new:0.11.4:0.12.6:root:fail:no:no:reused:true:install-dir" \
+  "old-path-install-dir-old:0.11.4:0.11.6:root:0.11.5:yes:yes:-:false:unchanged" \
+  "install-dir-broken:none:broken:root:fail:yes:yes:-:false:unchanged" \
+  "install-dir-not-root-owned:none:0.12.6:user:fail:yes:yes:-:false:unchanged" \
+  "new-path-install-dir-new:0.12.0:0.12.6:root:-:no:no:existing:false:unchanged"; do
+  IFS=: read -r id before install_dir tree after want_pkg want_tarball want_method want_path_setup want_path <<<"$tc"
   out="$(t26_case "$id" "$before" "$install_dir" "$tree" "$after")"
   rc=$?
   problems=""
@@ -2213,11 +2312,85 @@ for tc in "current:0.12.0:none:-:-:no:no:existing:false" \
   else
     ! grep -qxF TARBALL <<<"$out" || problems+="[tarball fallback ran] "
     grep -qxF "METHOD=$want_method" <<<"$out" || problems+="[want install method $want_method] "
+    grep -qxF "VERIFY rc=0" <<<"$out" || problems+="[verify_nvim failed after install_neovim] "
   fi
   grep -qxF "NEED_PATH_SETUP=$want_path_setup" <<<"$out" || problems+="[want NEED_PATH_SETUP=$want_path_setup] "
-  [[ -z "$problems" ]] || problems+="; $(tail -n5 <<<"$out" | tr '\n' ' ')"
+  grep -qxF "PATH after install_neovim: unchanged" <<<"$out" || problems+="[install_neovim changed PATH] "
+  if [[ "$want_path" == install-dir ]]; then
+    grep -qxF "PATH after the step: install dir first" <<<"$out" \
+      || problems+="[want the install dir's bin first on PATH after put_install_dir_first_on_path] "
+  else
+    grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[want PATH unchanged after put_install_dir_first_on_path] "
+  fi
+  [[ -z "$problems" ]] || problems+="; $(tail -n7 <<<"$out" | tr '\n' ' ')"
   expect_none "T26-install-neovim $id" "$problems"
 done
+
+# T26c: a packages-only run that reuses NVIM_INSTALL_DIR ends as main ends it in that mode
+# (install_neovim, then, past the privileged phase, put_install_dir_first_on_path, verify_nvim, and
+# print_summary, under errexit), as on Fedora 43 when an earlier run left the tarball there and dnf's
+# older nvim comes first on PATH: it exits 0, names reused as the install method, and its PATH line
+# gives that cause, not a failed link. The setup is T26's (t26_load).
+out="$( (
+  t26_load packages-only-reuse 0.11.6 0.12.6 root fail
+  PACKAGES_ONLY=true
+  # shellcheck disable=SC2329  # run_errexit calls it
+  packages_only_end() {
+    install_neovim
+    put_install_dir_first_on_path
+    verify_nvim
+    print_summary
+  }
+  run_errexit packages_only_end
+  echo "end rc=$RC"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+problems=""
+done_ok $rc "$out" && grep -qxF "end rc=0" <<<"$out" || problems+="[want exit 0: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+grep -qF 'Neovim 0.12.6 on PATH' <<<"$out" || problems+="[verify_nvim did not find the install dir's nvim] "
+grep -qE 'Install method: +reused$' <<<"$out" || problems+="[want install method reused] "
+grep -qE "PATH: +the reused nvim was not first on PATH; the full run adds $(ere_escape "$TMP")/T26-packages-only-reuse/opt-nvim/bin to your shell config" <<<"$out" \
+  || problems+="[no PATH line naming the reuse] "
+! grep -qF 'linked' <<<"$out" || problems+="[names a failed link] "
+! grep -qE '^PKG_INSTALL|^TARBALL$' <<<"$out" || problems+="[installed Neovim] "
+expect_none T26c-packages-only-reuse "$problems"
+
+# T26d: put_install_dir_first_on_path, on a copy of the script whose NVIM_INSTALL_DIR is a scratch
+# path: with NEED_PATH_SETUP false it leaves PATH as it was; with it true it puts NVIM_INSTALL_DIR/bin
+# first and exports PATH, so the commands this run starts (Neovim, and the plugin builds it runs) see
+# it too: a child's environment has the new PATH even when PATH was not exported before
+t26d_fail=""
+for t26d_need in false true; do
+  out="$( (
+    sandbox "T26d-$t26d_need" ""
+    t26d_dir="$TMP/T26d-$t26d_need/opt-nvim"
+    load_script_with "$TMP/T26d-$t26d_need/script/nvim-install.sh" NVIM_INSTALL_DIR "$t26d_dir"
+    t26d_before="$PATH"
+    export -n PATH
+    NEED_PATH_SETUP="$t26d_need"
+    put_install_dir_first_on_path
+    echo "PATH after the step: $(path_change "$t26d_before" "$t26d_dir")"
+    if [[ "$(env | sed -n 's/^PATH=//p')" == "$PATH" ]]; then
+      echo "CHILD_PATH=same"
+    else
+      echo "CHILD_PATH=differs"
+    fi
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  if [[ "$t26d_need" == true ]]; then
+    t26d_want="install dir first"
+  else
+    t26d_want="unchanged"
+  fi
+  done_ok $rc "$out" && grep -qxF "PATH after the step: $t26d_want" <<<"$out" \
+    || t26d_fail+="[NEED_PATH_SETUP=$t26d_need: want PATH $t26d_want; $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  if [[ "$t26d_need" == true ]]; then
+    grep -qxF "CHILD_PATH=same" <<<"$out" || t26d_fail+="[PATH not exported to child processes] "
+  fi
+done
+expect_none T26d-install-dir-path-step "$t26d_fail"
 
 # T26b: is_root_owned_tree, which install_neovim asks before it reuses NVIM_INSTALL_DIR, fails on a tree
 # the user owns, on a symlink to one (the check follows it, as the nvim lookup and PATH do, instead of

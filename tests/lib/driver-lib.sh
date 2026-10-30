@@ -46,7 +46,8 @@ log_step() { printf '%s\n' "$1" >>"${EVENT_LOG:?}"; }
 DRIVER_RUNS_REAL=(setup_colors forget_sudo_credentials parse_args cleanup info)
 DRIVER_STUBBED=(
   require_non_root detect_os detect_arch detect_pkg_manager detect_shell confirm_proceed
-  install_neovim install_deps install_user_tools setup_config setup_path verify_nvim verify_config print_summary
+  install_neovim install_deps put_install_dir_first_on_path install_user_tools setup_config setup_path
+  verify_nvim verify_config print_summary
 )
 # The arguments run_main_stubbed passes to main: none by default. A driver sets the array before calling
 # it; bash arrays do not export, so a driver that needs arguments splits a scalar the suite exports.

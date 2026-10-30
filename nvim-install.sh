@@ -32,7 +32,13 @@ SCRIPT_TMPDIR=""
 CLONE_STAGING=""
 WARNINGS=()
 PATH_WARNED_DIRS=()
+# true when this run's nvim is in $NVIM_INSTALL_DIR/bin and PATH did not reach it first. install_neovim
+# only records it; put_install_dir_first_on_path then puts that dir first on this run's PATH, after the
+# privileged phase, and setup_path adds it to the shell config.
 NEED_PATH_SETUP=false
+# Where this run's nvim came from: existing (a new enough nvim on PATH), reused (a new enough one in
+# $NVIM_INSTALL_DIR/bin that PATH did not reach first), the package manager's name, or tarball (installed
+# now). The PATH messages read it for the cause.
 NVIM_INSTALL_METHOD=""
 OS=""
 ARCH=""
@@ -412,7 +418,7 @@ install_neovim_tarball() {
   as_root mkdir -p "$NVIM_INSTALL_DIR"
   as_root tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
   # tar run as root keeps the owners the archive records, and the dir's bin may go first on PATH
-  # (setup_path prepends it), so root owns the tree and only root can write to it
+  # (put_install_dir_first_on_path), so root owns the tree and only root can write to it
   as_root chown -R 0:0 "$NVIM_INSTALL_DIR"
   as_root chmod -R go-w "$NVIM_INSTALL_DIR"
 
@@ -438,6 +444,33 @@ is_root_owned_tree() {
   [[ -z "$first_offender" ]]
 }
 
+# An earlier tarball install can leave its nvim only in $NVIM_INSTALL_DIR/bin: the $NVIM_LINK_DIR link
+# failed, or neither the link nor setup_path's shell config entry is in effect for this run. Succeeds,
+# after recording the reuse (the install method, and NEED_PATH_SETUP), when a new enough nvim is there
+# and only root can write the tree, which is checked before that nvim runs; fails otherwise (with a
+# warning when the tree is not root-owned), so install_neovim installs. The version is read inside the
+# condition, where errexit does not apply, so a binary there that fails --version falls through to the
+# install instead of ending the run.
+reuse_install_dir_nvim() {
+  local install_dir_nvim="$NVIM_INSTALL_DIR/bin/nvim" install_dir_version
+  if [[ ! -x "$install_dir_nvim" ]]; then
+    return 1
+  fi
+  if ! is_root_owned_tree "$NVIM_INSTALL_DIR"; then
+    warn "Not reusing the nvim in $NVIM_INSTALL_DIR: something in it is not owned by root, or is writable by group or others; installing Neovim instead"
+    return 1
+  fi
+  if ! install_dir_version="$(get_nvim_version "$install_dir_nvim")" \
+    || ! version_gte "$install_dir_version" "$MIN_NVIM_VERSION"; then
+    return 1
+  fi
+  success "Neovim $install_dir_version already installed in $NVIM_INSTALL_DIR (>= $MIN_NVIM_VERSION)"
+  NVIM_INSTALL_METHOD="reused"
+  NEED_PATH_SETUP=true
+}
+
+# Tries, in order: a new enough nvim on PATH, the one an earlier tarball install left in
+# $NVIM_INSTALL_DIR, the package manager's, and the release tarball
 install_neovim() {
   section "Neovim"
 
@@ -452,23 +485,8 @@ install_neovim() {
     warn "Neovim $current_version found, but $MIN_NVIM_VERSION+ is required."
   fi
 
-  # An earlier tarball install can leave its nvim only in $NVIM_INSTALL_DIR/bin: the $NVIM_LINK_DIR link
-  # failed, or neither the link nor setup_path's shell config entry is in effect for this run. A new
-  # enough nvim there counts when only root can write the tree, which is checked before that nvim runs;
-  # setup_path's shell config entry then puts its dir first on PATH in new shells, not in this run. The
-  # version is read inside the condition, where errexit does not apply, so a binary there that fails
-  # --version falls through to the install instead of ending the run.
-  local install_dir_nvim="$NVIM_INSTALL_DIR/bin/nvim" install_dir_version
-  if [[ -x "$install_dir_nvim" ]]; then
-    if ! is_root_owned_tree "$NVIM_INSTALL_DIR"; then
-      warn "Not reusing the nvim in $NVIM_INSTALL_DIR: something in it is not owned by root, or is writable by group or others; installing Neovim instead"
-    elif install_dir_version="$(get_nvim_version "$install_dir_nvim")" \
-      && version_gte "$install_dir_version" "$MIN_NVIM_VERSION"; then
-      success "Neovim $install_dir_version already installed in $NVIM_INSTALL_DIR (>= $MIN_NVIM_VERSION)"
-      NVIM_INSTALL_METHOD="existing"
-      NEED_PATH_SETUP=true
-      return
-    fi
+  if reuse_install_dir_nvim; then
+    return
   fi
 
   info "Installing Neovim via $PKG_MGR..."
@@ -1089,8 +1107,25 @@ setup_config() {
 }
 
 # ---------------------------------------------------------------------------
-# PATH setup (tarball installs only)
+# PATH setup (an nvim in NVIM_INSTALL_DIR that PATH did not reach first)
 # ---------------------------------------------------------------------------
+
+# When install_neovim left this run's nvim only in $NVIM_INSTALL_DIR/bin (NEED_PATH_SETUP), puts that dir
+# first on this run's PATH and exports it, so verify_nvim, verify_config, and what they start run that
+# nvim now; setup_path adds the same entry to the shell config for new shells. Only root can write the
+# tree (the tarball install chowns it, and reuse requires is_root_owned_tree), so the commands this run
+# starts afterwards cannot find one another account planted there. main runs this after
+# forget_sudo_credentials has closed the privileged phase, because as_root runs plain sudo, which
+# searches the caller's PATH unless sudoers sets secure_path: past the drop, as_root stops the run, and
+# cleanup's sudo -k runs only for a ticket still held, which the drop clears, so no root command and no
+# lookup of sudo ever searches this dir.
+put_install_dir_first_on_path() {
+  if [[ "$NEED_PATH_SETUP" != true ]]; then
+    return
+  fi
+  PATH="$NVIM_INSTALL_DIR/bin:$PATH"
+  export PATH
+}
 
 setup_path() {
   if [[ "$NEED_PATH_SETUP" != true ]]; then
@@ -1109,8 +1144,9 @@ setup_path() {
     fish)  rc_file="${HOME}/.config/fish/config.fish" ;;
     posix) rc_file="$HOME/.profile" ;;
   esac
-  # Prepended, unlike the user-tool dirs: the tarball is installed exactly when the packaged nvim is
-  # missing or too old, so its nvim must win over an older one in /usr/bin
+  # Prepended, unlike the user-tool dirs: the tarball's nvim is installed or reused only when the nvim on
+  # PATH is missing or too old, so it must win over an older one in /usr/bin, as it does in this run
+  # (put_install_dir_first_on_path)
   line="$(path_line prepend "$nvim_bin")"
 
   if [[ -z "$rc_file" ]]; then
@@ -1147,12 +1183,6 @@ verify_nvim() {
 
   if ! command -v nvim >/dev/null 2>&1; then
     error "nvim not found on PATH after installation."
-    if [[ "$NEED_PATH_SETUP" == true && "$PACKAGES_ONLY" == true ]]; then
-      # setup_path does not run in this mode
-      error "nvim is in $NVIM_INSTALL_DIR/bin and could not be linked into $NVIM_LINK_DIR; the full run adds that dir to your shell config."
-    elif [[ "$NEED_PATH_SETUP" == true ]]; then
-      error "You may need to open a new terminal or source your shell config."
-    fi
     exit 1
   fi
 
@@ -1200,11 +1230,21 @@ print_summary() {
   printf '  %-18s %s\n' "Config:" "$config"
 
   if [[ "$NEED_PATH_SETUP" == true ]]; then
+    # Only these two methods set NEED_PATH_SETUP (reuse_install_dir_nvim, install_neovim_tarball)
+    local path_cause
+    case "$NVIM_INSTALL_METHOD" in
+      reused) path_cause="the reused nvim was not first on PATH" ;;
+      tarball) path_cause="nvim could not be linked into $NVIM_LINK_DIR" ;;
+      *)
+        error "print_summary: NEED_PATH_SETUP is true for install method '$NVIM_INSTALL_METHOD' (expected reused or tarball)"
+        exit 1
+        ;;
+    esac
     if [[ "$PACKAGES_ONLY" == true ]]; then
-      # setup_path did not run, and whether the dir is already on PATH is not known here
-      printf '  %-18s %s\n' "PATH:" "nvim is not linked into $NVIM_LINK_DIR; the full run adds $NVIM_INSTALL_DIR/bin to your shell config"
+      # setup_path did not run
+      printf '  %-18s %s\n' "PATH:" "$path_cause; the full run adds $NVIM_INSTALL_DIR/bin to your shell config"
     else
-      printf '  %-18s %s\n' "PATH updated:" "yes (restart shell to apply)"
+      printf '  %-18s %s\n' "PATH updated:" "yes, $NVIM_INSTALL_DIR/bin first, as $path_cause (restart shell to apply)"
     fi
   fi
 
@@ -1317,6 +1357,8 @@ main() {
   # The one privilege boundary: every root command runs above, none below, and no cached credentials
   # reach the go and uv builds, the config clone, or Neovim's first launch
   forget_sudo_credentials
+  # Past the boundary, so no root command and no lookup of sudo searches the dir it puts on PATH
+  put_install_dir_first_on_path
   if [[ "$PACKAGES_ONLY" == true ]]; then
     verify_nvim
     print_summary
