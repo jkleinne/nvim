@@ -307,8 +307,11 @@ version_gte() {
   [[ $have_num -ge $need_num ]]
 }
 
+# Prints the version of the nvim on PATH, or of the nvim binary $1 when given (install_neovim checks
+# the one in $NVIM_INSTALL_DIR, which may not be on PATH)
 get_nvim_version() {
-  nvim --version 2>/dev/null | head -n1 | sed 's/^NVIM v//'
+  local nvim_binary="${1:-nvim}"
+  "$nvim_binary" --version 2>/dev/null | head -n1 | sed 's/^NVIM v//'
 }
 
 confirm_proceed() {
@@ -421,6 +424,18 @@ install_neovim_tarball() {
   NVIM_INSTALL_METHOD="tarball"
 }
 
+# Succeeds when only root can write the tree at $1: every entry (symlinks aside, whose own mode is always
+# rwxrwxrwx) is owned by uid 0 with no group or other write bit, as the tarball install leaves it. That
+# tree's bin may go first on PATH, where a file another account can write could shadow commands such as
+# sudo. -H follows $1 itself when it is a symlink, as the nvim lookup and PATH do. A find error (an
+# unreadable entry, or no tree) counts as not root-owned. GNU find and BusyBox's find (with the features
+# Alpine builds in) both take every option used here, -H included.
+is_root_owned_tree() {
+  local first_offender
+  first_offender="$(find -H "$1" ! -type l \( ! -user 0 -o -perm /go=w \) -print -quit)" || return 1
+  [[ -z "$first_offender" ]]
+}
+
 install_neovim() {
   section "Neovim"
 
@@ -433,6 +448,25 @@ install_neovim() {
       return
     fi
     warn "Neovim $current_version found, but $MIN_NVIM_VERSION+ is required."
+  fi
+
+  # An earlier tarball install can leave its nvim only in $NVIM_INSTALL_DIR/bin: the /usr/local/bin link
+  # failed, or neither the link nor setup_path's shell config entry is in effect for this run. A new
+  # enough nvim there counts when only root can write the tree, which is checked before that nvim runs;
+  # setup_path's shell config entry then puts its dir first on PATH in new shells, not in this run. The
+  # version is read inside the condition, where errexit does not apply, so a binary there that fails
+  # --version falls through to the install instead of ending the run.
+  local install_dir_nvim="$NVIM_INSTALL_DIR/bin/nvim" install_dir_version
+  if [[ -x "$install_dir_nvim" ]]; then
+    if ! is_root_owned_tree "$NVIM_INSTALL_DIR"; then
+      warn "Not reusing the nvim in $NVIM_INSTALL_DIR: something in it is not owned by root, or is writable by group or others; installing Neovim instead"
+    elif install_dir_version="$(get_nvim_version "$install_dir_nvim")" \
+      && version_gte "$install_dir_version" "$MIN_NVIM_VERSION"; then
+      success "Neovim $install_dir_version already installed in $NVIM_INSTALL_DIR (>= $MIN_NVIM_VERSION)"
+      NVIM_INSTALL_METHOD="existing"
+      NEED_PATH_SETUP=true
+      return
+    fi
   fi
 
   info "Installing Neovim via $PKG_MGR..."

@@ -1,0 +1,19 @@
+#!/bin/sh
+# T26's nvim in NVIM_INSTALL_DIR/bin, off PATH. Every run first creates the file $T26_INSTALL_DIR_RAN
+# when that is set, so a test can tell whether the script ran it. --version prints version
+# $T26_INSTALL_DIR_VERSION, in one write for the reason t26-nvim gives, and fails when that is broken
+# (a binary that cannot run); anything else fails. An unset or empty version is a test mistake: :? stops
+# the stub with a message on its own stderr, which get_nvim_version discards, so to install_neovim it
+# looks the same as broken.
+if [ -n "${T26_INSTALL_DIR_RAN:-}" ]; then
+  : >"$T26_INSTALL_DIR_RAN"
+fi
+version="${T26_INSTALL_DIR_VERSION:?}"
+if [ "$1" = --version ] && [ "$version" != broken ]; then
+  cat <<EOF
+NVIM v$version
+Build type: Release
+EOF
+  exit 0
+fi
+exit 1

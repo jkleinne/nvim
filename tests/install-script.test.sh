@@ -34,7 +34,8 @@
 # end-to-end run on this machine (see T4), which also reads the real ~/.config/nvim and runs the real
 # sudo -k (it never prompts or elevates) to drop this terminal's cached ticket. The only real package
 # manager queries are read-only: pacman -Q (T4's run and T20 (d)), pacman -Qlq (T20 (d)), and pacman
-# -Si (T20 (b0)). REQUIRE_ALL=1 turns T3's skip (no way to fake root here) into a failure.
+# -Si (T20 (b0)). REQUIRE_ALL=1 turns the skips of T3 and T26b's fake-root cases (no way to fake root
+# here) into failures.
 # RUN_FEDORA=1 adds T33 (see T33), which pulls the fedora:44 image into the user's podman storage (it
 # stays after the run) and installs packages only inside a throwaway container.
 # shellcheck source-path=SCRIPTDIR/..
@@ -421,6 +422,12 @@ tar -C "$TMP/T25-src" -czf "$TMP/T25-nvim.tar.gz" nvim-linux
 # T26's nvim (T22 runs it too): it prints version $T26_VERSION
 T26_BIN="$TMP/bin-T26"
 add_stub "$T26_BIN" nvim t26-nvim
+# T26's PATH dir for the cases with no nvim on PATH: the real tools those cases need, head and sed
+# (get_nvim_version), cat (the install dir's nvim stub), and find (the install dir's ownership check)
+T26_NO_NVIM_BIN="$TMP/bin-T26-no-nvim"
+for tool in head sed cat find; do
+  add_link "$T26_NO_NVIM_BIN" "$tool" "$(type -P "$tool")"
+done
 
 # T36's rpm: it answers rpm -q and rpm -q --whatprovides, as Fedora's rpm does, for the packages in
 # $T36_INSTALLED
@@ -481,6 +488,27 @@ if command -v python3 >/dev/null 2>&1; then
 elif [[ -z "$INHERITED_TRAPS" ]]; then
   INT_RC=130 TERM_RC=143 SIGNAL_NOTE=" (signal death not checked: python3 missing)"
 fi
+
+# The wrappers that report EUID 0 here without real root (T3, T26b), each a command line to split with
+# read -ra: fakeroot, and unshare -r when this kernel lets an unprivileged user map itself to root in a
+# user namespace. With none, those tests report it through report_no_fake_root.
+FAKE_ROOT_WRAPPERS=()
+if command -v fakeroot >/dev/null 2>&1; then
+  FAKE_ROOT_WRAPPERS+=(fakeroot)
+fi
+if command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
+  FAKE_ROOT_WRAPPERS+=("unshare -r")
+fi
+# Reports test $1, which needs a wrapper in FAKE_ROOT_WRAPPERS when there is none: a skip, or a failure
+# under REQUIRE_ALL=1
+report_no_fake_root() {
+  local no_wrapper="neither fakeroot nor unshare -r works here"
+  if [[ "${REQUIRE_ALL:-0}" == 1 ]]; then
+    result "$1" 1 "$no_wrapper, and REQUIRE_ALL=1 forbids skipping"
+  else
+    echo "SKIP $1 ($no_wrapper)"
+  fi
+}
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -589,19 +617,11 @@ for unwanted in 'dnf' 'pacman -Syu' 'NOT REACHED'; do
 done
 expect_none T2d-best-effort-plan-screen "$t2_fail"
 
-# T3: root guard, under every wrapper that reports EUID 0 here: fakeroot, and unshare -r when this
-# kernel lets an unprivileged user map itself to root in a user namespace. With REQUIRE_ALL=1, having
-# neither fails instead of skipping.
-t3_wrappers=()
-if command -v fakeroot >/dev/null 2>&1; then
-  t3_wrappers+=(fakeroot)
-fi
-if command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
-  t3_wrappers+=("unshare -r")
-fi
-if [[ ${#t3_wrappers[@]} -gt 0 ]]; then
+# T3: root guard, under every wrapper that reports EUID 0 here (FAKE_ROOT_WRAPPERS: fakeroot, and
+# unshare -r when the kernel allows it). With REQUIRE_ALL=1, having neither fails instead of skipping.
+if [[ ${#FAKE_ROOT_WRAPPERS[@]} -gt 0 ]]; then
   t3_fail=""
-  for wrapper in "${t3_wrappers[@]}"; do
+  for wrapper in "${FAKE_ROOT_WRAPPERS[@]}"; do
     read -ra wrapper_cmd <<<"$wrapper"
     out="$( (
       sandbox T3 ""
@@ -611,12 +631,10 @@ if [[ ${#t3_wrappers[@]} -gt 0 ]]; then
     [[ $rc -eq 1 ]] && grep -qF "Do not run this script as root" <<<"$out" \
       || t3_fail+="[$wrapper: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
   done
-  t3_ran="$(printf '%s, ' "${t3_wrappers[@]}")"
+  t3_ran="$(printf '%s, ' "${FAKE_ROOT_WRAPPERS[@]}")"
   expect_none "T3-root-guard (${t3_ran%, })" "$t3_fail"
-elif [[ "${REQUIRE_ALL:-0}" == 1 ]]; then
-  result T3-root-guard 1 "neither fakeroot nor unshare -r works here, and REQUIRE_ALL=1 forbids skipping"
 else
-  echo "SKIP T3-root-guard (neither fakeroot nor unshare -r works here)"
+  report_no_fake_root T3-root-guard
 fi
 
 # T4 (RUN_FULL=1, Arch only): runs the real script end to end on this machine. First the suite runs
@@ -1552,7 +1570,9 @@ result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 # (install_pkgs stubbed) gives (b)'s packages, and for apt-get (warn_manual stubbed, and the TypeScript
 # check, which T24 covers) (a)'s binaries; install_deps (a Wayland display), install_clipboard again (an
 # X11 display only), and install_neovim (pkg_install stubbed to fail, and the tarball fallback stubbed)
-# give (c)'s packages. (a) compares in byte order, as Lua's table.sort sorts.
+# give (c)'s packages. The collection runs a copy of the script whose NVIM_INSTALL_DIR is a scratch
+# path with no nvim, so a host's /opt/nvim/bin/nvim never stands in for the neovim package (T26). (a)
+# compares in byte order, as Lua's table.sort sorts.
 t20_xdg="$TMP/T20-xdg"
 mkdir -p "$t20_xdg/config" "$t20_xdg/data" "$t20_xdg/state" "$t20_xdg/cache" "$t20_xdg/tmp"
 t20_servers="$( (
@@ -1569,7 +1589,7 @@ if [[ $t20_nvim_rc -eq 0 ]]; then
 fi
 out="$( (
   sandbox T20-collect ""
-  load_script
+  load_script_with "$TMP/T20-collect/script/nvim-install.sh" NVIM_INSTALL_DIR "$TMP/T20-collect/opt-nvim"
   must_override install_pkgs
   must_override warn_manual
   must_override has_system_typescript
@@ -1679,12 +1699,13 @@ fi
 # stand-in for the server it replaces after it; and the README's dnf command under Requirements starts
 # with the option that turns weak dependencies off (the script's dnf installs do the same) and names
 # exactly the packages the script installs on dnf (collected as for pacman: install_deps with a Wayland
-# display, install_clipboard with X11, and install_neovim), except xclip. The dnf collection runs in its
-# own subshell with fixed tags: install_pkgs prints DNF_SERVER_PKG during install_language_servers and
-# DNF_PKG afterwards, warn_manual prints DNF_MANUAL, and warn prints DNF_WARN, so manual steps and
-# warnings never land in a package list; the TypeScript check is stubbed as in the pacman collection (T24
-# covers it). The server names come from system-servers.lua: `system keys` (the names) and `fallbacks`
-# (name, replaced server, command).
+# display, install_clipboard with X11, and install_neovim, on a copy of the script with a scratch
+# NVIM_INSTALL_DIR), except xclip. The dnf collection runs in its own subshell with fixed tags:
+# install_pkgs prints DNF_SERVER_PKG during install_language_servers and DNF_PKG afterwards,
+# warn_manual prints DNF_MANUAL, and warn prints DNF_WARN, so manual steps and warnings never land in a
+# package list; the TypeScript check is stubbed as in the pacman collection (T24 covers it). The
+# server names come from system-servers.lua: `system keys` (the names) and `fallbacks` (name, replaced
+# server, command).
 # Prints system-servers.lua's lines for its arguments ($1 = table, optional $2 = keys)
 t20_inventory() {
   (
@@ -1699,7 +1720,7 @@ mapfile -t t20_system_keys < <(t20_inventory system keys | sed '/^$/d')
 mapfile -t t20_fallbacks < <(t20_inventory fallbacks | sed '/^$/d')
 out="$( (
   sandbox T20-dnf-collect ""
-  load_script
+  load_script_with "$TMP/T20-dnf-collect/script/nvim-install.sh" NVIM_INSTALL_DIR "$TMP/T20-dnf-collect/opt-nvim"
   must_override install_pkgs
   must_override warn_manual
   must_override warn
@@ -2102,16 +2123,46 @@ done
 
 # T26: install_neovim keeps a new enough nvim; otherwise it installs the neovim package and checks the
 # version again: new enough is done, still too old falls back to the tarball, and so does a failed
-# package install. nvim is a stub (T26_BIN), first on PATH, that prints version $T26_VERSION;
+# package install. When PATH has no nvim, or only one older than MIN_NVIM_VERSION, a new enough nvim in
+# NVIM_INSTALL_DIR/bin counts as installed too, when only root can write that tree: an earlier tarball
+# install can leave its nvim only there (the /usr/local/bin link failed, or neither it nor setup_path's
+# shell config entry is in effect for this run). Then nothing is installed, and NEED_PATH_SETUP is set,
+# so setup_path's shell config entry puts that dir first on PATH in new shells, not in this run. An
+# older nvim there, a broken one (it fails --version), a tree that is not root-owned (with a warning
+# that says so), or none leaves the flow as it was, and a new enough nvim on PATH wins over the install
+# dir. Each case runs a copy of the script whose NVIM_INSTALL_DIR is a scratch dir, so a host's
+# /opt/nvim never counts. The cases that need a root-owned tree override is_root_owned_tree to succeed,
+# so the flow cases run on every host, with or without a fake-root wrapper; T26b checks the real
+# function, on root-owned trees under one. The not-root-owned case runs the real check on the sandbox
+# tree, which the user owns, and the install dir's nvim must not run there: the ownership check comes
+# before its version is read. The PATH nvim is a stub (T26_BIN), first on PATH, that prints version
+# $T26_VERSION, or PATH has none (T26_NO_NVIM_BIN, then DENY_BIN); the install dir's nvim is a stub that
+# prints version $T26_INSTALL_DIR_VERSION and creates the file $T26_INSTALL_DIR_RAN whenever it runs.
 # pkg_install (which prints its arguments, then fails or sets the version the package left) and
-# install_neovim_tarball (which prints TARBALL) are overridden.
-# $1 = case id, $2 = nvim's version, $3 = the version after the package install, or fail
+# install_neovim_tarball (which prints TARBALL) are overridden. No case may hit a missing command.
+# $1 = case id, $2 = the PATH nvim's version, or none; $3 = the install dir nvim's version, none, or
+# broken; $4 = root (is_root_owned_tree overridden to succeed), user (the real check), or "-" (no
+# install dir nvim, so no check runs); $5 = the version after the package install, or fail
 t26_case() {
   (
     sandbox "T26-$1" "$T26_BIN"
-    load_script
+    t26_install_dir="$TMP/T26-$1/opt-nvim" t26_ran_marker="$TMP/T26-$1/install-dir-nvim-ran"
+    load_script_with "$TMP/T26-$1/script/nvim-install.sh" NVIM_INSTALL_DIR "$t26_install_dir"
     set_pkg_manager pacman
-    T26_VERSION="$2" T26_AFTER="$3"
+    if [[ "$4" == root ]]; then
+      must_override is_root_owned_tree
+      # shellcheck disable=SC2329  # install_neovim calls it
+      is_root_owned_tree() { return 0; }
+    fi
+    if [[ "$3" != none ]]; then
+      add_stub "$t26_install_dir/bin" nvim t26-install-dir-nvim
+      T26_INSTALL_DIR_VERSION="$3" T26_INSTALL_DIR_RAN="$t26_ran_marker"
+      export T26_INSTALL_DIR_VERSION T26_INSTALL_DIR_RAN
+    fi
+    if [[ "$2" == none ]]; then
+      PATH="$T26_NO_NVIM_BIN:$DENY_BIN"
+    fi
+    T26_VERSION="$2" T26_AFTER="$5"
     export T26_VERSION
     must_override pkg_install
     must_override install_neovim_tarball
@@ -2125,18 +2176,46 @@ t26_case() {
     install_neovim_tarball() { echo TARBALL; }
     install_neovim
     echo "METHOD=$NVIM_INSTALL_METHOD"
+    # shellcheck disable=SC2031  # install_neovim, in the script sourced into this subshell, sets it
+    echo "NEED_PATH_SETUP=$NEED_PATH_SETUP"
+    if [[ -e "$t26_ran_marker" ]]; then
+      echo "INSTALL_DIR_NVIM_RAN=yes"
+    else
+      echo "INSTALL_DIR_NVIM_RAN=no"
+    fi
     echo DONE
   ) </dev/null 2>&1
 }
-# Case id, version before, version after (or fail), whether pkg_install neovim runs, whether the
-# tarball runs, and the install method when it does not
-for tc in "current:0.12.0:-:no:no:existing" "old-package-new:0.11.4:0.12.6:yes:no:pacman" \
-  "old-package-old:0.11.4:0.11.5:yes:yes:" "package-fails:0.11.4:fail:yes:yes:"; do
-  IFS=: read -r id before after want_pkg want_tarball want_method <<<"$tc"
-  out="$(t26_case "$id" "$before" "$after")"
+# Case id, the PATH nvim's version (or none), the install dir nvim's version (or none, or broken), the
+# install dir's ownership check (root, user, or "-"), the version after the package install (or fail,
+# or "-" when it never runs), whether pkg_install neovim runs, whether the tarball runs, the install
+# method when it does not (or "-"), and NEED_PATH_SETUP afterwards
+t26_not_reused="Not reusing the nvim in"
+t26_not_reused_why="something in it is not owned by root, or is writable by group or others; installing Neovim instead"
+for tc in "current:0.12.0:none:-:-:no:no:existing:false" \
+  "old-package-new:0.11.4:none:-:0.12.6:yes:no:pacman:false" \
+  "old-package-old:0.11.4:none:-:0.11.5:yes:yes:-:false" \
+  "package-fails:0.11.4:none:-:fail:yes:yes:-:false" \
+  "no-nvim:none:none:-:fail:yes:yes:-:false" \
+  "install-dir-only:none:0.12.6:root:fail:no:no:existing:true" \
+  "old-path-install-dir-new:0.11.4:0.12.6:root:fail:no:no:existing:true" \
+  "old-path-install-dir-old:0.11.4:0.11.6:root:0.11.5:yes:yes:-:false" \
+  "install-dir-broken:none:broken:root:fail:yes:yes:-:false" \
+  "install-dir-not-root-owned:none:0.12.6:user:fail:yes:yes:-:false" \
+  "new-path-install-dir-new:0.12.0:0.12.6:root:-:no:no:existing:false"; do
+  IFS=: read -r id before install_dir tree after want_pkg want_tarball want_method want_path_setup <<<"$tc"
+  out="$(t26_case "$id" "$before" "$install_dir" "$tree" "$after")"
   rc=$?
   problems=""
   done_ok $rc "$out" || problems+="[rc=$rc] "
+  ! grep -qF 'command not found' <<<"$out" || problems+="[a command was not found] "
+  if [[ "$tree" == user ]]; then
+    grep -qF "$t26_not_reused $TMP/T26-$id/opt-nvim: $t26_not_reused_why" <<<"$out" \
+      || problems+="[no warning that the install dir is not reused] "
+    grep -qxF "INSTALL_DIR_NVIM_RAN=no" <<<"$out" || problems+="[the install dir's nvim ran before the ownership check] "
+  else
+    ! grep -qF "$t26_not_reused" <<<"$out" || problems+="[warned that the install dir is not reused] "
+  fi
   if [[ "$want_pkg" == yes ]]; then
     [[ "$(grep -c '^PKG_INSTALL' <<<"$out")" -eq 1 ]] && grep -qxF "PKG_INSTALL neovim" <<<"$out" \
       || problems+="[want one pkg_install neovim] "
@@ -2149,9 +2228,93 @@ for tc in "current:0.12.0:-:no:no:existing" "old-package-new:0.11.4:0.12.6:yes:n
     ! grep -qxF TARBALL <<<"$out" || problems+="[tarball fallback ran] "
     grep -qxF "METHOD=$want_method" <<<"$out" || problems+="[want install method $want_method] "
   fi
-  [[ -z "$problems" ]] || problems+="; $(tail -n4 <<<"$out" | tr '\n' ' ')"
+  grep -qxF "NEED_PATH_SETUP=$want_path_setup" <<<"$out" || problems+="[want NEED_PATH_SETUP=$want_path_setup] "
+  [[ -z "$problems" ]] || problems+="; $(tail -n5 <<<"$out" | tr '\n' ' ')"
   expect_none "T26-install-neovim $id" "$problems"
 done
+
+# T26b: is_root_owned_tree, which install_neovim asks before it reuses NVIM_INSTALL_DIR, fails on a tree
+# the user owns, on a symlink to one (the check follows it, as the nvim lookup and PATH do, instead of
+# skipping it as a symlink), and on a path find cannot read (a missing one): find's error, with nothing
+# printed, must not pass for a clean tree. Under each wrapper in FAKE_ROOT_WRAPPERS, a bash that sources
+# the script makes a tree root-owned with no group or other write, as the tarball install leaves it (a
+# chown that fakeroot fakes, or that unshare -r's mapping already makes true), with a symlink inside:
+# the check passes on that clean tree, and fails once one file is group writable or one dir is other
+# writable. Without a wrapper, those cases skip, or fail under REQUIRE_ALL=1 (report_no_fake_root).
+t26b_fail=""
+for id in user-owned symlinked missing; do
+  out="$( (
+    sandbox "T26b-$id" ""
+    load_script
+    t26b_tree="$TMP/T26b-$id/tree"
+    case "$id" in
+      user-owned)
+        mkdir -p "$t26b_tree/bin"
+        printf '#!/bin/sh\n' >"$t26b_tree/bin/nvim"
+        ;;
+      symlinked)
+        mkdir -p "$TMP/T26b-$id/target/bin"
+        printf '#!/bin/sh\n' >"$TMP/T26b-$id/target/bin/nvim"
+        ln -s target "$t26b_tree"
+        ;;
+    esac
+    if is_root_owned_tree "$t26b_tree"; then
+      echo "found root-owned"
+    else
+      echo "found not root-owned"
+    fi
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" && grep -qxF "found not root-owned" <<<"$out" && ! grep -qF 'command not found' <<<"$out" \
+    || t26b_fail+="[$id: want not root-owned, got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T26b-root-owned-tree "$t26b_fail"
+# Run by bash under a fake-root wrapper, with the script under test as $1, the tree as $2, and the case
+# as $3: makes the tree root-owned with no group or other write, opens the write bit the case names, and
+# prints what is_root_owned_tree finds. The sourced script's errexit stops it, with no DONE, when a step
+# fails.
+# shellcheck disable=SC2016  # expanded by the bash that runs it, not here
+t26b_fake_root_check='source "$1"
+chown -R 0:0 "$2"
+chmod -R go-w "$2"
+case "$3" in
+  group-writable-file) chmod g+w "$2/bin/nvim" ;;
+  other-writable-dir) chmod o+w "$2/share" ;;
+esac
+if is_root_owned_tree "$2"; then
+  echo "found root-owned"
+else
+  echo "found not root-owned"
+fi
+echo DONE'
+if [[ ${#FAKE_ROOT_WRAPPERS[@]} -gt 0 ]]; then
+  t26b_fail=""
+  for wrapper in "${FAKE_ROOT_WRAPPERS[@]}"; do
+    read -ra wrapper_cmd <<<"$wrapper"
+    for id in clean group-writable-file other-writable-dir; do
+      case "$id" in
+        clean) want="root-owned" ;;
+        *) want="not root-owned" ;;
+      esac
+      out="$( (
+        sandbox "T26b-${wrapper_cmd[0]}-$id" ""
+        require_sandbox_home "$TMP" T26b
+        t26b_tree="$TMP/T26b-${wrapper_cmd[0]}-$id/tree"
+        mkdir -p "$t26b_tree/bin" "$t26b_tree/share"
+        printf '#!/bin/sh\n' >"$t26b_tree/bin/nvim"
+        printf 'runtime\n' >"$t26b_tree/share/runtime.txt"
+        ln -s nvim "$t26b_tree/bin/vi"
+        "${wrapper_cmd[@]}" bash -c "$t26b_fake_root_check" bash "$SCRIPT" "$t26b_tree" "$id"
+      ) </dev/null 2>&1)"
+      done_ok $? "$out" && grep -qxF "found $want" <<<"$out" \
+        || t26b_fail+="[$wrapper $id: want $want, got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+    done
+  done
+  t26b_ran="$(printf '%s, ' "${FAKE_ROOT_WRAPPERS[@]}")"
+  expect_none "T26b-root-owned-tree-fake-root (${t26b_ran%, })" "$t26b_fail"
+else
+  report_no_fake_root T26b-root-owned-tree-fake-root
+fi
 
 # T27: main runs whenever the script is executed rather than sourced: from a string, as
 # bash -c "$(curl ...)" runs it, and from standard input, as curl ... | bash does (here bash -s with
