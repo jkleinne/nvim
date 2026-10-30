@@ -432,32 +432,64 @@ install_neovim_tarball() {
   NVIM_INSTALL_METHOD="tarball"
 }
 
-# Succeeds when only root can write the tree at $1: every entry (symlinks aside, whose own mode is always
-# rwxrwxrwx) is owned by uid 0 with no group or other write bit, as the tarball install leaves it. That
-# tree's bin may go first on PATH, where a file another account can write could shadow commands such as
-# sudo. -H follows $1 itself when it is a symlink, as the nvim lookup and PATH do. A find error (an
-# unreadable entry, or no tree) counts as not root-owned. GNU find and BusyBox's find (with the features
-# Alpine builds in) both take every option used here, -H included.
-is_root_owned_tree() {
+# Succeeds when each dir given (one or more absolute paths with no symlink in them, as readlink -f prints
+# them) is owned by uid 0 with no group or other write bit, so only root can rename, remove, or replace
+# what it holds. Fails on a find error, and with no dir given, since find would check the current dir
+# instead. A sticky dir (such as /tmp, mode 1777) gets no exception, though unlink(2) and rename(2) do
+# not let another account remove or replace a root-owned entry there: OpenSSH's check of the dirs above
+# a file (safe_path) makes none either, and neither /opt nor / is sticky on a standard layout, so
+# refusing costs no more than a fresh install.
+are_root_only_dirs() {
   local first_offender
-  first_offender="$(find -H "$1" ! -type l \( ! -user 0 -o -perm /go=w \) -print -quit)" || return 1
+  if [[ $# -eq 0 ]]; then
+    return 1
+  fi
+  first_offender="$(find "$@" -maxdepth 0 \( ! -user 0 -o -perm /go=w \) -print -quit)" || return 1
+  [[ -z "$first_offender" ]]
+}
+
+# Succeeds when only root can change the tree at $1, as the tarball install leaves it, or the dirs above
+# it. That tree's bin may go first on PATH, where a file another account could write or put in place
+# could shadow commands such as sudo. $1 is resolved first, as the nvim lookup and PATH resolve it, with
+# readlink -f (GNU coreutils and BusyBox both take it with --, which BusyBox's realpath does not). Each
+# dir above the resolved path, up to /, must pass are_root_only_dirs, and every entry of the tree must be
+# owned by uid 0 with no group or other write bit. find -L checks each symlink in the tree through to its
+# target and descends a linked dir, so no link can lead to a file or dir another account can write. A
+# broken link (the only kind find -L reports as -type l) fails, since its target, which may lie outside
+# the tree, could later appear with anyone's contents. Any readlink or find error (a link loop, an
+# unreadable entry, or no tree) counts as not root-owned. Not checked: the dirs above a link's target
+# outside the tree, and a dir that holds a symlink on the way to the tree unless it is also above the
+# resolved path (/opt, when /opt/nvim is itself a link). GNU find and BusyBox's find (with the features
+# Alpine builds in) both take every option used here, -L and -maxdepth included.
+is_root_owned_tree() {
+  local tree dir first_offender
+  local parent_dirs=()
+  tree="$(readlink -f -- "$1")" || return 1
+  dir="${tree%/*}"
+  while [[ -n "$dir" ]]; do
+    parent_dirs+=("$dir")
+    dir="${dir%/*}"
+  done
+  parent_dirs+=(/)
+  are_root_only_dirs "${parent_dirs[@]}" || return 1
+  first_offender="$(find -L "$tree" \( -type l -o ! -user 0 -o -perm /go=w \) -print -quit)" || return 1
   [[ -z "$first_offender" ]]
 }
 
 # An earlier tarball install can leave its nvim only in $NVIM_INSTALL_DIR/bin: the $NVIM_LINK_DIR link
 # failed, or neither the link nor setup_path's shell config entry is in effect for this run. Succeeds,
 # after recording the reuse (the install method, and NEED_PATH_SETUP), when a new enough nvim is there
-# and only root can write the tree, which is checked before that nvim runs; fails otherwise (with a
-# warning when the tree is not root-owned), so install_neovim installs. The version is read inside the
-# condition, where errexit does not apply, so a binary there that fails --version falls through to the
-# install instead of ending the run.
+# and only root can change the tree or the dirs above it (is_root_owned_tree), which is checked before
+# that nvim runs; fails otherwise (with a warning when the check fails), so install_neovim installs. The
+# version is read inside the condition, where errexit does not apply, so a binary there that fails
+# --version falls through to the install instead of ending the run.
 reuse_install_dir_nvim() {
   local install_dir_nvim="$NVIM_INSTALL_DIR/bin/nvim" install_dir_version
   if [[ ! -x "$install_dir_nvim" ]]; then
     return 1
   fi
   if ! is_root_owned_tree "$NVIM_INSTALL_DIR"; then
-    warn "Not reusing the nvim in $NVIM_INSTALL_DIR: something in it is not owned by root, or is writable by group or others; installing Neovim instead"
+    warn "Not reusing the nvim in $NVIM_INSTALL_DIR: something in it, or a directory above it, is not owned by root, is writable by group or others, or is a broken link; installing Neovim instead"
     return 1
   fi
   if ! install_dir_version="$(get_nvim_version "$install_dir_nvim")" \

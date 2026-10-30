@@ -433,9 +433,10 @@ tar -C "$TMP/T25-src" -czf "$TMP/T25-nvim.tar.gz" nvim-linux
 T26_BIN="$TMP/bin-T26"
 add_stub "$T26_BIN" nvim t26-nvim
 # T26's PATH dir for the cases with no nvim on PATH: the real tools those cases need, head and sed
-# (get_nvim_version), cat (the install dir's nvim stub), and find (the install dir's ownership check)
+# (get_nvim_version), cat (the install dir's nvim stub), and readlink and find (the install dir's
+# ownership check)
 T26_NO_NVIM_BIN="$TMP/bin-T26-no-nvim"
-for tool in head sed cat find; do
+for tool in head sed cat readlink find; do
   add_link "$T26_NO_NVIM_BIN" "$tool" "$(type -P "$tool")"
 done
 
@@ -2276,7 +2277,7 @@ t26_case() {
 # put_install_dir_first_on_path (unchanged, or install-dir: the install dir's bin first, then PATH as it
 # was)
 t26_not_reused="Not reusing the nvim in"
-t26_not_reused_why="something in it is not owned by root, or is writable by group or others; installing Neovim instead"
+t26_not_reused_why="something in it, or a directory above it, is not owned by root, is writable by group or others, or is a broken link; installing Neovim instead"
 for tc in "current:0.12.0:none:-:-:no:no:existing:false:unchanged" \
   "old-package-new:0.11.4:none:-:0.12.6:yes:no:pacman:false:unchanged" \
   "old-package-old:0.11.4:none:-:0.11.5:yes:yes:-:false:unchanged" \
@@ -2392,19 +2393,35 @@ for t26d_need in false true; do
 done
 expect_none T26d-install-dir-path-step "$t26d_fail"
 
-# T26b: is_root_owned_tree, which install_neovim asks before it reuses NVIM_INSTALL_DIR, fails on a tree
-# the user owns, on a symlink to one (the check follows it, as the nvim lookup and PATH do, instead of
-# skipping it as a symlink), and on a path find cannot read (a missing one): find's error, with nothing
-# printed, must not pass for a clean tree. Under each wrapper in FAKE_ROOT_WRAPPERS, a bash that sources
-# the script makes a tree root-owned with no group or other write, as the tarball install leaves it (a
-# chown that fakeroot fakes, or that unshare -r's mapping already makes true), with a symlink inside:
-# the check passes on that clean tree, and fails once one file is group writable or one dir is other
-# writable. Without a wrapper, those cases skip, or fail under REQUIRE_ALL=1 (report_no_fake_root).
+# T26b: is_root_owned_tree, which install_neovim asks before it reuses NVIM_INSTALL_DIR, and
+# are_root_only_dirs, which is_root_owned_tree asks about each dir above the tree. Each tree case but
+# writable-parent replaces are_root_only_dirs with one that prints each dir it is asked about
+# (PARENT_DIR <dir>) and succeeds, so the case tests the tree itself. Without a wrapper,
+# is_root_owned_tree fails on a tree the user owns, on a symlink to one (the check resolves it, as the
+# nvim lookup and PATH do, instead of skipping it as a symlink), and on a path find cannot read (a
+# missing one): find's error, with nothing printed, must not pass for a clean tree; are_root_only_dirs
+# fails on a dir the user owns, and with no dir at all, even from /, which find would check instead.
+# Under each wrapper in FAKE_ROOT_WRAPPERS, a bash that sources the script makes a tree root-owned with
+# no group or other write, as the tarball install leaves it (a chown that fakeroot fakes, or that
+# unshare -r's mapping already makes true), with a symlink to a file inside it. The check passes on that
+# clean tree, on one with a link to a root-owned dir outside it, and on a link to the tree, where the
+# dirs it asks about are those above the link's target, up to /. It fails once one file is group
+# writable or one dir is other writable, on a link to a root-owned dir outside the tree that others can
+# write (find follows it there), on a broken link, on a link loop, and, with the real
+# are_root_only_dirs, on the clean tree once the dir that holds it is other writable. That case opens a
+# bit on a dir of its own because what the real dirs above $TMP show depends on the wrapper: fakeroot
+# reports every file it has not faked as root's, and unshare -r shows the real root's files as the
+# overflow uid. The parents cases run the real are_root_only_dirs on three dirs the test makes
+# root-owned: it passes on them, and fails once one is group writable, or world writable with the
+# sticky bit. Without a wrapper, those cases skip, or fail under REQUIRE_ALL=1 (report_no_fake_root).
 t26b_fail=""
 for id in user-owned symlinked missing; do
   out="$( (
     sandbox "T26b-$id" ""
     load_script
+    must_override are_root_only_dirs
+    # shellcheck disable=SC2329  # is_root_owned_tree calls it
+    are_root_only_dirs() { return 0; }
     t26b_tree="$TMP/T26b-$id/tree"
     case "$id" in
       user-owned)
@@ -2428,45 +2445,133 @@ for id in user-owned symlinked missing; do
     || t26b_fail+="[$id: want not root-owned, got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
 done
 expect_none T26b-root-owned-tree "$t26b_fail"
-# Run by bash under a fake-root wrapper, with the script under test as $1, the tree as $2, and the case
-# as $3: makes the tree root-owned with no group or other write, opens the write bit the case names, and
-# prints what is_root_owned_tree finds. The sourced script's errexit stops it, with no DONE, when a step
-# fails.
+t26b_fail=""
+for id in user-owned-dir no-dir; do
+  out="$( (
+    sandbox "T26b-$id" ""
+    load_script
+    t26b_dirs=()
+    case "$id" in
+      user-owned-dir)
+        mkdir -p "$TMP/T26b-$id/dir"
+        t26b_dirs=("$TMP/T26b-$id/dir")
+        ;;
+      no-dir) cd / || exit 1 ;;
+    esac
+    if are_root_only_dirs "${t26b_dirs[@]}"; then
+      echo "found root-only"
+    else
+      echo "found not root-only"
+    fi
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" && grep -qxF "found not root-only" <<<"$out" && ! grep -qF 'command not found' <<<"$out" \
+    || t26b_fail+="[$id: want not root-only, got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T26b-root-only-dirs "$t26b_fail"
+# Run by bash under a fake-root wrapper, with the script under test as $1, tests/lib/common.sh as $2, the
+# case dir as $3, and the case as $4. A parents case makes $3/chain and the dirs a and a/b in it
+# root-owned with no group or other write, opens the bits the case names on $3/chain/a, and prints what
+# are_root_only_dirs finds for the three. A tree case makes $3/tree (and $3/shared, which a link in the
+# tree may name) root-owned with no group or other write, opens the write bit the case names (on $3
+# itself for writable-parent), and prints what is_root_owned_tree finds for the tree, or for
+# $3/links/nvim, a link to it. The sourced script's errexit stops it, with no DONE, when a step fails.
 # shellcheck disable=SC2016  # expanded by the bash that runs it, not here
 t26b_fake_root_check='source "$1"
-chown -R 0:0 "$2"
-chmod -R go-w "$2"
-case "$3" in
-  group-writable-file) chmod g+w "$2/bin/nvim" ;;
-  other-writable-dir) chmod o+w "$2/share" ;;
+source "$2"
+make_root_only() {
+  chown -R 0:0 "$1"
+  chmod -R go-w "$1"
+}
+case "$4" in
+  parents-*)
+    make_root_only "$3/chain"
+    case "$4" in
+      parents-group-writable) chmod g+w "$3/chain/a" ;;
+      parents-sticky) chmod 1777 "$3/chain/a" ;;
+    esac
+    if are_root_only_dirs "$3/chain/a/b" "$3/chain/a" "$3/chain"; then
+      echo "found root-owned"
+    else
+      echo "found not root-owned"
+    fi
+    echo DONE
+    exit
+    ;;
 esac
-if is_root_owned_tree "$2"; then
+make_root_only "$3/tree"
+checked="$3/tree"
+case "$4" in
+  group-writable-file) chmod g+w "$3/tree/bin/nvim" ;;
+  other-writable-dir) chmod o+w "$3/tree/share" ;;
+  linked-root-owned-dir) make_root_only "$3/shared" ;;
+  linked-writable-dir)
+    make_root_only "$3/shared"
+    chmod 0777 "$3/shared"
+    ;;
+  linked-tree) checked="$3/links/nvim" ;;
+  writable-parent) chmod o+w "$3" ;;
+esac
+if [[ "$4" != writable-parent ]]; then
+  must_override are_root_only_dirs
+  are_root_only_dirs() { printf "PARENT_DIR %s\n" "$@"; }
+fi
+if is_root_owned_tree "$checked"; then
   echo "found root-owned"
 else
   echo "found not root-owned"
 fi
 echo DONE'
+# Prints PARENT_DIR <dir> for each dir above $1 (which must exist), resolved, up to /, sorted
+t26b_parent_dirs() {
+  local dir
+  dir="$(readlink -f -- "$1")" || return 1
+  while [[ "$dir" != / ]]; do
+    dir="$(dirname -- "$dir")"
+    printf 'PARENT_DIR %s\n' "$dir"
+  done | sort
+}
 if [[ ${#FAKE_ROOT_WRAPPERS[@]} -gt 0 ]]; then
   t26b_fail=""
   for wrapper in "${FAKE_ROOT_WRAPPERS[@]}"; do
     read -ra wrapper_cmd <<<"$wrapper"
-    for id in clean group-writable-file other-writable-dir; do
+    for id in clean linked-root-owned-dir linked-tree group-writable-file other-writable-dir linked-writable-dir \
+      dangling-link link-loop writable-parent parents-clean parents-group-writable parents-sticky; do
       case "$id" in
-        clean) want="root-owned" ;;
+        clean | linked-root-owned-dir | linked-tree | parents-clean) want="root-owned" ;;
         *) want="not root-owned" ;;
       esac
+      t26b_case="$TMP/T26b-${wrapper_cmd[0]}-$id"
       out="$( (
         sandbox "T26b-${wrapper_cmd[0]}-$id" ""
         require_sandbox_home "$TMP" T26b
-        t26b_tree="$TMP/T26b-${wrapper_cmd[0]}-$id/tree"
+        t26b_tree="$t26b_case/tree"
         mkdir -p "$t26b_tree/bin" "$t26b_tree/share"
         printf '#!/bin/sh\n' >"$t26b_tree/bin/nvim"
         printf 'runtime\n' >"$t26b_tree/share/runtime.txt"
         ln -s nvim "$t26b_tree/bin/vi"
-        "${wrapper_cmd[@]}" bash -c "$t26b_fake_root_check" bash "$SCRIPT" "$t26b_tree" "$id"
+        case "$id" in
+          parents-*) mkdir -p "$t26b_case/chain/a/b" ;;
+          linked-root-owned-dir | linked-writable-dir)
+            mkdir -p "$t26b_case/shared"
+            printf 'lib\n' >"$t26b_case/shared/lib.txt"
+            ln -s ../shared "$t26b_tree/lib"
+            ;;
+          dangling-link) ln -s missing "$t26b_tree/share/old" ;;
+          link-loop) ln -s .. "$t26b_tree/share/loop" ;;
+          linked-tree)
+            mkdir -p "$t26b_case/links"
+            ln -s ../tree "$t26b_case/links/nvim"
+            ;;
+        esac
+        "${wrapper_cmd[@]}" bash -c "$t26b_fake_root_check" bash "$SCRIPT" "$LIB/common.sh" "$t26b_case" "$id"
       ) </dev/null 2>&1)"
-      done_ok $? "$out" && grep -qxF "found $want" <<<"$out" \
+      done_ok $? "$out" && grep -qxF "found $want" <<<"$out" && ! grep -qF 'command not found' <<<"$out" \
         || t26b_fail+="[$wrapper $id: want $want, got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+      if [[ "$id" == linked-tree ]] \
+        && [[ "$(grep '^PARENT_DIR ' <<<"$out" | sort)" != "$(t26b_parent_dirs "$t26b_case/tree")" ]]; then
+        t26b_fail+="[$wrapper $id: want the dirs above the link's target, up to /, got: $(grep '^PARENT_DIR ' <<<"$out" | tr '\n' ' ')] "
+      fi
     done
   done
   t26b_ran="$(printf '%s, ' "${FAKE_ROOT_WRAPPERS[@]}")"
