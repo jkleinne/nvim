@@ -49,14 +49,15 @@ return {
     local servers = require "lsp_gates.servers"
     local typescript = require "lsp_gates.typescript"
     local terraform_trust = require "lsp_gates.terraform_trust"
+    local fallbacks = require "lsp_gates.fallbacks"
 
     -- Each config run (for example :Lazy reload) starts a new session: the gates' notices show again
     terraform_trust.reset()
     typescript.reset()
 
-    -- lsp.lua alone decides whether a system server or a fallback runs. mason-lspconfig would otherwise
-    -- enable any Mason-installed copy by name with lspconfig's defaults, skipping the gates below; Mason
-    -- puts its bin dir first on PATH, so a Mason-only copy still runs through the gated loop.
+    -- Only lsp.lua enables a system server or a fallback. mason-lspconfig would otherwise enable any
+    -- Mason-installed copy by name with lspconfig's defaults, skipping the gates below; Mason puts its
+    -- bin dir first on PATH, so a Mason-only copy still runs through the gated loop.
     local never_start = vim.list_extend(vim.list_extend({}, servers.retired), servers.never)
     local not_auto_enabled = vim.tbl_keys(servers.system)
     vim.list_extend(not_auto_enabled, vim.tbl_keys(servers.fallbacks))
@@ -173,6 +174,12 @@ return {
       vim.lsp.config(server, { root_dir = function() end })
     end
 
+    -- The one check of whether a server's command can run, for the system servers and the fallbacks:
+    -- binary is the command's first word, and a bare name is looked up on PATH
+    local function is_executable(binary)
+      return vim.fn.executable(binary) == 1
+    end
+
     -- Configuration and activation are separate. Every system server gets its list cmd, so an
     -- explicit :lsp enable <name> for one of them never falls back to a repo's node_modules/.bin
     -- (Neovim refuses a list cmd whose binary is missing and logs it in lsp.log; nothing spawns). A
@@ -188,26 +195,22 @@ return {
     for server, cmd in pairs(servers.system) do
       vim.lsp.config(server, { cmd = cmd })
       local gate = activation_gates[server]
-      if vim.fn.executable(cmd[1]) == 1 and (gate == nil or gate()) then
+      if is_executable(cmd[1]) and (gate == nil or gate()) then
         table.insert(enable, server)
       end
     end
 
-    -- A fallback (servers.fallbacks) stands in for a system server a distro does not package. Like the
-    -- system servers it always gets its list cmd, and it is enabled only when its command is executable
-    -- and the server it replaces did not make the list above. The gate reads the primary's enable
-    -- result, not PATH: what matters is whether the primary will run. A primary that is present but
-    -- gated off lets its fallback run; one that is enabled never runs beside its fallback. A fallback
-    -- that is not chosen is disabled: vim.lsp.enable only adds names, so after :Lazy reload one that an
-    -- earlier run enabled would stay enabled (and keep running) beside a primary that has since appeared.
+    -- A fallback (servers.fallbacks) stands in for a system server a distro does not package.
+    -- lsp_gates.fallbacks chooses which ones run, from the list above. Like the system servers, every
+    -- fallback gets its list cmd, chosen or not. The chosen ones join the list; the rest are disabled:
+    -- vim.lsp.enable only adds names, so after :Lazy reload one that an earlier run enabled would stay
+    -- enabled (and keep running) beside a primary that has since appeared.
+    local chosen, passed_over = fallbacks.choose(servers.fallbacks, enable, is_executable)
     for name, spec in pairs(servers.fallbacks) do
       vim.lsp.config(name, { cmd = spec.cmd })
-      if vim.fn.executable(spec.cmd[1]) == 1 and not vim.list_contains(enable, spec.replaces) then
-        table.insert(enable, name)
-      else
-        vim.lsp.enable(name, false)
-      end
     end
+    vim.list_extend(enable, chosen)
+    vim.lsp.enable(passed_over, false)
 
     local mason_lspconfig = require "mason-lspconfig"
 

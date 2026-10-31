@@ -813,9 +813,11 @@ case("L3-system-servers-absent", function()
   end
 end)
 
--- F1 to F6: a fallback (servers.fallbacks) stands in for a system server a distro does not package.
+-- F1 to F7i: a fallback (servers.fallbacks) stands in for a system server a distro does not package.
 -- pylsp, Fedora's stand-in for pyright, is enabled only when its command is on PATH and pyright is not
 -- enabled, always gets its list cmd, and runs with settings that keep it from running a project's code.
+-- F1 to F6 check this through lsp.lua. F7 to F7i call the choice itself (lsp_gates.fallbacks) with
+-- literal tables and a fake executable predicate, so they need no stub commands on PATH.
 -- F1: pylsp on PATH and pyright absent enables pylsp
 case("F1-fallback-enabled-without-primary", function()
   vim.env.PATH = bins.pylsp
@@ -913,6 +915,149 @@ case("F6-fallback-disabled-on-reload", function()
   want(problems, vim.lsp.is_enabled "pyright", "second run: pyright not enabled")
   want(problems, not vim.lsp.is_enabled "pylsp", "second run: pylsp still enabled")
   return joined(problems)
+end)
+
+-- An executable predicate for lsp_gates.fallbacks.choose that calls exactly the named commands
+-- executable, whatever PATH holds
+local function executable_among(commands)
+  return function(binary)
+    return vim.list_contains(commands, binary)
+  end
+end
+
+-- Problems unless lsp_gates.fallbacks.choose, given run.fallbacks, run.enabled, and a predicate that
+-- calls run.executable's commands executable, returns run.chosen and run.passed_over. The module is
+-- required here, in a case, so a missing one fails these cases instead of stopping the run.
+local function choice_problems(run)
+  local fallbacks = require "lsp_gates.fallbacks"
+  local chosen, passed_over = fallbacks.choose(run.fallbacks, run.enabled, executable_among(run.executable))
+  local problems = {}
+  want(problems, vim.deep_equal(chosen, run.chosen), "chosen " .. show(chosen))
+  want(problems, vim.deep_equal(passed_over, run.passed_over), "passed over " .. show(passed_over))
+  return problems
+end
+
+-- F7: a fallback whose command is executable and whose primary is not enabled is chosen; another
+-- enabled server does not count, and PATH (an empty dir here) plays no part
+case("F7-choose-runnable-fallback", function()
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } },
+    enabled = { "bashls" },
+    executable = { "pylsp" },
+    chosen = { "pylsp" },
+    passed_over = {},
+  })
+end)
+
+-- F7b: an enabled primary never runs beside its fallback, even with the fallback's command executable
+case("F7b-choose-passes-over-when-primary-enabled", function()
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } },
+    enabled = { "bashls", "pyright" },
+    executable = { "pylsp" },
+    chosen = {},
+    passed_over = { "pylsp" },
+  })
+end)
+
+-- F7c: a fallback whose command is not executable is passed over, even with its primary not enabled
+case("F7c-choose-passes-over-when-not-executable", function()
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } },
+    enabled = {},
+    executable = { "pyright-langserver" },
+    chosen = {},
+    passed_over = { "pylsp" },
+  })
+end)
+
+-- F7d: with several fallbacks both lists are sorted, whatever order pairs visits them in
+case("F7d-choose-sorts-both-lists", function()
+  return joined(choice_problems {
+    fallbacks = {
+      zeta_ls = { replaces = "pyright", cmd = { "zeta_ls" } },
+      omega_ls = { replaces = "bashls", cmd = { "omega_ls" } },
+      gamma_ls = { replaces = "yamlls", cmd = { "gamma_ls" } },
+      mid_ls = { replaces = "ts_ls", cmd = { "mid_ls" } },
+      beta_ls = { replaces = "jsonls", cmd = { "beta_ls" } },
+      alpha_ls = { replaces = "dockerls", cmd = { "alpha_ls" } },
+    },
+    enabled = { "pyright", "jsonls" },
+    executable = { "zeta_ls", "omega_ls", "mid_ls", "beta_ls", "alpha_ls" },
+    chosen = { "alpha_ls", "mid_ls", "omega_ls" },
+    passed_over = { "beta_ls", "gamma_ls", "zeta_ls" },
+  })
+end)
+
+-- F7e: no fallbacks gives two empty lists
+case("F7e-choose-empty-fallbacks", function()
+  return joined(choice_problems {
+    fallbacks = {},
+    enabled = { "pyright" },
+    executable = { "pylsp" },
+    chosen = {},
+    passed_over = {},
+  })
+end)
+
+-- F7f: choose changes neither the fallbacks table nor the enabled list (lsp.lua adds the chosen
+-- names to its own list afterwards)
+case("F7f-choose-leaves-inputs-unchanged", function()
+  local run = {
+    fallbacks = {
+      pylsp = { replaces = "pyright", cmd = { "pylsp" } },
+      other_ls = { replaces = "bashls", cmd = { "other-server" } },
+    },
+    enabled = { "bashls" },
+    executable = { "pylsp", "other-server" },
+    chosen = { "pylsp" },
+    passed_over = { "other_ls" },
+  }
+  local fallbacks_before, enabled_before = vim.deepcopy(run.fallbacks), vim.deepcopy(run.enabled)
+  local problems = choice_problems(run)
+  want(problems, vim.deep_equal(run.fallbacks, fallbacks_before), "fallbacks now " .. show(run.fallbacks))
+  want(problems, vim.deep_equal(run.enabled, enabled_before), "enabled now " .. show(run.enabled))
+  return joined(problems)
+end)
+
+-- F7g: only the predicate says what is executable: with pylsp on PATH and pyright not enabled, a
+-- predicate that calls nothing executable passes pylsp over
+case("F7g-choose-ignores-path", function()
+  vim.env.PATH = bins.pylsp
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } },
+    enabled = {},
+    executable = {},
+    chosen = {},
+    passed_over = { "pylsp" },
+  })
+end)
+
+-- F7h: the predicate is asked about the first word of a fallback's command, never the server's name
+-- or the whole command: a fallback whose name alone is executable is passed over
+case("F7h-choose-checks-the-command-binary", function()
+  return joined(choice_problems {
+    fallbacks = {
+      other_ls = { replaces = "pyright", cmd = { "other-server", "--stdio" } },
+      plain_ls = { replaces = "bashls", cmd = { "plain-server" } },
+    },
+    enabled = {},
+    executable = { "other-server", "plain_ls" },
+    chosen = { "other_ls" },
+    passed_over = { "plain_ls" },
+  })
+end)
+
+-- F7i: a primary that is no server at all (named in no inventory) counts as not enabled, as an absent
+-- one does
+case("F7i-choose-treats-unknown-primary-as-absent", function()
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "unknown_ls", cmd = { "pylsp" } } },
+    enabled = { "bashls", "pyright" },
+    executable = { "pylsp" },
+    chosen = { "pylsp" },
+    passed_over = {},
+  })
 end)
 
 -- L4: ts_ls needs a system TypeScript package, so it never loads a repo's node_modules/typescript

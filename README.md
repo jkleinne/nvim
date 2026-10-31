@@ -185,7 +185,7 @@ The configuration files are organized as follows:
 ```
 ~/.config/nvim/
 ├── lua/                   # Lua configuration directory
-│   ├── lsp_gates/         # Server list, TypeScript and terraform-ls trust checks used by plugins/lsp.lua
+│   ├── lsp_gates/         # Server list, fallback choice, TypeScript and terraform-ls trust checks used by plugins/lsp.lua
 │   ├── plugins/           # Individual plugin configurations
 │   │   ├── lsp.lua
 │   │   ├── telescope.lua
