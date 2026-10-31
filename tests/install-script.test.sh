@@ -1964,16 +1964,20 @@ done
 
 # T22f: print_summary says what the mode skipped, and why NVIM_INSTALL_DIR/bin goes on PATH. A sourced
 # case per mode and install method, with T26's stub nvim (version 0.12.0) first on PATH and
-# NEED_PATH_SETUP true, as after a tarball install that could not link nvim into /usr/local/bin
+# NEED_PATH_SETUP true, as after a tarball install that could not link nvim into NVIM_LINK_DIR
 # (tarball) or a reuse of the install dir's nvim, which PATH did not reach first (reused): packages-only
 # shows the title, the config line, the PATH note with that cause (setup_path did not run, so nothing
 # was added yet), and the closing line that asks for the full run; the full run shows its own title,
 # PATH updated with that cause, and the Mason line, and none of the packages-only texts (the bare word
 # is not checked: the config path in the output sits under the suite's temp dir, whose name could
-# contain it). Neither shows the other method's cause.
-t22f_cause_tarball='nvim could not be linked into /usr/local/bin'
-t22f_cause_reused='the reused nvim was not first on PATH'
+# contain it). Neither shows the other method's cause. The test reads both dirs from the script, so the
+# texts it expects follow the script's constants.
 t22f_fail=""
+t22f_link_dir="$(script_constant NVIM_LINK_DIR)" || t22f_fail+="[the script sets no NVIM_LINK_DIR] "
+t22f_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22f_fail+="[the script sets no NVIM_INSTALL_DIR] "
+t22f_bin_dir_ere="$(ere_escape "$t22f_install_dir/bin")"
+t22f_cause_tarball="nvim could not be linked into $(ere_escape "$t22f_link_dir")"
+t22f_cause_reused='the reused nvim was not first on PATH'
 for mode in true false; do
   for method in tarball reused; do
     out="$( (
@@ -1994,12 +1998,12 @@ for mode in true false; do
     fi
     if [[ "$mode" == true ]]; then
       t22f_wanted=('Neovim Packages Installed' 'Config: +not cloned \(packages-only\)'
-        "PATH: +$t22f_cause; the full run adds /opt/nvim/bin to your shell config"
+        "PATH: +$t22f_cause; the full run adds $t22f_bin_dir_ere to your shell config"
         'Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config\.')
       t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Mason installs' "$t22f_other_cause")
     else
       t22f_wanted=('Neovim Bootstrap Complete'
-        "PATH updated: +yes, /opt/nvim/bin first, as $t22f_cause \\(restart shell to apply\\)"
+        "PATH updated: +yes, $t22f_bin_dir_ere first, as $t22f_cause \\(restart shell to apply\\)"
         'Open a file in nvim once so Mason installs its language servers\.')
       t22f_unwanted=('Packages Installed' 'not cloned \(packages-only\)' 'without --packages-only' 'PATH: '
         "$t22f_other_cause")
