@@ -147,9 +147,18 @@ return {
     -- table reaches pylsp as the JSON array []. Preloading is off too: pylsp imports dozens of
     -- libraries (numpy, pandas, scipy) into its own process at startup. That one is an init_option, not
     -- a setting: pylsp runs the preload hook during initialize, before the client's settings arrive in
-    -- didChangeConfiguration, so only init_options can turn it off.
+    -- didChangeConfiguration, so only init_options can turn it off. Signature formatting is off as well:
+    -- pylsp formats the signatures in its hover and completion replies by running `<python> -m black`
+    -- (or ruff) from Neovim's cwd, where a repo's black.py would run in its place. It is set in
+    -- init_options too, so it holds before the settings arrive, and it is false rather than vim.NIL
+    -- because pylsp's merge skips a null and keeps the default.
     vim.lsp.config("pylsp", {
-      init_options = { pylsp = { plugins = { preload = { enabled = false } } } },
+      init_options = {
+        pylsp = {
+          plugins = { preload = { enabled = false } },
+          signature = { formatter = false },
+        },
+      },
       settings = {
         pylsp = {
           plugins = {
@@ -162,6 +171,7 @@ return {
             ruff = { enabled = false },
             black = { enabled = false },
           },
+          signature = { formatter = false },
         },
       },
     })

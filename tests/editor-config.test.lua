@@ -853,8 +853,10 @@ end)
 -- F4: pylsp's jedi runs only the system interpreter (never an active venv's), imports no module for
 -- completion (the default list is { "numpy" }; the empty Lua table must reach pylsp as the JSON array
 -- []), the linters and formatters pylsp bundles and the add-ons Fedora packages for it (ruff, black)
--- are off (ruff and black do that work through nvim-lint and conform), and its import preloading is
--- off through init_options (pylsp decides that at initialize, before the settings arrive)
+-- are off (ruff and black do that work through nvim-lint and conform), its import preloading is off
+-- through init_options (pylsp decides that at initialize, before the settings arrive), and its
+-- signature formatting is off in both the settings and init_options (pylsp runs the formatter as
+-- `<python> -m black` from Neovim's cwd, so a repo's black.py there would run in its place)
 case("F4-pylsp-settings", function()
   load_spec "lsp"
   local config = vim.lsp.config.pylsp or {}
@@ -874,6 +876,10 @@ case("F4-pylsp-settings", function()
   end
   local preload = vim.tbl_get(config, "init_options", "pylsp", "plugins", "preload", "enabled")
   want(problems, preload == false, "init_options preload.enabled " .. show(preload))
+  local formatter = vim.tbl_get(config, "settings", "pylsp", "signature", "formatter")
+  want(problems, formatter == false, "signature.formatter " .. show(formatter))
+  local init_formatter = vim.tbl_get(config, "init_options", "pylsp", "signature", "formatter")
+  want(problems, init_formatter == false, "init_options signature.formatter " .. show(init_formatter))
   return joined(problems)
 end)
 
