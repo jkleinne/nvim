@@ -1993,6 +1993,27 @@ for tc in "true:true" "false:true" "true:false" "false:false"; do
 done
 expect_none T22g-verify-nvim-not-found "$t22g_fail"
 
+# T22i: verify_nvim, with an nvim on PATH that fails --version (T26's stub, with version broken), exits
+# 1 with one error line that names that nvim and the command that shows why, instead of ending the run
+# with no message
+out="$( (
+  sandbox T22i-verify-nvim-unusable "$T26_BIN"
+  load_script
+  T26_VERSION=broken
+  export T26_VERSION
+  run_errexit verify_nvim
+  echo "inner rc=$RC"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+t22i_fail=""
+done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" || t22i_fail+="[want exit 1: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+grep -qxF "  x Neovim at $T26_BIN/nvim failed to report its version; run '$T26_BIN/nvim --version' to see why." <<<"$out" \
+  || t22i_fail+="[no error naming the nvim on PATH] "
+t22i_errors="$(grep -c '^  x ' <<<"$out")"
+[[ "$t22i_errors" -eq 1 ]] || t22i_fail+="[$t22i_errors error lines, want 1: $(grep '^  x ' <<<"$out" | tr '\n' ';')] "
+expect_none T22i-verify-nvim-unusable "$t22i_fail"
+
 # T23: a run that stops on an error after the script took a sudo ticket still drops it. A driver
 # (tests/lib/driver-T23.sh) runs main, so main's own EXIT trap is the one under test, with install_deps
 # taking a ticket through ensure_sudo_ticket and then running a required install that fails against
@@ -2187,34 +2208,37 @@ done
 
 # T26: install_neovim keeps a new enough nvim; otherwise it installs the neovim package and checks the
 # version again: new enough is done, still too old falls back to the tarball, and so does a failed
-# package install. When PATH has no nvim, or only one older than MIN_NVIM_VERSION, a new enough nvim in
-# NVIM_INSTALL_DIR/bin is reused, when only root can write that tree: an earlier tarball install can
-# leave its nvim only there (the /usr/local/bin link failed, or neither it nor setup_path's shell config
-# entry is in effect for this run). Then nothing is installed, the install method is reused, and
-# NEED_PATH_SETUP is set. An older nvim there, a broken one (it fails --version), a tree that is not
-# root-owned (with a warning that says so), or none leaves the flow as it was, and a new enough nvim on
-# PATH wins over the install dir. install_neovim never changes PATH: each case then runs
-# put_install_dir_first_on_path, as main does after the privileged phase, which puts the dir's bin first
-# on PATH after a reuse and leaves PATH as it was otherwise, and setup_path's shell config entry (not run
-# here) does the same in new shells. Whenever the tarball does not run (here it is overridden, and
-# installs nothing), verify_nvim then passes in the same process. Each case runs a
-# copy of the script whose NVIM_INSTALL_DIR is a scratch dir, so a host's /opt/nvim never counts. The
-# cases that need a root-owned tree override is_root_owned_tree to succeed, so the flow cases run on
-# every host, with or without a fake-root wrapper; T26b checks the real function, on root-owned trees
-# under one. The not-root-owned case runs the real check on the sandbox tree, which the user owns, and
-# the install dir's nvim must not run there: the ownership check comes before its version is read. The
-# PATH nvim is a stub (T26_BIN), first on PATH, that prints version $T26_VERSION, or PATH has none
-# (T26_NO_NVIM_BIN, then DENY_BIN); the install dir's nvim is a stub that prints version
-# $T26_INSTALL_DIR_VERSION and creates the file $T26_INSTALL_DIR_RAN whenever it runs. pkg_install
-# (which prints its arguments, then fails or sets the version the package left) and
+# package install. A PATH nvim that fails --version (an AppImage on a host without FUSE, or a broken
+# version manager shim) is unusable: install_neovim warns, naming it, and goes on as it does past one
+# that is too old, both before the package install and after it (then to the tarball), instead of
+# ending the run. When PATH has no nvim, or only one that is older than MIN_NVIM_VERSION or unusable, a
+# new enough nvim in NVIM_INSTALL_DIR/bin is reused, when only root can write that tree: an earlier
+# tarball install can leave its nvim only there (the /usr/local/bin link failed, or neither it nor
+# setup_path's shell config entry is in effect for this run). Then nothing is installed, the install
+# method is reused, and NEED_PATH_SETUP is set. An older nvim there, a broken one (it fails --version),
+# a tree that is not root-owned (with a warning that says so), or none leaves the flow as it was, and a
+# new enough nvim on PATH wins over the install dir. install_neovim never changes PATH: each case then
+# runs put_install_dir_first_on_path, as main does after the privileged phase, which puts the dir's bin
+# first on PATH after a reuse and leaves PATH as it was otherwise, and setup_path's shell config entry
+# (not run here) does the same in new shells. Whenever the tarball does not run (here it is overridden,
+# and installs nothing), verify_nvim then passes in the same process. Each case runs a copy of the
+# script whose NVIM_INSTALL_DIR is a scratch dir, so a host's /opt/nvim never counts. The cases that
+# need a root-owned tree override is_root_owned_tree to succeed, so the flow cases run on every host,
+# with or without a fake-root wrapper; T26b checks the real function, on root-owned trees under one.
+# The not-root-owned case runs the real check on the sandbox tree, which the user owns, and the install
+# dir's nvim must not run there: the ownership check comes before its version is read. The PATH nvim is
+# a stub (T26_BIN), first on PATH, that prints version $T26_VERSION (or, when that is broken, fails
+# --version), or PATH has none (T26_NO_NVIM_BIN, then DENY_BIN); the install dir's nvim is a stub that
+# prints version $T26_INSTALL_DIR_VERSION and creates the file $T26_INSTALL_DIR_RAN whenever it runs.
+# pkg_install (which prints its arguments, then fails or sets the version the package left) and
 # install_neovim_tarball (which prints TARBALL) are overridden. No case may hit a missing command.
 #
 # Sets up T26 case $1 in the calling subshell: a sandbox, and a sourced copy of the script whose
 # NVIM_INSTALL_DIR is $t26_install_dir (set here, with $t26_ran_marker), with the PATH nvim, the install
-# dir's nvim, its ownership check, and the overrides as $2 to $5 say. $2 = the PATH nvim's version, or
-# none; $3 = the install dir nvim's version, none, or broken; $4 = root (is_root_owned_tree overridden
-# to succeed), user (the real check), or "-" (no install dir nvim, so no check runs); $5 = the version
-# after the package install, or fail
+# dir's nvim, its ownership check, and the overrides as $2 to $5 say. $2 = the PATH nvim's version,
+# none, or broken; $3 = the install dir nvim's version, none, or broken; $4 = root (is_root_owned_tree
+# overridden to succeed), user (the real check), or "-" (no install dir nvim, so no check runs); $5 =
+# the version after the package install, broken, or fail
 t26_load() {
   sandbox "T26-$1" "$T26_BIN"
   t26_install_dir="$TMP/T26-$1/opt-nvim" t26_ran_marker="$TMP/T26-$1/install-dir-nvim-ran"
@@ -2270,14 +2294,17 @@ t26_case() {
     echo DONE
   ) </dev/null 2>&1
 }
-# Case id, the PATH nvim's version (or none), the install dir nvim's version (or none, or broken), the
-# install dir's ownership check (root, user, or "-"), the version after the package install (or fail,
-# or "-" when it never runs), whether pkg_install neovim runs, whether the tarball runs, the install
-# method when it does not (or "-"), NEED_PATH_SETUP afterwards, and PATH after
+# Case id, the PATH nvim's version (or none, or broken), the install dir nvim's version (or none, or
+# broken), the install dir's ownership check (root, user, or "-"), the version after the package install
+# (or broken, or fail, or "-" when it never runs), whether pkg_install neovim runs, whether the tarball
+# runs, the install method when it does not (or "-"), NEED_PATH_SETUP afterwards, and PATH after
 # put_install_dir_first_on_path (unchanged, or install-dir: the install dir's bin first, then PATH as it
-# was)
+# was). A broken PATH nvim, before or after the package install, must come with its warning line, and
+# any other case with neither.
 t26_not_reused="Not reusing the nvim in"
 t26_not_reused_why="something in it, or a directory above it, is not owned by root, is writable by group or others, or is a broken link; installing Neovim instead"
+t26_path_unusable="  ! Neovim at $T26_BIN/nvim failed to report its version; treating it as unusable."
+t26_package_unusable="  ! Package manager installed Neovim, but $T26_BIN/nvim failed to report its version."
 for tc in "current:0.12.0:none:-:-:no:no:existing:false:unchanged" \
   "old-package-new:0.11.4:none:-:0.12.6:yes:no:pacman:false:unchanged" \
   "old-package-old:0.11.4:none:-:0.11.5:yes:yes:-:false:unchanged" \
@@ -2288,7 +2315,10 @@ for tc in "current:0.12.0:none:-:-:no:no:existing:false:unchanged" \
   "old-path-install-dir-old:0.11.4:0.11.6:root:0.11.5:yes:yes:-:false:unchanged" \
   "install-dir-broken:none:broken:root:fail:yes:yes:-:false:unchanged" \
   "install-dir-not-root-owned:none:0.12.6:user:fail:yes:yes:-:false:unchanged" \
-  "new-path-install-dir-new:0.12.0:0.12.6:root:-:no:no:existing:false:unchanged"; do
+  "new-path-install-dir-new:0.12.0:0.12.6:root:-:no:no:existing:false:unchanged" \
+  "broken-path-package-new:broken:none:-:0.12.6:yes:no:pacman:false:unchanged" \
+  "broken-path-install-dir-new:broken:0.12.6:root:fail:no:no:reused:true:install-dir" \
+  "old-path-package-broken:0.11.4:none:-:broken:yes:yes:-:false:unchanged"; do
   IFS=: read -r id before install_dir tree after want_pkg want_tarball want_method want_path_setup want_path <<<"$tc"
   out="$(t26_case "$id" "$before" "$install_dir" "$tree" "$after")"
   rc=$?
@@ -2301,6 +2331,16 @@ for tc in "current:0.12.0:none:-:-:no:no:existing:false:unchanged" \
     grep -qxF "INSTALL_DIR_NVIM_RAN=no" <<<"$out" || problems+="[the install dir's nvim ran before the ownership check] "
   else
     ! grep -qF "$t26_not_reused" <<<"$out" || problems+="[warned that the install dir is not reused] "
+  fi
+  if [[ "$before" == broken ]]; then
+    grep -qxF "$t26_path_unusable" <<<"$out" || problems+="[no warning that the PATH nvim is unusable] "
+  else
+    ! grep -qxF "$t26_path_unusable" <<<"$out" || problems+="[warned that the PATH nvim is unusable] "
+  fi
+  if [[ "$after" == broken ]]; then
+    grep -qxF "$t26_package_unusable" <<<"$out" || problems+="[no warning that the package's nvim is unusable] "
+  else
+    ! grep -qxF "$t26_package_unusable" <<<"$out" || problems+="[warned that the package's nvim is unusable] "
   fi
   if [[ "$want_pkg" == yes ]]; then
     [[ "$(grep -c '^PKG_INSTALL' <<<"$out")" -eq 1 ]] && grep -qxF "PKG_INSTALL neovim" <<<"$out" \

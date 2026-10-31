@@ -502,19 +502,24 @@ reuse_install_dir_nvim() {
 }
 
 # Tries, in order: a new enough nvim on PATH, the one an earlier tarball install left in
-# $NVIM_INSTALL_DIR, the package manager's, and the release tarball
+# $NVIM_INSTALL_DIR, the package manager's, and the release tarball. The nvim on PATH has its version
+# read inside a condition, before and after the package install, where errexit does not apply, so one
+# that fails --version (an AppImage on a host without FUSE, or a broken version manager shim) is passed
+# over with a warning that names it, as one that is too old is, instead of ending the run.
 install_neovim() {
   section "Neovim"
 
   if command -v nvim >/dev/null 2>&1; then
     local current_version
-    current_version="$(get_nvim_version)"
-    if version_gte "$current_version" "$MIN_NVIM_VERSION"; then
+    if ! current_version="$(get_nvim_version)"; then
+      warn "Neovim at $(command -v nvim) failed to report its version; treating it as unusable."
+    elif version_gte "$current_version" "$MIN_NVIM_VERSION"; then
       success "Neovim $current_version already installed (>= $MIN_NVIM_VERSION)"
       NVIM_INSTALL_METHOD="existing"
       return
+    else
+      warn "Neovim $current_version found, but $MIN_NVIM_VERSION+ is required."
     fi
-    warn "Neovim $current_version found, but $MIN_NVIM_VERSION+ is required."
   fi
 
   if reuse_install_dir_nvim; then
@@ -524,13 +529,15 @@ install_neovim() {
   info "Installing Neovim via $PKG_MGR..."
   if pkg_install neovim; then
     local pkg_version
-    pkg_version="$(get_nvim_version)"
-    if version_gte "$pkg_version" "$MIN_NVIM_VERSION"; then
+    if ! pkg_version="$(get_nvim_version)"; then
+      warn "Package manager installed Neovim, but $(command -v nvim || echo nvim) failed to report its version."
+    elif version_gte "$pkg_version" "$MIN_NVIM_VERSION"; then
       success "Neovim $pkg_version installed via $PKG_MGR"
       NVIM_INSTALL_METHOD="$PKG_MGR"
       return
+    else
+      warn "Package manager installed Neovim $pkg_version, but $MIN_NVIM_VERSION+ is required."
     fi
-    warn "Package manager installed Neovim $pkg_version, but $MIN_NVIM_VERSION+ is required."
   else
     warn "Package manager install failed. Falling back to GitHub release."
   fi
@@ -1209,17 +1216,22 @@ setup_path() {
 # Verification and summary
 # ---------------------------------------------------------------------------
 
-# Both modes: nvim is on PATH and new enough; otherwise the run stops
+# Both modes: nvim is on PATH, reports its version, and is new enough; otherwise the run stops. The
+# version is read inside a condition, as install_neovim reads it, so an nvim that fails --version stops
+# the run with an error that names it, not with no message.
 verify_nvim() {
   section "Verification"
 
-  if ! command -v nvim >/dev/null 2>&1; then
+  local nvim_path installed_version
+  if ! nvim_path="$(command -v nvim)"; then
     error "nvim not found on PATH after installation."
     exit 1
   fi
 
-  local installed_version
-  installed_version="$(get_nvim_version)"
+  if ! installed_version="$(get_nvim_version)"; then
+    error "Neovim at $nvim_path failed to report its version; run '$nvim_path --version' to see why."
+    exit 1
+  fi
   if ! version_gte "$installed_version" "$MIN_NVIM_VERSION"; then
     error "Neovim $installed_version is installed, but $MIN_NVIM_VERSION+ is required."
     exit 1
