@@ -537,9 +537,9 @@ else
   result T1-static $?
 fi
 
-# T2: the plan screen names the platform and, on pacman, the upfront system upgrade; "n" cancels
-# cleanly (exit 0), and end of input (no terminal to answer from, as in a piped run) stops the run with
-# exit 1 and says why
+# T2: the plan screen names the platform and, on pacman, the upfront system upgrade, with no tier notice
+# (pacman is first-class); "n" cancels cleanly (exit 0), and end of input (no terminal to answer from, as
+# in a piped run) stops the run with exit 1 and says why
 if [[ "$host_mgr" != pacman ]]; then
   echo "SKIP T2-plan-screen (the script detects '${host_mgr:-nothing}' here, not pacman)"
 else
@@ -558,10 +558,11 @@ else
     '0\. Upgrade the system first \(pacman -Syu' '1\. Install Neovim 0\.12\+' 'Cancelled\.'; do
     grep -qE "$want" <<<"$out" || absent+="[$want] "
   done
-  [[ $rc -eq 0 && -z "$absent" && $eof_rc -eq 1 ]] \
+  tier_notice="$(grep -m1 -E ' is (first-class|supported|best-effort): ' <<<"$out")"
+  [[ $rc -eq 0 && -z "$absent" && -z "$tier_notice" && $eof_rc -eq 1 ]] \
     && grep -qF 'No answer (stdin is closed or not a terminal); run the script from a terminal' <<<"$eof_out" \
     && ! grep -qF 'Cancelled.' <<<"$eof_out" && ! grep -qE 'STUB .* BLOCKED' <<<"$out$eof_out"
-  result T2-plan-screen $? "rc=$rc eof_rc=$eof_rc absent=$absent; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
+  result T2-plan-screen $? "rc=$rc eof_rc=$eof_rc absent=$absent tier_notice=$tier_notice; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
 fi
 
 # Runs confirm_proceed, sourced so any host can run it, for package manager $2 and mode $3, answering "n",
@@ -612,19 +613,22 @@ done
   || t2_fail+="[packages-only: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
 expect_none T2c-packages-only-plan-screen "$t2_fail"
 
-# T2d: the plan screen for apt-get names the best-effort tier and its notice, which says the go install and
-# uv tool install fallbacks happen in the full run (packages-only stops before them), and shows no dnf text
+# T2d: the plan screen for each best-effort manager (apt-get, apk) names the best-effort tier and its
+# notice, which says the go install and uv tool install fallbacks happen in the full run (packages-only
+# stops before them), and shows no dnf text
 t2_fail=""
-out="$(t2_plan apt-get-best-effort apt-get false)"
-rc=$?
-for want in 'Support tier: +best-effort' 'Mode: +full$' \
-  'apt-get is best-effort: tools missing from its repos are installed with go install \(pinned versions\) or uv tool install \(latest upstream\) in the full run when available, otherwise listed as manual steps at the end\.' \
-  'Cancelled\.'; do
-  grep -qE "$want" <<<"$out" || t2_fail+="[apt-get: missing $want] "
-done
-[[ $rc -eq 0 ]] || t2_fail+="[apt-get: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-for unwanted in 'dnf' 'pacman -Syu' 'NOT REACHED'; do
-  ! grep -qE "$unwanted" <<<"$out" || t2_fail+="[apt-get: shows $unwanted] "
+for t2_mgr in apt-get apk; do
+  out="$(t2_plan "$t2_mgr-best-effort" "$t2_mgr" false)"
+  rc=$?
+  for want in 'Support tier: +best-effort' 'Mode: +full$' \
+    "$t2_mgr"' is best-effort: tools missing from its repos are installed with go install \(pinned versions\) or uv tool install \(latest upstream\) in the full run when available, otherwise listed as manual steps at the end\.' \
+    'Cancelled\.'; do
+    grep -qE "$want" <<<"$out" || t2_fail+="[$t2_mgr: missing $want] "
+  done
+  [[ $rc -eq 0 ]] || t2_fail+="[$t2_mgr: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  for unwanted in 'dnf' 'pacman -Syu' 'NOT REACHED'; do
+    ! grep -qE "$unwanted" <<<"$out" || t2_fail+="[$t2_mgr: shows $unwanted] "
+  done
 done
 expect_none T2d-best-effort-plan-screen "$t2_fail"
 

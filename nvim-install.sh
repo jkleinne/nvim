@@ -335,14 +335,14 @@ confirm_proceed() {
   printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
   printf '  %-18s %s\n' "Mode:" "$mode"
   printf '\n'
-  case "$PKG_TIER" in
-    first-class) ;;
-    supported)
-      info "$PKG_MGR is supported: packages come from the distro's repos; Neovim comes from the release tarball when the repo's is missing or older than $MIN_NVIM_VERSION; lazygit and lazydocker come from go install at pinned versions in the full run; tools the repos lack are listed at the end."
+  case "$PKG_MGR" in
+    pacman) ;;
+    dnf)
+      info "$PKG_MGR is $PKG_TIER: packages come from the distro's repos; Neovim comes from the release tarball when the repo's is missing or older than $MIN_NVIM_VERSION; lazygit and lazydocker come from go install at pinned versions in the full run; tools the repos lack are listed at the end."
       printf '\n'
       ;;
-    best-effort)
-      info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install (pinned versions) or uv tool install (latest upstream) in the full run when available, otherwise listed as manual steps at the end."
+    apt-get | apk)
+      info "$PKG_MGR is $PKG_TIER: tools missing from its repos are installed with go install (pinned versions) or uv tool install (latest upstream) in the full run when available, otherwise listed as manual steps at the end."
       printf '\n'
       ;;
   esac
