@@ -327,11 +327,18 @@ run_with_default_signals() {
 
 # Every stub the suite puts on PATH, as <dir>/<command>; the preflight below checks that each one wins
 STUBS=()
-# Copies the stub tests/lib/stubs/$3 into dir $1 (created when missing) as command $2, executable
-add_stub() {
+# Copies the stub tests/lib/stubs/$3 into dir $1 (created when missing) as command $2, executable, and
+# registers nothing: for a stub a test places itself after the preflight ran (an install dir's nvim, whose
+# dir only the script under test puts on PATH), where an entry in STUBS would never be checked.
+copy_stub() {
   mkdir -p "$1"
   cp "$LIB/stubs/$3" "$1/$2"
   chmod +x "$1/$2"
+}
+# Copies stub $3 into dir $1 as command $2, as copy_stub does, and adds it to STUBS, so the preflight
+# checks that it wins on PATH (for a stub the suite puts there).
+add_stub() {
+  copy_stub "$@"
   STUBS+=("$1/$2")
 }
 # Links command $2 in dir $1 (created when missing) to the file $3
@@ -2136,7 +2143,7 @@ t25_case() {
       put_install_dir_first_on_path
       echo "PATH after the step: $(path_change "$path_before" "$dir")"
       if [[ "$id" == no-symlink ]]; then
-        add_stub "$dir/bin" nvim t26-install-dir-nvim
+        copy_stub "$dir/bin" nvim t26-install-dir-nvim
         # A version no real nvim later on PATH has, so only the install dir's stub passes the check
         T26_INSTALL_DIR_VERSION=0.98.7
         export T26_INSTALL_DIR_VERSION
@@ -2260,7 +2267,7 @@ t26_load() {
     is_root_owned_tree() { return 0; }
   fi
   if [[ "$3" != none ]]; then
-    add_stub "$t26_install_dir/bin" nvim t26-install-dir-nvim
+    copy_stub "$t26_install_dir/bin" nvim t26-install-dir-nvim
     T26_INSTALL_DIR_VERSION="$3" T26_INSTALL_DIR_RAN="$t26_ran_marker"
     export T26_INSTALL_DIR_VERSION T26_INSTALL_DIR_RAN
   fi
