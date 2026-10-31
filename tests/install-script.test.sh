@@ -2521,9 +2521,11 @@ expect_none T26d-install-dir-path-step "$t26d_fail"
 # writable-parent replaces are_root_only_dirs with one that prints each dir it is asked about
 # (PARENT_DIR <dir>) and succeeds, so the case tests the tree itself. Without a wrapper,
 # is_root_owned_tree fails on a tree the user owns, on a symlink to one (the check resolves it, as the
-# nvim lookup and PATH do, instead of skipping it as a symlink), and on a path find cannot read (a
-# missing one): find's error, with nothing printed, must not pass for a clean tree; are_root_only_dirs
-# fails on a dir the user owns, and with no dir at all, even from /, which find would check instead.
+# nvim lookup and PATH do, instead of skipping it as a symlink), on a missing tree in a dir that exists
+# (readlink resolves it and find fails on it, and find's error, with nothing printed, must not pass for
+# a clean tree), and on a path whose parent dir is missing too, which readlink cannot resolve;
+# are_root_only_dirs fails on a dir the user owns, and with no dir at all, even from /, which find would
+# check instead.
 # Under each wrapper in FAKE_ROOT_WRAPPERS, a bash that sources the script makes a tree root-owned with
 # no group or other write, as the tarball install leaves it (a chown that fakeroot fakes, or that
 # unshare -r's mapping already makes true), with a symlink to a file inside it. The check passes on that
@@ -2538,7 +2540,7 @@ expect_none T26d-install-dir-path-step "$t26d_fail"
 # root-owned: it passes on them, and fails once one is group writable, or world writable with the
 # sticky bit. Without a wrapper, those cases skip, or fail under REQUIRE_ALL=1 (report_no_fake_root).
 t26b_fail=""
-for id in user-owned symlinked missing; do
+for id in user-owned symlinked missing unresolvable; do
   out="$( (
     sandbox "T26b-$id" ""
     load_script
@@ -2556,6 +2558,7 @@ for id in user-owned symlinked missing; do
         printf '#!/bin/sh\n' >"$TMP/T26b-$id/target/bin/nvim"
         ln -s target "$t26b_tree"
         ;;
+      missing) mkdir -p "${t26b_tree%/*}" ;;
     esac
     if is_root_owned_tree "$t26b_tree"; then
       echo "found root-owned"
