@@ -3214,6 +3214,58 @@ for tc in nodejs:installed ripgrep:installed not-a-package:missing; do
 done
 expect_none T36-dnf-installed-by-provides "$t36_fail"
 
+# T37: every supported package manager reaches each package step: for pacman, dnf, apt-get and apk,
+# each step of install_deps that branches on PKG_MGR (T37_STEPS) makes at least one install_pkgs or
+# warn_manual call, and the plan screen (t2_plan) has a step 2 line. A case statement runs no arm for a
+# manager its labels leave out, so that step would do nothing for that manager and nothing would say
+# so. The steps run sourced, on an empty PATH, with install_pkgs and warn_manual stubbed to log the
+# step that called them to the manager's event log, and has_system_typescript stubbed to succeed, so no
+# host command decides the outcome. A warn does not count: install_linters' hadolint hint runs for
+# every manager, whatever its arm did.
+T37_STEPS=(install_build_tools install_runtimes install_language_servers install_formatters install_linters
+  install_tui_tools)
+# Runs T37_STEPS for package manager $1, each install_pkgs or warn_manual call appending the name of
+# the step running to event_log T37-$1, and prints the steps' stderr, then DONE
+t37_case() {
+  (
+    sandbox "T37-$1" ""
+    t37_log="$(event_log "T37-$1")"
+    : >"$t37_log"
+    load_script
+    set_pkg_manager "$1"
+    must_override install_pkgs
+    must_override warn_manual
+    must_override has_system_typescript
+    # shellcheck disable=SC2329  # the steps call it
+    install_pkgs() { printf '%s\n' "$t37_running" >>"$t37_log"; }
+    # shellcheck disable=SC2329  # the steps call it
+    warn_manual() { printf '%s\n' "$t37_running" >>"$t37_log"; }
+    # shellcheck disable=SC2329  # install_language_servers calls it
+    has_system_typescript() { return 0; }
+    for t37_running in "${T37_STEPS[@]}"; do
+      PATH="$EMPTY_BIN" "$t37_running" >/dev/null
+    done
+    echo DONE
+  ) </dev/null 2>&1
+}
+t37_fail=""
+for t37_mgr in pacman dnf apt-get apk; do
+  out="$(t37_case "$t37_mgr")"
+  rc=$?
+  t37_log="$(event_log "T37-$t37_mgr")"
+  if done_ok $rc "$out"; then
+    for t37_step in "${T37_STEPS[@]}"; do
+      grep -qxF "$t37_step" "$t37_log" || t37_fail+="[$t37_mgr: $t37_step made no install or manual call] "
+    done
+  else
+    t37_fail+="[$t37_mgr: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  fi
+  out="$(t2_plan "T37-$t37_mgr" "$t37_mgr" false)"
+  grep -qE '^ +2\. Install ' <<<"$out" \
+    || t37_fail+="[$t37_mgr: no step 2 line on the plan screen: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T37-every-manager-reaches-each-step "$t37_fail"
+
 # T21 (last): no test reached a refusing DENY_BIN stub
 if [[ -e "$TMP/refused.log" ]]; then
   result T21-no-refused-calls 1 "$(tr '\n' ';' <"$TMP/refused.log")"
