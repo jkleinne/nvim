@@ -1576,14 +1576,20 @@ result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 # read-only and need no root. The server list comes from Neovim itself: tests/lib/system-servers.lua,
 # run with --clean (no config or plugins), points package.path at the repo's lua/ and requires the
 # module; t20_inventory gives each run scratch XDG dirs and TMPDIR, so it writes nothing outside $TMP.
-# The script's lists come from running it, not from parsing its source, on a PATH of DENY_BIN only,
-# with each installing function stubbed to print what it was given: install_language_servers for pacman
-# (install_pkgs stubbed) gives (b)'s packages, and for apt-get (warn_manual stubbed, and the TypeScript
-# check, which T24 covers) (a)'s binaries; install_deps (a Wayland display), install_clipboard again (an
-# X11 display only), and install_neovim (pkg_install stubbed to fail, and the tarball fallback stubbed)
-# give (c)'s packages. The collection runs a copy of the script whose NVIM_INSTALL_DIR is a scratch
-# path with no nvim, so a host's /opt/nvim/bin/nvim never stands in for the neovim package (T26). (a)
-# compares in byte order, as Lua's table.sort sorts.
+# The script's lists come from running it, not from parsing its source. t20_collect runs one
+# collection for a package manager on a PATH of DENY_BIN only, in a copy of the script whose
+# NVIM_INSTALL_DIR is a scratch path with no nvim (so a host's /opt/nvim/bin/nvim never stands in for
+# the neovim package, T26), with each installing function and warn stubbed to print what it was given,
+# each line tagged by the function: install_pkgs and pkg_install (stubbed to fail, with the tarball
+# fallback stubbed) print SERVER_PKG during install_language_servers and PKG after it, warn_manual
+# always prints MANUAL, and warn always prints WARN, so manual steps and warnings never land in a
+# package list; the TypeScript check is stubbed too (T24 covers it). Its servers case runs
+# install_language_servers only, and its all case then runs install_deps (a Wayland display),
+# install_clipboard again (an X11 display only), and install_neovim. The pacman all case gives (b)'s
+# packages (SERVER_PKG) and (c)'s (PKG), and the apt-get servers case gives (a)'s binaries (MANUAL).
+# t20_readme_command_words prints the words of a command under Requirements in the README, and
+# t20_list_diff prints the names only the script installs and the names only the README lists; (c)
+# then drops the documented exceptions. (a) compares in byte order, as Lua's table.sort sorts.
 t20_xdg="$TMP/T20-xdg"
 mkdir -p "$t20_xdg/config" "$t20_xdg/data" "$t20_xdg/state" "$t20_xdg/cache" "$t20_xdg/tmp"
 # Prints system-servers.lua's lines for its arguments (none, or $1 = table and optional $2 = keys) and
@@ -1612,48 +1618,80 @@ t20_print_tagged() {
     printf '%s %s\n' "$tag" "$item"
   done
 }
-out="$( (
-  sandbox T20-collect ""
-  load_script_with "$TMP/T20-collect/script/nvim-install.sh" NVIM_INSTALL_DIR "$TMP/T20-collect/opt-nvim"
-  must_override install_pkgs
-  must_override warn_manual
-  must_override has_system_typescript
-  must_override pkg_install
-  must_override install_neovim_tarball
-  install_pkgs() { t20_print_tagged "$T20_TAG" 2 "$@"; }
-  warn_manual() { t20_print_tagged "$T20_TAG" 0 "$@"; }
-  pkg_install() {
-    t20_print_tagged "$T20_TAG" 0 "$@"
-    return 1
-  }
-  has_system_typescript() { return 0; }
-  install_neovim_tarball() { :; }
-  PATH="$DENY_BIN"
-  set_pkg_manager pacman
-  T20_TAG=SERVER_PKG install_language_servers
-  T20_TAG=PKG
-  WAYLAND_DISPLAY=wayland-0 install_deps
-  unset WAYLAND_DISPLAY
-  DISPLAY=:0 install_clipboard
-  install_neovim
-  set_pkg_manager apt-get
-  T20_TAG=MANUAL_BIN install_language_servers
-  echo DONE
-) </dev/null 2>&1)"
-rc=$?
-mapfile -t manual_bins < <(sed -n 's/^MANUAL_BIN //p' <<<"$out" | LC_ALL=C sort)
-mapfile -t pacman_pkgs < <(sed -n 's/^SERVER_PKG //p' <<<"$out")
-mapfile -t t20_all_pkgs < <(sed -n 's/^PKG //p' <<<"$out" | sort -u)
+# Runs the collection case $2 (servers or all) for the package manager $1, in a sandbox and a copy of
+# the script of its own, and prints the tagged lines among the script's other output, then DONE; an
+# unknown case fails the collection (no DONE) instead of running another one
+t20_collect() {
+  local t20_manager="$1" t20_case="$2" t20_pkg_tag=SERVER_PKG
+  (
+    if [[ $t20_case != servers && $t20_case != all ]]; then
+      echo "t20_collect: unknown case '$t20_case' (expected servers or all)"
+      exit 1
+    fi
+    sandbox "T20-collect-$t20_manager-$t20_case" ""
+    load_script_with "$TMP/T20-collect-$t20_manager-$t20_case/script/nvim-install.sh" \
+      NVIM_INSTALL_DIR "$TMP/T20-collect-$t20_manager-$t20_case/opt-nvim"
+    must_override install_pkgs
+    must_override warn_manual
+    must_override warn
+    must_override has_system_typescript
+    must_override pkg_install
+    must_override install_neovim_tarball
+    install_pkgs() { t20_print_tagged "$t20_pkg_tag" 2 "$@"; }
+    warn_manual() { t20_print_tagged MANUAL 0 "$@"; }
+    warn() { t20_print_tagged WARN 0 "$1"; }
+    has_system_typescript() { return 0; }
+    pkg_install() {
+      t20_print_tagged "$t20_pkg_tag" 0 "$@"
+      return 1
+    }
+    install_neovim_tarball() { :; }
+    # shellcheck disable=SC2030  # the functions of the script sourced into this subshell run on it
+    PATH="$DENY_BIN"
+    set_pkg_manager "$t20_manager"
+    install_language_servers
+    if [[ $t20_case == all ]]; then
+      t20_pkg_tag=PKG
+      WAYLAND_DISPLAY=wayland-0 install_deps
+      unset WAYLAND_DISPLAY
+      DISPLAY=:0 install_clipboard
+      install_neovim
+    fi
+    echo DONE
+  ) </dev/null 2>&1
+}
+# Prints the words of the README's command $1 under Requirements, one per line, in order: what follows
+# "$1 " on the line that starts with it, and its continuation lines (each but the last ends in a
+# backslash). The command is matched as text, not as a pattern
+t20_readme_command_words() {
+  sed -n '/^## Requirements/,/^## Installation/p' "$ROOT/README.md" \
+    | awk -v prefix="$1 " 'index($0, prefix) == 1 { on = 1; $0 = substr($0, length(prefix) + 1) }
+        on { cont = sub(/\\$/, ""); printf "%s ", $0; if (!cont) exit }' \
+    | tr -s '[:space:]' '\n' | sed '/^$/d'
+}
+# Prints each name of the sorted list file $1 (the script's) that the sorted list file $2 (the
+# README's) lacks as "SCRIPT_ONLY <name>", and each name of $2 that $1 lacks as "README_ONLY <name>"
+t20_list_diff() {
+  comm -3 "$1" "$2" | awk '/^\t/ { print "README_ONLY " substr($0, 2); next } { print "SCRIPT_ONLY " $0 }'
+}
+t20_pacman_out="$(t20_collect pacman all)"
+t20_pacman_rc=$?
+t20_apt_out="$(t20_collect apt-get servers)"
+t20_apt_rc=$?
+mapfile -t manual_bins < <(sed -n 's/^MANUAL //p' <<<"$t20_apt_out" | LC_ALL=C sort)
+mapfile -t pacman_pkgs < <(sed -n 's/^SERVER_PKG //p' <<<"$t20_pacman_out")
+mapfile -t t20_all_pkgs < <(sed -n 's/^PKG //p' <<<"$t20_pacman_out" | sort -u)
+t20_pacman_command="sudo pacman -S --needed"
 # The packages of the README's pacman command, one per line, sorted
-mapfile -t readme_pkgs < <(sed -n '/^## Requirements/,/^## Installation/p' "$ROOT/README.md" \
-  | awk '/^sudo pacman -S --needed / { on = 1; sub(/^sudo pacman -S --needed /, "") }
-      on { cont = sub(/\\$/, ""); printf "%s ", $0; if (!cont) exit }' \
-  | tr -s '[:space:]' '\n' | sed '/^$/d' | sort -u)
+mapfile -t readme_pkgs < <(t20_readme_command_words "$t20_pacman_command" | sort -u)
 problems=""
 [[ $t20_nvim_rc -eq 0 ]] \
   || problems+="[nvim could not read lua/lsp_gates/servers.lua: rc=$t20_nvim_rc $(tail -n2 "$TMP/T20-nvim.err" | tr '\n' ' ')] "
 [[ ${#lsp_bins[@]} -gt 0 ]] || problems+="[no system servers found in lua/lsp_gates/servers.lua] "
-done_ok $rc "$out" || problems+="[collecting the names failed: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done_ok $t20_pacman_rc "$t20_pacman_out" \
+  || problems+="[collecting the names failed: rc=$t20_pacman_rc $(tail -n2 <<<"$t20_pacman_out" | tr '\n' ' ')] "
+done_ok $t20_apt_rc "$t20_apt_out" \
+  || problems+="[collecting the apt-get names failed: rc=$t20_apt_rc $(tail -n2 <<<"$t20_apt_out" | tr '\n' ' ')] "
 [[ "${manual_bins[*]}" == "${lsp_bins[*]}" ]] \
   || problems+="[(a) warn_manual: ${manual_bins[*]}; system servers: ${lsp_bins[*]}] "
 [[ ${#pacman_pkgs[@]} -eq ${#lsp_bins[@]} ]] \
@@ -1663,12 +1701,11 @@ for pkg in "${pacman_pkgs[@]}" wl-clipboard xclip neovim; do
   [[ " ${t20_all_pkgs[*]} " == *" $pkg "* ]] || problems+="[(c) $pkg not among the collected names] "
 done
 if [[ ${#readme_pkgs[@]} -eq 0 ]]; then
-  problems+="[(c) no 'sudo pacman -S --needed' command under Requirements in README.md] "
+  problems+="[(c) no '$t20_pacman_command' command under Requirements in README.md] "
 else
-  t20_script_only="$(comm -23 <(printf '%s\n' "${t20_all_pkgs[@]}") <(printf '%s\n' "${readme_pkgs[@]}") \
-    | grep -vxF xclip)"
-  t20_readme_only="$(comm -13 <(printf '%s\n' "${t20_all_pkgs[@]}") <(printf '%s\n' "${readme_pkgs[@]}") \
-    | grep -vxF ttf-jetbrains-mono-nerd)"
+  t20_pacman_diff="$(t20_list_diff <(printf '%s\n' "${t20_all_pkgs[@]}") <(printf '%s\n' "${readme_pkgs[@]}"))"
+  t20_script_only="$(sed -n 's/^SCRIPT_ONLY //p' <<<"$t20_pacman_diff" | grep -vxF xclip)"
+  t20_readme_only="$(sed -n 's/^README_ONLY //p' <<<"$t20_pacman_diff" | grep -vxF ttf-jetbrains-mono-nerd)"
   [[ -z "$t20_script_only" ]] || problems+="[(c) the script installs, the README does not: $(tr '\n' ' ' <<<"$t20_script_only")] "
   [[ -z "$t20_readme_only" ]] || problems+="[(c) the README lists, the script does not install: $(tr '\n' ' ' <<<"$t20_readme_only")] "
 fi
@@ -1714,62 +1751,31 @@ fi
 # system server but bash-language-server's and the replaced ones before its ";", and each fallback as the
 # stand-in for the server it replaces after it; and the README's dnf command under Requirements starts
 # with the option that turns weak dependencies off (the script's dnf installs do the same) and names
-# exactly the packages the script installs on dnf (collected as for pacman: install_deps with a Wayland
-# display, install_clipboard with X11, and install_neovim, on a copy of the script with a scratch
-# NVIM_INSTALL_DIR), except xclip. The dnf collection runs in its own subshell with fixed tags:
-# install_pkgs prints DNF_SERVER_PKG during install_language_servers and DNF_PKG afterwards,
-# warn_manual prints DNF_MANUAL, and warn prints DNF_WARN, so manual steps and warnings never land in a
-# package list; the TypeScript check is stubbed as in the pacman collection (T24 covers it). The
-# server names come from t20_inventory: `system keys` (the names) and `fallbacks` (name, replaced
-# server, command).
+# exactly the packages the script installs on dnf, except xclip. The names come from t20_collect's all
+# case for dnf, as for pacman: SERVER_PKG for the language-server packages, PKG for the rest of the
+# run's, and WARN for the warning (the MANUAL lines, the tools Fedora does not package, stay out of
+# every list). The README's words come from t20_readme_command_words, and t20_list_diff compares its
+# packages with the script's. The server names come from t20_inventory: `system keys` (the names) and
+# `fallbacks` (name, replaced server, command).
 mapfile -t t20_system_keys < <(t20_inventory system keys | sed '/^$/d')
 mapfile -t t20_fallbacks < <(t20_inventory fallbacks | sed '/^$/d')
-out="$( (
-  sandbox T20-dnf-collect ""
-  load_script_with "$TMP/T20-dnf-collect/script/nvim-install.sh" NVIM_INSTALL_DIR "$TMP/T20-dnf-collect/opt-nvim"
-  must_override install_pkgs
-  must_override warn_manual
-  must_override warn
-  must_override has_system_typescript
-  must_override pkg_install
-  must_override install_neovim_tarball
-  install_pkgs() { t20_print_tagged "$T20_DNF_TAG" 2 "$@"; }
-  warn_manual() { t20_print_tagged DNF_MANUAL 0 "$@"; }
-  warn() { printf 'DNF_WARN %s\n' "$1"; }
-  has_system_typescript() { return 0; }
-  pkg_install() {
-    t20_print_tagged "$T20_DNF_TAG" 0 "$@"
-    return 1
-  }
-  install_neovim_tarball() { :; }
-  # shellcheck disable=SC2030  # the functions of the script sourced into this subshell run on it
-  PATH="$DENY_BIN"
-  set_pkg_manager dnf
-  T20_DNF_TAG=DNF_SERVER_PKG install_language_servers
-  T20_DNF_TAG=DNF_PKG
-  WAYLAND_DISPLAY=wayland-0 install_deps
-  unset WAYLAND_DISPLAY
-  DISPLAY=:0 install_clipboard
-  install_neovim
-  echo DONE
-) </dev/null 2>&1)"
-rc=$?
-mapfile -t dnf_server_pkgs < <(sed -n 's/^DNF_SERVER_PKG //p' <<<"$out")
-mapfile -t dnf_all_pkgs < <(sed -n 's/^DNF_PKG //p' <<<"$out" | sort -u)
+t20_dnf_out="$(t20_collect dnf all)"
+t20_dnf_rc=$?
+mapfile -t dnf_server_pkgs < <(sed -n 's/^SERVER_PKG //p' <<<"$t20_dnf_out")
+mapfile -t dnf_all_pkgs < <(sed -n 's/^PKG //p' <<<"$t20_dnf_out" | sort -u)
 # install_language_servers runs twice (once directly, once inside install_deps), so the warning is
 # collected once per distinct text
-mapfile -t dnf_off_warn < <(sed -n 's/^DNF_WARN \(Fedora packages no .*\)$/\1/p' <<<"$out" | sort -u)
+mapfile -t dnf_off_warn < <(sed -n 's/^WARN \(Fedora packages no .*\)$/\1/p' <<<"$t20_dnf_out" | sort -u)
 t20_weak_deps_option="--setopt=install_weak_deps=False"
-# The words of the README's dnf command after `sudo dnf install`, one per line, in order
-mapfile -t readme_dnf_words < <(sed -n '/^## Requirements/,/^## Installation/p' "$ROOT/README.md" \
-  | awk '/^sudo dnf install / { on = 1; sub(/^sudo dnf install /, "") }
-      on { cont = sub(/\\$/, ""); printf "%s ", $0; if (!cont) exit }' \
-  | tr -s '[:space:]' '\n' | sed '/^$/d')
+t20_dnf_command="sudo dnf install"
+# The words of the README's dnf command, one per line, in order
+mapfile -t readme_dnf_words < <(t20_readme_command_words "$t20_dnf_command")
 # Its packages: the words but that option, sorted
 mapfile -t readme_dnf_pkgs < <(printf '%s\n' "${readme_dnf_words[@]}" | grep -vxF -- "$t20_weak_deps_option" \
   | sed '/^$/d' | sort -u)
 problems=""
-done_ok $rc "$out" || problems+="[collecting the dnf names failed: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done_ok $t20_dnf_rc "$t20_dnf_out" \
+  || problems+="[collecting the dnf names failed: rc=$t20_dnf_rc $(tail -n2 <<<"$t20_dnf_out" | tr '\n' ' ')] "
 [[ ${#t20_system_keys[@]} -gt 0 && ${#t20_fallbacks[@]} -gt 0 ]] \
   || problems+="[system-servers.lua gave ${#t20_system_keys[@]} system keys and ${#t20_fallbacks[@]} fallbacks: $(grep -m1 E5113 "$TMP/T20-nvim.err" || tail -n1 "$TMP/T20-nvim.err")] "
 [[ "${dnf_server_pkgs[*]}" == "nodejs-bash-language-server python3-lsp-server" ]] \
@@ -1805,13 +1811,13 @@ for pkg in "${dnf_server_pkgs[@]}" wl-clipboard xclip neovim; do
   [[ " ${dnf_all_pkgs[*]} " == *" $pkg "* ]] || problems+="[(e) $pkg not among the collected dnf names] "
 done
 if [[ ${#readme_dnf_words[@]} -eq 0 ]]; then
-  problems+="[(e) no 'sudo dnf install' command under Requirements in README.md] "
+  problems+="[(e) no '$t20_dnf_command' command under Requirements in README.md] "
 else
   [[ "${readme_dnf_words[0]}" == "$t20_weak_deps_option" ]] \
     || problems+="[(e) the README's dnf command does not turn weak dependencies off] "
-  t20_dnf_script_only="$(comm -23 <(printf '%s\n' "${dnf_all_pkgs[@]}") <(printf '%s\n' "${readme_dnf_pkgs[@]}") \
-    | grep -vxF xclip)"
-  t20_dnf_readme_only="$(comm -13 <(printf '%s\n' "${dnf_all_pkgs[@]}") <(printf '%s\n' "${readme_dnf_pkgs[@]}"))"
+  t20_dnf_diff="$(t20_list_diff <(printf '%s\n' "${dnf_all_pkgs[@]}") <(printf '%s\n' "${readme_dnf_pkgs[@]}"))"
+  t20_dnf_script_only="$(sed -n 's/^SCRIPT_ONLY //p' <<<"$t20_dnf_diff" | grep -vxF xclip)"
+  t20_dnf_readme_only="$(sed -n 's/^README_ONLY //p' <<<"$t20_dnf_diff")"
   [[ -z "$t20_dnf_script_only" ]] \
     || problems+="[(e) the script installs on dnf, the README does not: $(tr '\n' ' ' <<<"$t20_dnf_script_only")] "
   [[ -z "$t20_dnf_readme_only" ]] \
