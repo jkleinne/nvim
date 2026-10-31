@@ -1157,8 +1157,13 @@ setup_config() {
 # forget_sudo_credentials has closed the privileged phase, because as_root runs plain sudo, which
 # searches the caller's PATH unless sudoers sets secure_path: past the drop, as_root stops the run, and
 # cleanup's sudo -k runs only for a ticket still held, which the drop clears, so no root command and no
-# lookup of sudo ever searches this dir.
+# lookup of sudo ever searches this dir. Called before the drop, it stops the run, whether or not this
+# run needs the PATH change.
 put_install_dir_first_on_path() {
+  if [[ "$PRIVILEGE_CLOSED" != true ]]; then
+    error "put_install_dir_first_on_path: called before forget_sudo_credentials closed the privileged phase"
+    exit 1
+  fi
   if [[ "$NEED_PATH_SETUP" != true ]]; then
     return
   fi

@@ -2220,7 +2220,9 @@ t25_case() {
       # shellcheck disable=SC2031  # install_neovim_tarball, in the script sourced into this subshell, sets it
       echo "METHOD=$NVIM_INSTALL_METHOD"
       echo "PATH after the tarball: $(path_change "$path_before" "$dir")"
-      # As main runs it, after the privileged phase
+      # As main runs it, after the privileged phase (closed by the flag alone: the real
+      # forget_sudo_credentials runs sudo -k)
+      PRIVILEGE_CLOSED=true
       put_install_dir_first_on_path
       echo "PATH after the step: $(path_change "$path_before" "$dir")"
       if [[ "$id" == no-symlink ]]; then
@@ -2388,6 +2390,9 @@ t26_case() {
     else
       echo "INSTALL_DIR_NVIM_RAN=no"
     fi
+    # As main runs it, after the privileged phase (closed by the flag alone: the real
+    # forget_sudo_credentials runs sudo -k)
+    PRIVILEGE_CLOSED=true
     put_install_dir_first_on_path
     echo "PATH after the step: $(path_change "$t26_path_before" "$t26_install_dir")"
     run_errexit verify_nvim
@@ -2479,6 +2484,9 @@ out="$( (
   # shellcheck disable=SC2329  # run_errexit calls it
   packages_only_end() {
     install_neovim
+    # As main runs it, after the privileged phase (closed by the flag alone: the real
+    # forget_sudo_credentials runs sudo -k)
+    PRIVILEGE_CLOSED=true
     put_install_dir_first_on_path
     verify_nvim
     print_summary
@@ -2499,9 +2507,14 @@ grep -qE "PATH: +the reused nvim was not first on PATH; the full run adds $(ere_
 expect_none T26c-packages-only-reuse "$problems"
 
 # T26d: put_install_dir_first_on_path, on a copy of the script whose NVIM_INSTALL_DIR is a scratch
-# path: with NEED_PATH_SETUP false it leaves PATH as it was; with it true it puts NVIM_INSTALL_DIR/bin
-# first and exports PATH, so the commands this run starts (Neovim, and the plugin builds it runs) see
-# it too: a child's environment has the new PATH even when PATH was not exported before
+# path. With the privileged phase closed, as main runs it (PRIVILEGE_CLOSED set as
+# forget_sudo_credentials sets it; the real one runs sudo -k): with NEED_PATH_SETUP false it leaves PATH
+# as it was; with it true it puts NVIM_INSTALL_DIR/bin first and exports PATH, so the commands this run
+# starts (Neovim, and the plugin builds it runs) see it too: a child's environment has the new PATH even
+# when PATH was not exported before. With the phase still open (a reorder of main, or a new caller),
+# whether NEED_PATH_SETUP is true or false, it stops the run with exit 1 and an error naming the cause,
+# and PATH is as it was when the run exits, which an EXIT trap reads, as main's cleanup (whose sudo -k
+# searches PATH) runs then
 t26d_fail=""
 for t26d_need in false true; do
   out="$( (
@@ -2511,6 +2524,8 @@ for t26d_need in false true; do
     t26d_before="$PATH"
     export -n PATH
     NEED_PATH_SETUP="$t26d_need"
+    # As main runs it, after the privileged phase
+    PRIVILEGE_CLOSED=true
     put_install_dir_first_on_path
     echo "PATH after the step: $(path_change "$t26d_before" "$t26d_dir")"
     if [[ "$(env | sed -n 's/^PATH=//p')" == "$PATH" ]]; then
@@ -2531,6 +2546,32 @@ for t26d_need in false true; do
   if [[ "$t26d_need" == true ]]; then
     grep -qxF "CHILD_PATH=same" <<<"$out" || t26d_fail+="[PATH not exported to child processes] "
   fi
+done
+t26d_open_error="  x put_install_dir_first_on_path: called before forget_sudo_credentials closed the privileged phase"
+for t26d_need in false true; do
+  out="$( (
+    sandbox "T26d-open-$t26d_need" ""
+    t26d_dir="$TMP/T26d-open-$t26d_need/opt-nvim"
+    load_script_with "$TMP/T26d-open-$t26d_need/script/nvim-install.sh" NVIM_INSTALL_DIR "$t26d_dir"
+    t26d_before="$PATH"
+    NEED_PATH_SETUP="$t26d_need"
+    PRIVILEGE_CLOSED=false
+    # shellcheck disable=SC2329  # run_errexit calls it
+    step_with_phase_open() {
+      trap 'echo "PATH at exit: $(path_change "$t26d_before" "$t26d_dir")"' EXIT
+      put_install_dir_first_on_path
+      echo "NOT REACHED"
+    }
+    run_errexit step_with_phase_open
+    echo "inner rc=$RC"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" \
+    || t26d_fail+="[phase open, NEED_PATH_SETUP=$t26d_need: want exit 1; $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  grep -qxF "$t26d_open_error" <<<"$out" || t26d_fail+="[phase open, NEED_PATH_SETUP=$t26d_need: no error naming the cause] "
+  grep -qxF "PATH at exit: unchanged" <<<"$out" || t26d_fail+="[phase open, NEED_PATH_SETUP=$t26d_need: PATH changed] "
+  ! grep -qxF "NOT REACHED" <<<"$out" || t26d_fail+="[phase open, NEED_PATH_SETUP=$t26d_need: the step returned] "
 done
 expect_none T26d-install-dir-path-step "$t26d_fail"
 
