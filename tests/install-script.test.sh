@@ -567,6 +567,24 @@ report_no_fake_root() {
     echo "SKIP $1 ($no_wrapper)"
   fi
 }
+# Printed alone on a line by a case subshell that made a dir read-only and found this user can still
+# write it (as root can), so the case cannot check what it is about (exit_if_writable); the test's loop
+# then reports the case as skipped (report_skip_if_writable)
+WRITABLE_ANYWAY_MARKER="WRITABLE ANYWAY"
+# Ends the calling case subshell, status 0, with WRITABLE_ANYWAY_MARKER as its last line of output,
+# when this user can write dir $1 whatever its mode
+exit_if_writable() {
+  if [[ -w "$1" ]]; then
+    echo "$WRITABLE_ANYWAY_MARKER"
+    exit 0
+  fi
+}
+# Prints the SKIP line for test case $1, giving reason $3, and succeeds when the case's output $2 says it
+# found its read-only dir writable (exit_if_writable); fails, printing nothing, otherwise
+report_skip_if_writable() {
+  grep -qxF "$WRITABLE_ANYWAY_MARKER" <<<"$2" || return 1
+  echo "SKIP $1 ($3)"
+}
 
 # ---------------------------------------------------------------------------
 # Tests
@@ -1499,10 +1517,7 @@ t18_case() {
     if [[ "$read_only" == yes ]]; then
       mkdir -p "$HOME/.config"
       chmod 555 "$HOME/.config"
-      if [[ -w "$HOME/.config" ]]; then
-        echo "WRITABLE ANYWAY"
-        exit 0
-      fi
+      exit_if_writable "$HOME/.config"
     fi
     load_script_copy "$HOME/plain"
     echo "NVIM_REPO=$NVIM_REPO"
@@ -1577,8 +1592,8 @@ for id in "${T18_CASES[@]}"; do
   # and remove it
   t18_dir="$(sandbox_home "T18-$id")/.config"
   [[ ! -d "$t18_dir" ]] || chmod 755 "$t18_dir"
-  if grep -qxF "WRITABLE ANYWAY" <<<"$out"; then
-    echo "SKIP T18-config-move-yes $id (this user can write to a mode 555 directory, as root can)"
+  if report_skip_if_writable "T18-config-move-yes $id" "$out" \
+    "this user can write to a mode 555 directory, as root can"; then
     continue
   fi
   problems="$(t18_check "$id" "$out" "$rc" | tr '\n' ' ')"
@@ -2179,9 +2194,8 @@ t25_case() {
     else
       chmod a-w "$link_dir"
       # keep exits before the link step, so it runs even for a user who can write the dir
-      if [[ "$id" != keep && -w "$link_dir" ]]; then
-        echo "WRITABLE ANYWAY"
-        exit 0
+      if [[ "$id" != keep ]]; then
+        exit_if_writable "$link_dir"
       fi
     fi
     load_script_with "$TMP/T25-$id/script/nvim-install.sh" \
@@ -2248,8 +2262,8 @@ t25_want_log() {
 for id in fresh keep replace no-symlink writable-link-dir; do
   out="$(t25_case "$id")"
   rc=$?
-  if grep -qxF "WRITABLE ANYWAY" <<<"$out"; then
-    echo "SKIP T25-tarball $id (this user can write the mode a-w link dir, as root can, so no root check runs)"
+  if report_skip_if_writable "T25-tarball $id" "$out" \
+    "this user can write the mode a-w link dir, as root can, so no root check runs"; then
     continue
   fi
   t25_dir="$TMP/T25-$id/opt-nvim"
