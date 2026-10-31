@@ -151,30 +151,65 @@ run_script_args() {
   "$SCRIPT" "$@"
 }
 
-# Copies the script under test to file $1 with the one line that starts with $2 replaced by $3; fails
-# the test unless exactly one line starts with $2
-copy_script_with_line() {
-  local copy="$1" prefix="$2" replacement="$3" line replaced=0
+# Copies the script under test to file $1 in one pass with, for each prefix and replacement pair after
+# it ($2 and $3, then $4 and $5, ...), the line that starts with that prefix replaced by that
+# replacement; a line that starts with more than one prefix takes the first pair's replacement. Fails
+# the test when the arguments after $1 are not one or more prefix and replacement pairs, or unless each
+# pair replaces exactly one line, so a script change that renames or repeats a replaced line cannot
+# silently leave a test running the original line.
+copy_script_with_lines() {
+  local copy="$1" line i match prefixes=() replacements=() counts=()
+  shift
+  if (($# == 0 || $# % 2 != 0)); then
+    echo "copy_script_with_lines: want prefix and replacement pairs after the copy's path, got $# arguments"
+    exit 1
+  fi
+  while (($# > 0)); do
+    prefixes+=("$1") replacements+=("$2") counts+=(0)
+    shift 2
+  done
   mkdir -p "${copy%/*}"
   while IFS= read -r line; do
-    if [[ "$line" == "$prefix"* ]]; then
-      printf '%s\n' "$replacement"
-      replaced=$((replaced + 1))
+    match=""
+    for i in "${!prefixes[@]}"; do
+      if [[ "$line" == "${prefixes[i]}"* ]]; then
+        match="$i"
+        break
+      fi
+    done
+    if [[ -n "$match" ]]; then
+      printf '%s\n' "${replacements[match]}"
+      counts[match]=$((counts[match] + 1))
     else
       printf '%s\n' "$line"
     fi
   done <"$SCRIPT" >"$copy"
-  if [[ $replaced -ne 1 ]]; then
-    echo "copy_script_with_line: nvim-install.sh has $replaced lines starting with '$prefix', want 1"
-    exit 1
-  fi
+  for i in "${!prefixes[@]}"; do
+    if [[ ${counts[i]} -ne 1 ]]; then
+      echo "copy_script_with_lines: prefix '${prefixes[i]}' replaced ${counts[i]} lines of nvim-install.sh, want 1"
+      exit 1
+    fi
+  done
 }
 
-# Copies the script under test to file $1 with the line that sets the readonly constant $2 replaced by
-# one that sets it to $3, then sources the copy; fails the test unless exactly one line was replaced
+# Copies the script under test to file $1 with, for each name and value pair after it ($2 and $3, then
+# $4 and $5, ...), the line that sets the readonly constant of that name replaced by one that sets it to
+# that value, then sources the copy, so a test can point the script's paths (its install and link dirs,
+# for example) at scratch ones. Fails the test when the arguments after $1 are not one or more name and
+# value pairs, or unless each constant's line was replaced exactly once.
 load_script_with() {
-  copy_script_with_line "$1" "readonly $2=" "$(printf 'readonly %s=%q' "$2" "$3")"
-  load_script "$1"
+  local copy="$1" pairs=()
+  shift
+  if (($# == 0 || $# % 2 != 0)); then
+    echo "load_script_with: want name and value pairs after the copy's path, got $# arguments"
+    exit 1
+  fi
+  while (($# > 0)); do
+    pairs+=("readonly $1=" "$(printf 'readonly %s=%q' "$1" "$2")")
+    shift 2
+  done
+  copy_script_with_lines "$copy" "${pairs[@]}"
+  load_script "$copy"
 }
 
 # Copies the script under test into directory $1 (created when missing) and sources the copy, so
@@ -214,11 +249,16 @@ ere_escape() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
 # only commands the script may run under sudo, as a recording sudo logs them (its arguments joined by
 # spaces): sudo -v, -n -v (the checks for a live ticket), and -k, each package manager's refresh and
 # install of plain package names (dnf's only with weak dependencies off), and the tarball install's
-# exact steps, as as_root runs them, for the install dir $2 (default /opt/nvim); nothing otherwise
+# exact steps, as as_root runs them, for the install dir $2 and the link dir $3 (default /opt/nvim and
+# /usr/local/bin, the script's NVIM_INSTALL_DIR and NVIM_LINK_DIR; a test that points them at scratch
+# paths passes those); nothing otherwise. The defaults are literals on purpose, not read from the
+# script: the allowlist is a fence that does not depend on the script under test, so a change to the
+# script's dirs must change them here too.
 sudo_pkgs='( [A-Za-z0-9][A-Za-z0-9@._+-]*)+'
 sudo_allowlist_problems() {
-  local log="$1" dir outside allowlist
+  local log="$1" dir link_dir outside allowlist
   dir="$(ere_escape "${2:-/opt/nvim}")"
+  link_dir="$(ere_escape "${3:-/usr/local/bin}")"
   allowlist=(
     -e '-v' -e '-n -v' -e '-k'
     -e 'pacman -Syu' -e "pacman -S --noconfirm$sudo_pkgs"
@@ -227,7 +267,7 @@ sudo_allowlist_problems() {
     -e 'apk update' -e "apk add$sudo_pkgs"
     -e "rm -rf $dir" -e "mkdir -p $dir" -e "tar -C $dir --strip-components=1 -xzf /[^ ]+\\.tar\\.gz"
     -e "chown -R 0:0 $dir" -e "chmod -R go-w $dir"
-    -e 'test -w /usr/local/bin' -e "ln -sf $dir/bin/nvim /usr/local/bin/nvim"
+    -e "test -w $link_dir" -e "ln -sf $dir/bin/nvim $link_dir/nvim"
   )
   if [[ ! -f "$log" || ! -r "$log" ]]; then
     echo "[sudo log $log is missing or unreadable] "
@@ -2092,27 +2132,34 @@ for tc in "no-tsserver:$EMPTY_BIN:missing:hint" "shim:$TMP/bin-T24-shim:missing:
 done
 
 
-# T25: the tarball fallback, run on a copy of the script whose NVIM_INSTALL_DIR is a scratch path, with
+# T25: the tarball fallback, run on a copy of the script whose NVIM_INSTALL_DIR and NVIM_LINK_DIR are
+# scratch paths (the link dir is t25_link_dir's, so no case depends on the host's link dir), with
 # T25_BIN's curl (it logs "curl -o <file> <url>" to the event log and copies a tiny local tar.gz to that
 # file) and the recording sudo, which never runs what it is given (nothing is removed, created,
-# extracted, or changed for real). Cases: fresh, no existing dir: the ticket, then mkdir, tar of the
-# downloaded file, chown -R 0:0 and chmod -R go-w of the dir (tar run as root keeps the owners the
-# archive records, and the dir's bin may go first on PATH), the /usr/local/bin check (only when this
-# user cannot write there), and the symlink, all through as_root, each root command after the first
-# preceded by the ticket check (sudo -n -v); keep, an existing dir and answer n: exit 1 with "Cannot
-# install without removing" and no root command; replace, answer y: the same as fresh with rm -rf of
-# the dir first; no-symlink: the /usr/local/bin check fails, so the same as fresh without the symlink,
-# and NEED_PATH_SETUP is set (skipped for a user who can write /usr/local/bin, where the check never
-# runs). The install method is tarball, and the install leaves PATH as it was: only
-# put_install_dir_first_on_path, which main runs after the privileged phase and each case runs next,
-# changes it. In no-symlink it puts the dir's bin first, where verify_nvim then finds its nvim (T26's
-# install dir stub, standing in for the one the recording sudo never extracted); the cases that link
-# leave PATH as it was.
-# $1 = case id (fresh, keep, replace, or no-symlink)
+# extracted, linked, or changed for real). The link dir exists in every case, and in all but
+# writable-link-dir this user cannot write it (mode a-w, standing in for a link dir only root can
+# write), so the script checks it as root. Cases: fresh, no existing dir: the ticket, then mkdir, tar of
+# the downloaded file, chown -R 0:0 and chmod -R go-w of the dir (tar run as root keeps the owners the
+# archive records, and the dir's bin may go first on PATH), the link dir check (test -w), and the
+# symlink, all through as_root, each root command after the first preceded by the ticket check
+# (sudo -n -v); keep, an existing dir and answer n: exit 1 with "Cannot install without removing" and no
+# root command; replace, answer y: the same as fresh with rm -rf of the dir first; no-symlink: the link
+# dir check fails, so the same as fresh without the symlink, and NEED_PATH_SETUP is set;
+# writable-link-dir: this user can write the link dir, so the same as fresh without the link dir check.
+# A user who can write even a mode a-w dir (root) skips fresh, replace, and no-symlink, where the script
+# would make no link dir check. The install method is tarball, and the install leaves PATH as it was:
+# only put_install_dir_first_on_path, which main runs after the privileged phase and each case runs
+# next, changes it. In no-symlink it puts the dir's bin first, where verify_nvim then finds its nvim
+# (T26's install dir stub, standing in for the one the recording sudo never extracted); the cases that
+# link leave PATH as it was.
+# The scratch link dir (the script's NVIM_LINK_DIR) of T25 case $1
+t25_link_dir() { printf '%s\n' "$TMP/T25-$1/link-dir"; }
+# Runs T25 case $1 (fresh, keep, replace, no-symlink, or writable-link-dir)
 t25_case() {
-  local id="$1" fail_on=""
+  local id="$1" fail_on="" link_dir
+  link_dir="$(t25_link_dir "$id")"
   if [[ "$id" == no-symlink ]]; then
-    fail_on="test -w /usr/local/bin"
+    fail_on="test -w $link_dir"
   fi
   (
     recording_sandbox "T25-$id" "$T25_BIN" "$fail_on"
@@ -2123,8 +2170,24 @@ t25_case() {
     if [[ "$id" == keep || "$id" == replace ]]; then
       mkdir -p "$dir"
     fi
-    load_script_with "$TMP/T25-$id/script/nvim-install.sh" NVIM_INSTALL_DIR "$dir"
-    [[ "$NVIM_INSTALL_DIR" == "$dir" ]] || { echo "NVIM_INSTALL_DIR=$NVIM_INSTALL_DIR"; exit 1; }
+    # Nothing is ever created in the link dir (the recording sudo never runs ln), so the suite's cleanup
+    # removes it even when it stays read-only
+    mkdir -p "$link_dir"
+    if [[ "$id" == writable-link-dir ]]; then
+      # Writable by its owner whatever the umask left, as this case needs
+      chmod u+w "$link_dir"
+    else
+      chmod a-w "$link_dir"
+      # keep exits before the link step, so it runs even for a user who can write the dir
+      if [[ "$id" != keep && -w "$link_dir" ]]; then
+        echo "WRITABLE ANYWAY"
+        exit 0
+      fi
+    fi
+    load_script_with "$TMP/T25-$id/script/nvim-install.sh" \
+      NVIM_INSTALL_DIR "$dir" NVIM_LINK_DIR "$link_dir"
+    [[ "$NVIM_INSTALL_DIR" == "$dir" && "$NVIM_LINK_DIR" == "$link_dir" ]] \
+      || { echo "NVIM_INSTALL_DIR=$NVIM_INSTALL_DIR NVIM_LINK_DIR=$NVIM_LINK_DIR"; exit 1; }
     detect_os
     detect_arch
     # shellcheck disable=SC2031  # detect_arch, in the script sourced into this subshell, sets it
@@ -2160,34 +2223,37 @@ t25_case() {
     echo DONE
   ) </dev/null 2>&1
 }
-# Prints the sudo log T25 case $1 must leave, given the install dir $2 and the downloaded file $3: the
-# root commands, -v before the first and -n -v before each later one
+# Prints the sudo log T25 case $1 must leave, given the install dir $2 and the downloaded file $3, with
+# the case's link dir from t25_link_dir $1: the root commands, -v before the first and -n -v before
+# each later one
 t25_want_log() {
-  local cmds=() cmd check=-v
+  local cmds=() cmd check=-v link_dir
+  link_dir="$(t25_link_dir "$1")"
   case "$1" in
     keep) return ;;
     replace) cmds+=("rm -rf $2") ;;
   esac
   cmds+=("mkdir -p $2" "tar -C $2 --strip-components=1 -xzf $3" "chown -R 0:0 $2" "chmod -R go-w $2")
-  if [[ ! -w /usr/local/bin ]]; then
-    cmds+=("test -w /usr/local/bin")
+  if [[ "$1" != writable-link-dir ]]; then
+    cmds+=("test -w $link_dir")
   fi
   if [[ "$1" != no-symlink ]]; then
-    cmds+=("ln -sf $2/bin/nvim /usr/local/bin/nvim")
+    cmds+=("ln -sf $2/bin/nvim $link_dir/nvim")
   fi
   for cmd in "${cmds[@]}"; do
     printf '%s\n' "$check" "$cmd"
     check="-n -v"
   done
 }
-for id in fresh keep replace no-symlink; do
-  if [[ "$id" == no-symlink && -w /usr/local/bin ]]; then
-    echo "SKIP T25-tarball no-symlink (this user can write /usr/local/bin, so the symlink needs no root check)"
-    continue
-  fi
+for id in fresh keep replace no-symlink writable-link-dir; do
   out="$(t25_case "$id")"
   rc=$?
+  if grep -qxF "WRITABLE ANYWAY" <<<"$out"; then
+    echo "SKIP T25-tarball $id (this user can write the mode a-w link dir, as root can, so no root check runs)"
+    continue
+  fi
   t25_dir="$TMP/T25-$id/opt-nvim"
+  t25_link_dir_path="$(t25_link_dir "$id")"
   t25_log="$(sudo_log "T25-$id")"
   t25_curl="$(grep '^curl ' "$(event_log "T25-$id")" 2>/dev/null)"
   t25_file="$(sed -n 's/^curl -o \([^ ]*\) .*/\1/p' <<<"$t25_curl")"
@@ -2218,7 +2284,7 @@ for id in fresh keep replace no-symlink; do
       grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[PATH changed although the symlink was made] "
     fi
   fi
-  problems+="$(sudo_allowlist_problems "$t25_log" "$t25_dir")"
+  problems+="$(sudo_allowlist_problems "$t25_log" "$t25_dir" "$t25_link_dir_path")"
   [[ -z "$problems" ]] || problems+="sudo log: $(tr '\n' ';' <"$t25_log"); $(tail -n3 <<<"$out" | tr '\n' ' ')"
   expect_none "T25-tarball $id" "$problems"
 done
@@ -2662,7 +2728,7 @@ done
 t27_dir="$(sandbox_home T27-script-dir)/work/rel"
 out="$( (
   sandbox T27-script-dir ""
-  copy_script_with_line "$t27_dir/nvim-install.sh" 'if ! (return 0 2>/dev/null); then' \
+  copy_script_with_lines "$t27_dir/nvim-install.sh" 'if ! (return 0 2>/dev/null); then' \
     "printf 'SCRIPT_DIR=[%s]\\n' \"\$SCRIPT_DIR\"; if false; then"
   mkdir -p "$HOME/decoy/rel"
   printf 'bash-c %s\n' "$(bash -c "$(cat "$t27_dir/nvim-install.sh")" bash)"
