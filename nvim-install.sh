@@ -355,7 +355,7 @@ confirm_proceed() {
     pacman | dnf)
       printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
       ;;
-    *)
+    apt-get | apk)
       printf '  %s\n' "2. Install build tools, clipboard, runtimes, formatters, linters, TUI tools (language servers: manual steps)"
       ;;
   esac
@@ -888,7 +888,7 @@ install_language_servers() {
       install_pkgs optional "language servers" nodejs-bash-language-server python3-lsp-server
       warn "Fedora packages no server for dockerls, jsonls, ts_ls or yamlls: they stay off unless their commands are on PATH (ts_ls also needs a system TypeScript); python-lsp-server (pylsp) stands in for pyright"
       ;;
-    *)
+    apt-get | apk)
       warn_manual bash-language-server docker-langserver vscode-json-language-server pyright-langserver \
         typescript-language-server yaml-language-server
       if ! has_system_typescript; then
@@ -909,7 +909,7 @@ install_formatters() {
       install_pkgs optional "formatters" shfmt black golang-x-tools-goimports
       warn_manual stylua prettier terraform
       ;;
-    *)
+    apt-get | apk)
       warn_manual stylua prettier terraform
       ;;
   esac
@@ -926,7 +926,7 @@ install_linters() {
       install_pkgs optional "linters" ShellCheck yamllint ruff golangci-lint hadolint
       warn_manual selene tflint
       ;;
-    *)
+    apt-get | apk)
       install_pkgs optional "shellcheck" shellcheck
       warn_manual selene tflint
       ;;
@@ -955,7 +955,7 @@ install_tui_tools() {
     apk)
       install_pkgs optional "fortune" fortune
       ;;
-    *)
+    apt-get)
       install_pkgs optional "fortune" fortune-mod
       ;;
   esac
@@ -977,7 +977,7 @@ install_user_tools() {
       install_go_tool lazygit "$GO_TOOL_LAZYGIT"
       install_go_tool lazydocker "$GO_TOOL_LAZYDOCKER"
       ;;
-    *)
+    apt-get | apk)
       install_python_tool black
       install_python_tool yamllint
       install_python_tool ruff
