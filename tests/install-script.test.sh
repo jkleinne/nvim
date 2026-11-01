@@ -678,15 +678,16 @@ done
   || t2_fail+="[packages-only: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
 expect_none T2c-packages-only-plan-screen "$t2_fail"
 
-# T2d: the plan screen for each best-effort manager (apt-get, apk) names the best-effort tier and its
-# notice, which says the go install and uv tool install fallbacks happen in the full run (packages-only
-# stops before them), and shows no dnf text
+# T2d: the plan screen for each best-effort manager (apt-get, apk) leaves the language servers to manual
+# steps in step 2, shows no dnf text, and names the best-effort tier and its notice, which says the go
+# install and uv tool install fallbacks happen in the full run (packages-only stops before them)
 t2_fail=""
 for t2_mgr in apt-get apk; do
   out="$(t2_plan "$t2_mgr-best-effort" "$t2_mgr" false)"
   rc=$?
   for want in 'Support tier: +best-effort' 'Mode: +full$' \
     "$t2_mgr"' is best-effort: tools missing from its repos are installed with go install \(pinned versions\) or uv tool install \(latest upstream\) in the full run when available, otherwise listed as manual steps at the end\.' \
+    '2\. Install build tools, clipboard, runtimes, formatters, linters, TUI tools \(language servers: manual steps\)$' \
     'Cancelled\.'; do
     grep -qE "$want" <<<"$out" || t2_fail+="[$t2_mgr: missing $want] "
   done
@@ -696,6 +697,19 @@ for t2_mgr in apt-get apk; do
   done
 done
 expect_none T2d-best-effort-plan-screen "$t2_fail"
+
+# T2e: the plan screen for pacman lists the language servers in step 2. It is sourced (t2_plan), so every
+# host runs it; T2 checks the real script's plan screen on pacman hosts only.
+t2_fail=""
+out="$(t2_plan pacman pacman false)"
+rc=$?
+for want in '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' \
+  'Cancelled\.'; do
+  grep -qE "$want" <<<"$out" || t2_fail+="[pacman: missing $want] "
+done
+[[ $rc -eq 0 ]] && ! grep -qF 'NOT REACHED' <<<"$out" \
+  || t2_fail+="[pacman: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+expect_none T2e-pacman-plan-step2 "$t2_fail"
 
 # T3: root guard, under every wrapper that reports EUID 0 here (FAKE_ROOT_WRAPPERS: fakeroot, and
 # unshare -r when the kernel allows it). With REQUIRE_ALL=1, having neither fails instead of skipping.
