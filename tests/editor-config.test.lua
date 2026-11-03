@@ -637,9 +637,9 @@ case("L1-mason-list", function()
 end)
 
 -- L1b: lsp.lua takes the server inventory from lua/lsp_gates/servers.lua (data only, also read by
--- the installer's tests): the module holds the inventory above, lsp.lua's Mason list, system
--- commands, fallback commands, retired list, and never-start list equal it, and a different inventory
--- in its place changes them
+-- the installer's tests): the module holds the inventory above; each of its fallbacks replaces one of
+-- its system servers; lsp.lua's Mason list, system commands, fallback commands, retired list, and
+-- never-start list equal the module's; and a different inventory in its place changes them
 case("L1b-servers-module", function()
   local servers = require "lsp_gates.servers"
   local problems = {}
@@ -648,6 +648,13 @@ case("L1b-servers-module", function()
   want(problems, vim.deep_equal(servers.fallbacks, fallback_specs), "module fallbacks " .. show(servers.fallbacks))
   want(problems, vim.deep_equal(servers.retired, retired_names), "module retired " .. show(servers.retired))
   want(problems, vim.deep_equal(servers.never, never_names), "module never " .. show(servers.never))
+  for name, spec in vim.spairs(servers.fallbacks) do
+    want(
+      problems,
+      servers.system[spec.replaces] ~= nil,
+      "module fallback " .. name .. " replaces " .. show(spec.replaces) .. ", not a module system server"
+    )
+  end
 
   -- Problems unless lsp.lua's lists (from its last config run) equal inventory
   local function lists_problems(label, inventory)
