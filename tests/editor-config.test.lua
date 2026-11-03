@@ -167,6 +167,16 @@ for _, name in ipairs(server_names) do
 end
 -- Every config a case can enable or change
 local lsp_names = concat(mason_names, server_names, fallback_names, retired_names, never_names)
+-- Another inventory, which L1b swaps in for lua/lsp_gates/servers.lua. The fallback keeps the name
+-- pylsp (restore() resets the configs of the names this suite knows) but replaces another server and
+-- runs another command
+local other_inventory = {
+  mason = { "gopls" },
+  system = { bashls = { "other-bash-server", "start" } },
+  fallbacks = { pylsp = { replaces = "bashls", cmd = { "other-pylsp", "--x" } } },
+  retired = { "sqlls" },
+  never = { "tflint" },
+}
 
 -- A scratch dir holding a stub executable for each command, for use as the whole PATH
 local function bin_dir(name, commands)
@@ -193,8 +203,11 @@ local bins = {
   pylsp = bin_dir("pylsp", { fallback_specs.pylsp.cmd[1] }),
   pylsp_and_pyright = bin_dir("pylsp-and-pyright", { fallback_specs.pylsp.cmd[1], system_cmds.pyright[1] }),
   -- L1b's other inventory: its fallback's command alone, and beside the command of the server it replaces
-  other_pylsp = bin_dir("other-pylsp", { "other-pylsp" }),
-  other_pylsp_and_bashls = bin_dir("other-pylsp-and-bashls", { "other-pylsp", "other-bash-server" }),
+  other_pylsp = bin_dir("other-pylsp", { other_inventory.fallbacks.pylsp.cmd[1] }),
+  other_pylsp_and_bashls = bin_dir(
+    "other-pylsp-and-bashls",
+    { other_inventory.fallbacks.pylsp.cmd[1], other_inventory.system.bashls[1] }
+  ),
   -- F5: ts_ls's command and the fallback's
   ts_ls_and_pylsp = bin_dir("ts-ls-and-pylsp", { system_cmds.ts_ls[1], fallback_specs.pylsp.cmd[1] }),
 }
@@ -676,19 +689,10 @@ case("L1b-servers-module", function()
 
   restore()
   begin_case()
-  -- The fallback keeps the name pylsp (restore() resets the configs of the names this suite knows)
-  -- but replaces another server and runs another command
-  local other = {
-    mason = { "gopls" },
-    system = { bashls = { "other-bash-server", "start" } },
-    fallbacks = { pylsp = { replaces = "bashls", cmd = { "other-pylsp", "--x" } } },
-    retired = { "sqlls" },
-    never = { "tflint" },
-  }
-  local ok, err = load_lsp_with_inventory(other)
+  local ok, err = load_lsp_with_inventory(other_inventory)
   want(problems, ok, "config() with another inventory: " .. tostring(err))
   if ok then
-    vim.list_extend(problems, lists_problems("another inventory: ", other))
+    vim.list_extend(problems, lists_problems("another inventory: ", other_inventory))
   end
 
   -- The fallback gate reads that inventory too: the fallback's command, and the server it replaces
@@ -704,7 +708,7 @@ case("L1b-servers-module", function()
     restore()
     begin_case()
     vim.env.PATH = run.path
-    local loaded, load_err = load_lsp_with_inventory(other)
+    local loaded, load_err = load_lsp_with_inventory(other_inventory)
     want(problems, loaded, run.label .. ": config() with another inventory: " .. tostring(load_err))
     local enabled = vim.tbl_filter(vim.lsp.is_enabled, { "bashls", "pylsp" })
     want(problems, vim.deep_equal(enabled, run.want_enabled), run.label .. ": enabled " .. show(enabled))
