@@ -312,6 +312,36 @@ order_problems() {
   ((ok)) || echo "[order (first line of each): ${report% }] "
 }
 
+# Prints "[$1: missing <ere>] " for each extended regex after $2 that no line of the output $2 matches,
+# and "[$1: grep could not check <ere>] " for one that grep rejects
+missing_patterns() {
+  local label="$1" output="$2" pattern
+  shift 2
+  for pattern in "$@"; do
+    grep -qE -- "$pattern" <<<"$output"
+    case $? in
+      0) ;;
+      1) printf '[%s: missing %s] ' "$label" "$pattern" ;;
+      *) printf '[%s: grep could not check %s] ' "$label" "$pattern" ;;
+    esac
+  done
+}
+
+# Prints "[$1: shows <ere>] " for each extended regex after $2 that some line of the output $2 matches,
+# and "[$1: grep could not check <ere>] " for one that grep rejects
+shown_patterns() {
+  local label="$1" output="$2" pattern
+  shift 2
+  for pattern in "$@"; do
+    grep -qE -- "$pattern" <<<"$output"
+    case $? in
+      0) printf '[%s: shows %s] ' "$label" "$pattern" ;;
+      1) ;;
+      *) printf '[%s: grep could not check %s] ' "$label" "$pattern" ;;
+    esac
+  done
+}
+
 # Prints how PATH differs from $1, a PATH saved earlier: "unchanged", "install dir first" ($2/bin, the
 # bin dir of install dir $2, then $1), or "other: <PATH>" (T25, T26)
 path_change() {
@@ -618,11 +648,9 @@ else
     run_script
   ) </dev/null 2>&1)"
   eof_rc=$?
-  absent=""
-  for want in 'OS: +linux' 'Architecture: +(x86_64|arm64)' 'Package manager: +pacman' 'Support tier: +first-class' \
-    '0\. Upgrade the system first \(pacman -Syu' '1\. Install Neovim 0\.12\+' 'Cancelled\.'; do
-    grep -qE "$want" <<<"$out" || absent+="[$want] "
-  done
+  absent="$(missing_patterns plan "$out" 'OS: +linux' 'Architecture: +(x86_64|arm64)' 'Package manager: +pacman' \
+    'Support tier: +first-class' '0\. Upgrade the system first \(pacman -Syu' '1\. Install Neovim 0\.12\+' \
+    'Cancelled\.')"
   tier_notice="$(grep -m1 -E ' is (first-class|supported|best-effort): ' <<<"$out")"
   [[ $rc -eq 0 && -z "$absent" && -z "$tier_notice" && $eof_rc -eq 1 ]] \
     && grep -qF 'No answer (stdin is closed or not a terminal); run the script from a terminal' <<<"$eof_out" \
@@ -653,27 +681,22 @@ t2_fail=""
 out="$(t2_plan dnf dnf false)"
 rc=$?
 t2_min_version="$(script_constant MIN_NVIM_VERSION)" || t2_fail+="[the script sets no MIN_NVIM_VERSION] "
-for want in 'Support tier: +supported' 'Mode: +full$' 'dnf is supported' \
+t2_fail+="$(missing_patterns dnf "$out" 'Support tier: +supported' 'Mode: +full$' 'dnf is supported' \
   "Neovim comes from the release tarball when the repo's is missing or older than $(ere_escape "$t2_min_version")" \
   'lazygit and lazydocker come from go install at pinned versions in the full run' \
   '1\. Install Neovim 0\.12\+ \(prefer dnf' \
   '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' \
-  '3\. Clone config' 'Cancelled\.'; do
-  grep -qE "$want" <<<"$out" || t2_fail+="[dnf: missing $want] "
-done
+  '3\. Clone config' 'Cancelled\.')"
 [[ $rc -eq 0 ]] || t2_fail+="[dnf: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-for unwanted in 'pacman -Syu' 'best-effort' 'manual steps\)' 'Fedora' 'NOT REACHED'; do
-  ! grep -qE "$unwanted" <<<"$out" || t2_fail+="[dnf: shows $unwanted] "
-done
+t2_fail+="$(shown_patterns dnf "$out" 'pacman -Syu' 'best-effort' 'manual steps\)' 'Fedora' 'NOT REACHED')"
 expect_none T2b-dnf-plan-screen "$t2_fail"
 
 # T2c: in packages-only mode the plan screen says so and ends with the packages (no clone step)
 t2_fail=""
 out="$(t2_plan dnf-packages-only dnf true)"
 rc=$?
-for want in 'Support tier: +supported' 'Mode: +packages only$' '2\. Install build tools' 'Cancelled\.'; do
-  grep -qE "$want" <<<"$out" || t2_fail+="[packages-only: missing $want] "
-done
+t2_fail+="$(missing_patterns packages-only "$out" 'Support tier: +supported' 'Mode: +packages only$' \
+  '2\. Install build tools' 'Cancelled\.')"
 [[ $rc -eq 0 ]] && ! grep -qE 'Clone config|NOT REACHED' <<<"$out" \
   || t2_fail+="[packages-only: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
 expect_none T2c-packages-only-plan-screen "$t2_fail"
@@ -685,16 +708,12 @@ t2_fail=""
 for t2_mgr in apt-get apk; do
   out="$(t2_plan "$t2_mgr-best-effort" "$t2_mgr" false)"
   rc=$?
-  for want in 'Support tier: +best-effort' 'Mode: +full$' \
+  t2_fail+="$(missing_patterns "$t2_mgr" "$out" 'Support tier: +best-effort' 'Mode: +full$' \
     "$t2_mgr"' is best-effort: tools missing from its repos are installed with go install \(pinned versions\) or uv tool install \(latest upstream\) in the full run when available, otherwise listed as manual steps at the end\.' \
     '2\. Install build tools, clipboard, runtimes, formatters, linters, TUI tools \(language servers: manual steps\)$' \
-    'Cancelled\.'; do
-    grep -qE "$want" <<<"$out" || t2_fail+="[$t2_mgr: missing $want] "
-  done
+    'Cancelled\.')"
   [[ $rc -eq 0 ]] || t2_fail+="[$t2_mgr: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-  for unwanted in 'dnf' 'pacman -Syu' 'NOT REACHED'; do
-    ! grep -qE "$unwanted" <<<"$out" || t2_fail+="[$t2_mgr: shows $unwanted] "
-  done
+  t2_fail+="$(shown_patterns "$t2_mgr" "$out" 'dnf' 'pacman -Syu' 'NOT REACHED')"
 done
 expect_none T2d-best-effort-plan-screen "$t2_fail"
 
@@ -703,10 +722,8 @@ expect_none T2d-best-effort-plan-screen "$t2_fail"
 t2_fail=""
 out="$(t2_plan pacman pacman false)"
 rc=$?
-for want in '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' \
-  'Cancelled\.'; do
-  grep -qE "$want" <<<"$out" || t2_fail+="[pacman: missing $want] "
-done
+t2_fail+="$(missing_patterns pacman "$out" \
+  '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' 'Cancelled\.')"
 [[ $rc -eq 0 ]] && ! grep -qF 'NOT REACHED' <<<"$out" \
   || t2_fail+="[pacman: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
 expect_none T2e-pacman-plan-step2 "$t2_fail"
@@ -2023,12 +2040,8 @@ for mode in true false; do
         "$t22f_other_cause")
     fi
     done_ok $rc "$out" || t22f_fail+="[packages_only=$mode $method: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-    for want in "${t22f_wanted[@]}"; do
-      grep -qE -- "$want" <<<"$out" || t22f_fail+="[packages_only=$mode $method: missing $want] "
-    done
-    for want in "${t22f_unwanted[@]}"; do
-      ! grep -qE -- "$want" <<<"$out" || t22f_fail+="[packages_only=$mode $method: shows $want] "
-    done
+    t22f_fail+="$(missing_patterns "packages_only=$mode $method" "$out" "${t22f_wanted[@]}")"
+    t22f_fail+="$(shown_patterns "packages_only=$mode $method" "$out" "${t22f_unwanted[@]}")"
   done
 done
 expect_none T22f-summary-modes "$t22f_fail"
@@ -2959,13 +2972,9 @@ for flag in --help -h; do
     run_script_args "$flag" 2>"$t31_err"
   ) </dev/null)"
   rc=$?
-  absent=""
-  for want in 'Usage: nvim-install.sh' '--packages-only' '^  Fedora +\(dnf\) +supported$' \
+  absent="$(missing_patterns help "$out" 'Usage: nvim-install.sh' '--packages-only' '^  Fedora +\(dnf\) +supported$' \
     'Mason installs the native language' 'the first time nvim opens a file;' \
-    'On Fedora, python-lsp-server stands in for pyright\.'; do
-    # -- : the second pattern starts with a dash, which grep would read as an option
-    grep -qE -- "$want" <<<"$out" || absent+="[$want] "
-  done
+    'On Fedora, python-lsp-server stands in for pyright\.')"
   [[ $rc -eq 0 && -z "$absent" && ! -s "$t31_err" ]] \
     || t31_fail+="[$flag: rc=$rc absent=$absent stderr=$(tr '\n' ' ' <"$t31_err")] "
 done
