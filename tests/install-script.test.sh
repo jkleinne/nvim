@@ -2611,18 +2611,19 @@ done
 expect_none T26d-install-dir-path-step "$t26d_fail"
 
 # T26b: is_root_owned_tree, which install_neovim asks before it reuses NVIM_INSTALL_DIR, and
-# are_root_only_dirs, which is_root_owned_tree asks about each dir above the tree. Each tree case but
-# writable-parent replaces are_root_only_dirs with one that prints each dir it is asked about
-# (PARENT_DIR <dir>) and succeeds, so the case tests the tree itself. Without a wrapper,
+# are_root_only_dirs, which is_root_owned_tree asks about each dir above the tree. Without a wrapper,
 # is_root_owned_tree fails on a tree the user owns, on a symlink to one (the check resolves it, as the
 # nvim lookup and PATH do, instead of skipping it as a symlink), on a missing tree in a dir that exists
 # (readlink resolves it and find fails on it, and find's error, with nothing printed, must not pass for
-# a clean tree), and on a path whose parent dir is missing too, which readlink cannot resolve;
-# are_root_only_dirs fails on a dir the user owns, and with no dir at all, even from /, which find would
-# check instead.
+# a clean tree), and on a path whose parent dir is missing too, which readlink cannot resolve. Those
+# tree cases replace are_root_only_dirs with one that succeeds and prints nothing, so each tests the
+# tree itself. The real are_root_only_dirs fails on a dir the user owns, and with no dir at all, even
+# from /, which find would check instead.
 # Under each wrapper in FAKE_ROOT_WRAPPERS, a bash that sources the script makes a tree root-owned with
 # no group or other write, as the tarball install leaves it (a chown that fakeroot fakes, or that
-# unshare -r's mapping already makes true), with a symlink to a file inside it. The check passes on that
+# unshare -r's mapping already makes true), with a symlink to a file inside it. Under a wrapper, each
+# tree case but writable-parent replaces are_root_only_dirs with one that prints each dir it is asked
+# about (PARENT_DIR <dir>) and succeeds, so the case tests the tree itself. The check passes on that
 # clean tree, on one with a link to a root-owned dir outside it, and on a link to the tree, where the
 # dirs it asks about are those above the link's target, up to /. It fails once one file is group
 # writable or one dir is other writable, on a link to a root-owned dir outside the tree that others can
