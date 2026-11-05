@@ -1942,9 +1942,10 @@ expect_none "T20-server-list-sync (e) dnf" "$problems"
 # nothing to install, but one from before the run may be live, so main still forgets it; T22d, the
 # same, but sudo -k fails while sudo -n -v shows that ticket is still live, so the run stops with exit 1
 # before put_install_dir_first_on_path, with sudo's message and the advice to wait for the ticket to
-# expire; and T22e, main-order with --packages-only. Test name, whether install_neovim takes a ticket (1
-# or 0), the sudo arguments the recording sudo fails on (';'-separated), the exit status main must end
-# with, and main's arguments
+# expire; and T22e, main-order with --packages-only. A case whose exit status and arguments together
+# match none of these fails until it gets its own checks. Test name, whether install_neovim takes a
+# ticket (1 or 0), the sudo arguments the recording sudo fails on (';'-separated), the exit status main
+# must end with, and main's arguments
 for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
   "T22c-forget-preexisting-ticket:0::0:" "T22d-forget-refuses-live-ticket:0:-k:1:" \
   "T22e-packages-only:1::0:--packages-only"; do
@@ -1977,12 +1978,15 @@ for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
         && grep -qF 'Run this script again without --packages-only' <<<"$out" \
         || problems+="[no packages-only summary] "
       ;;
-    *)
+    1:)
       problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k")"
       grep -qF "sudo -k failed (STUB SUDO: failing -k)" <<<"$out" && grep -qF "timestamp_timeout" <<<"$out" \
         || problems+="[no live-ticket error with sudo's message and the advice to wait] "
       ! grep -qxE 'put_install_dir_first_on_path|install_user_tools|setup_config' "$t22_events" \
         || problems+="[main went on after the forget failed] "
+      ;;
+    *)
+      problems+="[no checks for exit $t22_want_rc with arguments '$t22_args'] "
       ;;
   esac
   problems+="$(no_sudo_after_final_forget "$t22_events")"
