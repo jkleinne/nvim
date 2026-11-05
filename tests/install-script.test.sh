@@ -1326,13 +1326,17 @@ for tc in "bash:export PATH=\"\$PATH:/nonexistent/bin\"" "fish:fish_add_path --a
   result "T15-path-hint-appends ${tc%%:*}" $? "$(head -n1 <<<"$out")"
 done
 
-# setup_path (tarball installs) prepends /opt/nvim/bin instead, so the tarball's nvim comes before an
-# older packaged one, and writes its line into the shell's config file once (fish: config.fish, with
-# --path; bash: .bashrc)
-for tc in "fish:.config/fish/config.fish:fish_add_path --path /opt/nvim/bin" \
-  "bash:.bashrc:export PATH=\"/opt/nvim/bin:\$PATH\""; do
+# setup_path (tarball installs) prepends NVIM_INSTALL_DIR/bin instead, so the tarball's nvim comes
+# before an older packaged one, and writes its line into the shell's config file once (fish:
+# config.fish, with --path; bash: .bashrc). The test reads the dir from the script, so the lines it
+# expects follow the script's constant; a failed read fails both cases before any comparison.
+t15_fail=""
+t15_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t15_fail="the script sets no NVIM_INSTALL_DIR"
+for tc in "fish:.config/fish/config.fish:fish_add_path --path $t15_install_dir/bin" \
+  "bash:.bashrc:export PATH=\"$t15_install_dir/bin:\$PATH\""; do
   IFS=: read -r t15_shell t15_rc t15_line <<<"$tc"
   out="$( (
+    [[ -z "$t15_fail" ]] || { echo "$t15_fail"; exit 1; }
     sandbox "T15-setup-path-$t15_shell" ""
     load_script
     # shellcheck disable=SC2030,SC2034  # setup_path, in the script sourced into this subshell, reads both
