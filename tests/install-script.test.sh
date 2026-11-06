@@ -504,7 +504,16 @@ T25_BIN="$TMP/bin-T25"
 add_stub "$T25_BIN" curl t25-curl
 mkdir -p "$TMP/T25-src/nvim-linux/bin"
 printf '#!/bin/sh\n' >"$TMP/T25-src/nvim-linux/bin/nvim"
+# Executable as a release's nvim is: bash's command -v falls back to reporting a file that is not, and
+# T25b must not pass through that
+chmod +x "$TMP/T25-src/nvim-linux/bin/nvim"
 tar -C "$TMP/T25-src" -czf "$TMP/T25-nvim.tar.gz" nvim-linux
+# T25b's PATH dir, which holds no nvim, so a host's nvim never counts: the real tools the tarball step
+# (with its download stub), copy_stub, and verify_nvim need, and cat for the stub nvims
+T25B_TOOLS_BIN="$TMP/bin-T25b-tools"
+for tool in cat chmod cp cut du echo gzip head ln mkdir mktemp sed tar xargs; do
+  add_link "$T25B_TOOLS_BIN" "$tool" "$(type -P "$tool")"
+done
 
 # T26's nvim (T22 runs it too): it prints version $T26_VERSION
 T26_BIN="$TMP/bin-T26"
@@ -2003,19 +2012,17 @@ done
 
 # T22f: print_summary says what the mode skipped, and why NVIM_INSTALL_DIR/bin goes on PATH. A sourced
 # case per mode and install method, with T26's stub nvim (version 0.12.0) first on PATH and
-# NEED_PATH_SETUP true, as after a tarball install that could not link nvim into NVIM_LINK_DIR
-# (tarball) or a reuse of the install dir's nvim, which PATH did not reach first (reused): packages-only
-# shows the title, the config line, the PATH note with that cause (setup_path did not run, so nothing
-# was added yet), and the closing line that asks for the full run; the full run shows its own title,
-# PATH updated with that cause, and the Mason line, and none of the packages-only texts (the bare word
-# is not checked: the config path in the output sits under the suite's temp dir, whose name could
-# contain it). Neither shows the other method's cause. The test reads both dirs from the script, so the
-# texts it expects follow the script's constants.
+# NEED_PATH_SETUP true, as after a tarball install (tarball) or a reuse (reused) of an install dir's nvim
+# that PATH did not reach first: packages-only shows the title, the config line, the PATH note with that
+# cause (setup_path did not run, so nothing was added yet), and the closing line that asks for the full
+# run; the full run shows its own title, PATH updated with that cause, and the Mason line, and none of
+# the packages-only texts (the bare word is not checked: the config path in the output sits under the
+# suite's temp dir, whose name could contain it). Neither shows the other method's cause. The test reads
+# the install dir from the script, so the texts it expects follow the script's constant.
 t22f_fail=""
-t22f_link_dir="$(script_constant NVIM_LINK_DIR)" || t22f_fail+="[the script sets no NVIM_LINK_DIR] "
 t22f_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22f_fail+="[the script sets no NVIM_INSTALL_DIR] "
 t22f_bin_dir_ere="$(ere_escape "$t22f_install_dir/bin")"
-t22f_cause_tarball="nvim could not be linked into $(ere_escape "$t22f_link_dir")"
+t22f_cause_tarball="the tarball's nvim was not first on PATH"
 t22f_cause_reused='the reused nvim was not first on PATH'
 for mode in true false; do
   for method in tarball reused; do
@@ -2198,14 +2205,17 @@ done
 # symlink, all through as_root, each root command after the first preceded by the ticket check
 # (sudo -n -v); keep, an existing dir and answer n: exit 1 with "Cannot install without removing" and no
 # root command; replace, answer y: the same as fresh with rm -rf of the dir first; no-symlink: the link
-# dir check fails, so the same as fresh without the symlink, and NEED_PATH_SETUP is set;
+# dir check fails, so the same as fresh without the symlink, with a warning that names the link dir,
+# and the real install_dir_nvim_is_first_on_path finds no install dir nvim on PATH, so NEED_PATH_SETUP
+# is set;
 # writable-link-dir: this user can write the link dir, so the same as fresh without the link dir check.
 # A user who can write even a mode a-w dir (root) skips fresh, replace, and no-symlink, where the script
 # would make no link dir check. The install method is tarball, and the install leaves PATH as it was:
 # only put_install_dir_first_on_path, which main runs after the privileged phase and each case runs
 # next, changes it. In no-symlink it puts the dir's bin first, where verify_nvim then finds its nvim
 # (T26's install dir stub, standing in for the one the recording sudo never extracted); the cases that
-# link leave PATH as it was.
+# link leave PATH as it was. Those override install_dir_nvim_is_first_on_path to succeed, as a real link
+# would: nothing was really linked here, and T25b runs the real check on real files.
 # The scratch link dir (the script's NVIM_LINK_DIR) of T25 case $1
 t25_link_dir() { printf '%s\n' "$TMP/T25-$1/link-dir"; }
 # Runs T25 case $1 (fresh, keep, replace, no-symlink, or writable-link-dir)
@@ -2241,6 +2251,11 @@ t25_case() {
       NVIM_INSTALL_DIR "$dir" NVIM_LINK_DIR "$link_dir"
     [[ "$NVIM_INSTALL_DIR" == "$dir" && "$NVIM_LINK_DIR" == "$link_dir" ]] \
       || { echo "NVIM_INSTALL_DIR=$NVIM_INSTALL_DIR NVIM_LINK_DIR=$NVIM_LINK_DIR"; exit 1; }
+    if [[ "$id" != no-symlink ]]; then
+      must_override install_dir_nvim_is_first_on_path
+      # shellcheck disable=SC2329  # install_neovim_tarball calls it
+      install_dir_nvim_is_first_on_path() { return 0; }
+    fi
     detect_os
     detect_arch
     # shellcheck disable=SC2031  # detect_arch, in the script sourced into this subshell, sets it
@@ -2330,18 +2345,128 @@ for id in fresh keep replace no-symlink writable-link-dir; do
     grep -qxF "PATH after the tarball: unchanged" <<<"$out" || problems+="[install_neovim_tarball changed PATH] "
     if [[ "$id" == no-symlink ]]; then
       grep -qxF "NEED_PATH_SETUP=true" <<<"$out" || problems+="[NEED_PATH_SETUP not set] "
+      grep -qF "Could not link nvim into $t25_link_dir_path: root cannot write it" <<<"$out" \
+        || problems+="[no warning that the link could not be made] "
       grep -qxF "PATH after the step: install dir first" <<<"$out" \
         || problems+="[put_install_dir_first_on_path did not put the install dir's bin first] "
       grep -qxF "NVIM_FOUND=$t25_dir/bin/nvim" <<<"$out" || problems+="[nvim on PATH is not the install dir's] "
       grep -qF 'Neovim 0.98.7 on PATH' <<<"$out" || problems+="[verify_nvim did not pass on the install dir's nvim] "
     else
       grep -qxF "NEED_PATH_SETUP=false" <<<"$out" || problems+="[NEED_PATH_SETUP set although the symlink was made] "
+      ! grep -qF "Could not link nvim" <<<"$out" || problems+="[warned about a link that was made] "
       grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[PATH changed although the symlink was made] "
     fi
   fi
   problems+="$(sudo_allowlist_problems "$t25_log" "$t25_dir" "$t25_link_dir_path")"
   [[ -z "$problems" ]] || problems+="sudo log: $(tr '\n' ';' <"$t25_log"); $(tail -n3 <<<"$out" | tr '\n' ' ')"
   expect_none "T25-tarball $id" "$problems"
+done
+
+# T25b: after the tarball step NEED_PATH_SETUP says whether PATH reaches the install dir's nvim first, so
+# a run with another nvim ahead of the link dir, or with the link dir off PATH, ends on the nvim it
+# installed. Unlike T25, nothing here is only recorded: each case runs the real step and the real
+# install_dir_nvim_is_first_on_path on real files, on a copy of the script whose NVIM_INSTALL_DIR and
+# NVIM_LINK_DIR are scratch paths. T25_BIN's curl gives the tarball, and as_root is overridden to run
+# what it is given (the recording sudo would leave no link to find), leaving out chown, which a normal
+# user cannot run on the tree, and chmod, which changes nothing PATH sees. After the step T26's install
+# dir stub takes the place of the extracted nvim, as in T25's no-symlink, to give it a version. The nvim
+# ahead of the link dir is T26_BIN's stub, wrapped to leave a mark, since the check must not run it: it
+# can be a broken one. Each case's PATH holds only stub dirs and T25B_TOOLS_BIN, so a host's nvim never
+# counts.
+# A version the nvim ahead of the link dir never has, so only the install dir's stub passes verify_nvim
+t25b_install_dir_version=0.98.7
+# Runs T25b case $1: $2 = the version of the nvim in a dir ahead of the link dir, broken, or none; $3 =
+# whether the link dir is on PATH (yes or no)
+t25b_case() {
+  local id="$1" ahead_version="$2" link_dir_on_path="$3"
+  (
+    sandbox "T25b-$id" "$T25_BIN"
+    EVENT_LOG="$(event_log "T25b-$id")" TMPDIR="$TMP/T25b-$id-tmp"
+    export EVENT_LOG TMPDIR
+    mkdir -p "$TMPDIR"
+    dir="$TMP/T25b-$id/opt-nvim" link_dir="$TMP/T25b-$id/link-dir"
+    ahead_dir="$TMP/T25b-$id/ahead" ahead_ran="$TMP/T25b-$id/ahead-nvim-ran"
+    mkdir -p "$link_dir"
+    load_script_with "$TMP/T25b-$id/script/nvim-install.sh" \
+      NVIM_INSTALL_DIR "$dir" NVIM_LINK_DIR "$link_dir"
+    [[ "$NVIM_INSTALL_DIR" == "$dir" && "$NVIM_LINK_DIR" == "$link_dir" ]] \
+      || { echo "NVIM_INSTALL_DIR=$NVIM_INSTALL_DIR NVIM_LINK_DIR=$NVIM_LINK_DIR"; exit 1; }
+    detect_os
+    detect_arch
+    must_override as_root
+    # shellcheck disable=SC2329  # install_neovim_tarball calls it
+    as_root() {
+      case "$1" in
+        chown | chmod) return 0 ;;
+        *) "$@" ;;
+      esac
+    }
+    PATH="$T25_BIN:$T25B_TOOLS_BIN:$DENY_BIN"
+    if [[ "$link_dir_on_path" == yes ]]; then
+      PATH="$link_dir:$PATH"
+    fi
+    if [[ "$ahead_version" != none ]]; then
+      mkdir -p "$ahead_dir"
+      printf '#!/bin/sh\n: >"%s"\nexec "%s" "$@"\n' "$ahead_ran" "$T26_BIN/nvim" >"$ahead_dir/nvim"
+      chmod +x "$ahead_dir/nvim"
+      T26_VERSION="$ahead_version"
+      export T26_VERSION
+      PATH="$ahead_dir:$PATH"
+    fi
+    # shellcheck disable=SC2329  # run_errexit calls it
+    tarball_and_report() {
+      # shellcheck disable=SC2031  # this subshell's PATH, before install_neovim_tarball runs
+      local path_before="$PATH"
+      install_neovim_tarball
+      # shellcheck disable=SC2031  # install_neovim_tarball, in the script sourced into this subshell, sets it
+      echo "NEED_PATH_SETUP=$NEED_PATH_SETUP"
+      if [[ -e "$ahead_ran" ]]; then
+        echo "AHEAD_NVIM_RAN=yes"
+      fi
+      copy_stub "$dir/bin" nvim t26-install-dir-nvim
+      T26_INSTALL_DIR_VERSION="$t25b_install_dir_version"
+      export T26_INSTALL_DIR_VERSION
+      # As main runs it, after the privileged phase (closed by the flag alone: the real
+      # forget_sudo_credentials runs sudo -k)
+      PRIVILEGE_CLOSED=true
+      put_install_dir_first_on_path
+      echo "PATH after the step: $(path_change "$path_before" "$dir")"
+      echo "NVIM_FOUND=$(type -P nvim)"
+      verify_nvim
+    }
+    run_errexit tarball_and_report </dev/null
+    echo "tarball rc=$RC"
+    echo DONE
+  ) </dev/null 2>&1
+}
+# Case id, the version of the nvim ahead of the link dir (or broken, or none), whether the link dir is
+# on PATH, NEED_PATH_SETUP afterwards, and PATH after put_install_dir_first_on_path (unchanged: nvim is
+# reached through the link, or install-dir: the install dir's bin first, then PATH as it was)
+for tc in "broken-nvim-ahead:broken:yes:true:install-dir" \
+  "old-nvim-ahead:0.11.4:yes:true:install-dir" \
+  "link-dir-first:none:yes:false:unchanged" \
+  "no-nvim-link-dir-off-path:none:no:true:install-dir"; do
+  IFS=: read -r id ahead_version link_dir_on_path want_path_setup want_path <<<"$tc"
+  out="$(t25b_case "$id" "$ahead_version" "$link_dir_on_path")"
+  rc=$?
+  problems=""
+  done_ok $rc "$out" || problems+="[rc=$rc] "
+  ! grep -qF 'command not found' <<<"$out" || problems+="[a command was not found] "
+  grep -qxF "tarball rc=0" <<<"$out" || problems+="[want exit 0] "
+  grep -qxF "NEED_PATH_SETUP=$want_path_setup" <<<"$out" || problems+="[want NEED_PATH_SETUP=$want_path_setup] "
+  ! grep -qxF "AHEAD_NVIM_RAN=yes" <<<"$out" || problems+="[the tarball step ran the nvim ahead of the link dir] "
+  if [[ "$want_path" == install-dir ]]; then
+    grep -qxF "PATH after the step: install dir first" <<<"$out" \
+      || problems+="[want the install dir's bin first on PATH after put_install_dir_first_on_path] "
+    grep -qxF "NVIM_FOUND=$TMP/T25b-$id/opt-nvim/bin/nvim" <<<"$out" || problems+="[nvim on PATH is not the install dir's] "
+  else
+    grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[want PATH unchanged after put_install_dir_first_on_path] "
+    grep -qxF "NVIM_FOUND=$TMP/T25b-$id/link-dir/nvim" <<<"$out" || problems+="[nvim on PATH is not the link] "
+  fi
+  grep -qF "Neovim $t25b_install_dir_version on PATH" <<<"$out" \
+    || problems+="[verify_nvim did not pass on the install dir's nvim] "
+  [[ -z "$problems" ]] || problems+="; $(tail -n5 <<<"$out" | tr '\n' ' ')"
+  expect_none "T25b-tarball-path-first $id" "$problems"
 done
 
 # T26: install_neovim keeps a new enough nvim; otherwise it installs the neovim package and checks the
@@ -2512,7 +2637,7 @@ done
 # (install_neovim, then, past the privileged phase, put_install_dir_first_on_path, verify_nvim, and
 # print_summary, under errexit), as on Fedora 43 when an earlier run left the tarball there and dnf's
 # older nvim comes first on PATH: it exits 0, names reused as the install method, and its PATH line
-# gives that cause, not a failed link. The setup is T26's (t26_load).
+# gives that cause, not the tarball's. The setup is T26's (t26_load).
 out="$( (
   t26_load packages-only-reuse 0.11.6 0.12.6 root fail
   PACKAGES_ONLY=true
@@ -2537,7 +2662,7 @@ grep -qF 'Neovim 0.12.6 on PATH' <<<"$out" || problems+="[verify_nvim did not fi
 grep -qE 'Install method: +reused$' <<<"$out" || problems+="[want install method reused] "
 grep -qE "PATH: +the reused nvim was not first on PATH; the full run adds $(ere_escape "$TMP")/T26-packages-only-reuse/opt-nvim/bin to your shell config" <<<"$out" \
   || problems+="[no PATH line naming the reuse] "
-! grep -qF 'linked' <<<"$out" || problems+="[names a failed link] "
+! grep -qF "the tarball's nvim" <<<"$out" || problems+="[names the tarball's cause] "
 ! grep -qE '^PKG_INSTALL|^TARBALL$' <<<"$out" || problems+="[installed Neovim] "
 expect_none T26c-packages-only-reuse "$problems"
 

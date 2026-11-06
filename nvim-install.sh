@@ -383,6 +383,16 @@ confirm_proceed() {
 # Neovim installation
 # ---------------------------------------------------------------------------
 
+# Succeeds when the nvim PATH reaches first is the one in $NVIM_INSTALL_DIR/bin, directly or through the
+# $NVIM_LINK_DIR link; fails when it is another, or PATH has none. It compares files (-ef), not paths,
+# because the link's path differs from that nvim's though running either runs the same file. It only
+# reads PATH and runs no nvim: the one PATH reaches first can be a broken one.
+install_dir_nvim_is_first_on_path() {
+  local first_nvim
+  first_nvim="$(command -v nvim)" || return 1
+  [[ "$first_nvim" -ef "$NVIM_INSTALL_DIR/bin/nvim" ]]
+}
+
 install_neovim_tarball() {
   local filename="nvim-${OS}-${ARCH}.tar.gz"
   local url="${NVIM_RELEASE_BASE}/${filename}"
@@ -426,6 +436,12 @@ install_neovim_tarball() {
     as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" "${NVIM_LINK_DIR}/nvim"
     success "Symlinked nvim to $NVIM_LINK_DIR/nvim"
   else
+    warn "Could not link nvim into $NVIM_LINK_DIR: root cannot write it"
+  fi
+
+  # A link is not enough: an nvim in a dir ahead of the link dir, or a link dir PATH does not list,
+  # keeps this one from being found
+  if ! install_dir_nvim_is_first_on_path; then
     NEED_PATH_SETUP=true
   fi
 
@@ -1149,9 +1165,9 @@ setup_config() {
 # PATH setup (an nvim in NVIM_INSTALL_DIR that PATH did not reach first)
 # ---------------------------------------------------------------------------
 
-# When install_neovim left this run's nvim only in $NVIM_INSTALL_DIR/bin (NEED_PATH_SETUP), puts that dir
-# first on this run's PATH and exports it, so verify_nvim, verify_config, and what they start run that
-# nvim now; setup_path adds the same entry to the shell config for new shells. Only root can write the
+# When this run's nvim is in $NVIM_INSTALL_DIR/bin and PATH did not reach it first (NEED_PATH_SETUP), puts
+# that dir first on this run's PATH and exports it, so verify_nvim, verify_config, and what they start run
+# that nvim now; setup_path adds the same entry to the shell config for new shells. Only root can write the
 # tree (the tarball install chowns it, and reuse requires is_root_owned_tree), so the commands this run
 # starts afterwards cannot find one another account planted there. main runs this after
 # forget_sudo_credentials has closed the privileged phase, because as_root runs plain sudo, which
@@ -1305,7 +1321,7 @@ print_summary() {
     local path_cause
     case "$NVIM_INSTALL_METHOD" in
       reused) path_cause="the reused nvim was not first on PATH" ;;
-      tarball) path_cause="nvim could not be linked into $NVIM_LINK_DIR" ;;
+      tarball) path_cause="the tarball's nvim was not first on PATH" ;;
       *)
         error "print_summary: NEED_PATH_SETUP is true for install method '$NVIM_INSTALL_METHOD' (expected reused or tarball)"
         exit 1
