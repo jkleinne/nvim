@@ -606,12 +606,12 @@ report_no_fake_root() {
     echo "SKIP $1 ($no_wrapper)"
   fi
 }
-# Printed alone on a line by a case subshell that made a dir read-only and found this user can still
-# write it (as root can), so the case cannot check what it is about (exit_if_writable); the test's loop
+# Printed alone on a line by a case subshell that made a dir or file read-only and found this user can
+# still write it (as root can), so the case cannot check what it is about (exit_if_writable); the test
 # then reports the case as skipped (report_skip_if_writable)
 WRITABLE_ANYWAY_MARKER="WRITABLE ANYWAY"
 # Ends the calling case subshell, status 0, with WRITABLE_ANYWAY_MARKER as its last line of output,
-# when this user can write dir $1 whatever its mode
+# when this user can write dir or file $1 whatever its mode
 exit_if_writable() {
   if [[ -w "$1" ]]; then
     echo "$WRITABLE_ANYWAY_MARKER"
@@ -619,7 +619,7 @@ exit_if_writable() {
   fi
 }
 # Prints the SKIP line for test case $1, giving reason $3, and succeeds when the case's output $2 says it
-# found its read-only dir writable (exit_if_writable); fails, printing nothing, otherwise
+# found its read-only dir or file writable (exit_if_writable); fails, printing nothing, otherwise
 report_skip_if_writable() {
   grep -qxF "$WRITABLE_ANYWAY_MARKER" <<<"$2" || return 1
   echo "SKIP $1 ($3)"
@@ -2122,6 +2122,49 @@ for tc in "bash-without-entry:bash:in-config:.bashrc:# existing" \
   t22j_fail+="$(shown_patterns "$t22j_case" "$out" "$t22j_unwanted" 'PATH updated' "$t22j_bin_dir_ere first,")"
 done
 expect_none T22j-summary-path-entry "$t22j_fail"
+
+# T22k: setup_path appends the NVIM_INSTALL_DIR/bin entry under main's errexit, so a shell config it
+# cannot write stops the run there, before any summary can say the entry is in that file. With T26's
+# stub nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, the reused method, and bash's .bashrc
+# holding one line and made read-only, setup_path and then print_summary (main's order) run under
+# errexit: they must stop at the write (bash's error names the file, "<file>: ", which no message of
+# setup_path's does), exit nonzero, never print "is in your shell config", and leave .bashrc as it was.
+# A user who can write the file whatever its mode (root, or a filesystem that ignores modes) skips the
+# test, which could check nothing there.
+t22k_id=T22k-summary-after-failed-write
+t22k_rc_text='# existing'
+out="$( (
+  sandbox "$t22k_id" "$T26_BIN"
+  T26_VERSION=0.12.0
+  export T26_VERSION
+  load_script
+  NEED_PATH_SETUP=true NVIM_INSTALL_METHOD=reused USER_SHELL=bash
+  printf '%s\n' "$t22k_rc_text" >"$HOME/.bashrc"
+  chmod 0444 "$HOME/.bashrc"
+  exit_if_writable "$HOME/.bashrc"
+  # shellcheck disable=SC2329  # run_errexit calls it
+  path_then_summary() {
+    setup_path
+    print_summary
+  }
+  run_errexit path_then_summary
+  echo "inner rc=$RC"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+if ! report_skip_if_writable "$t22k_id" "$out" \
+  "this user can write a mode 0444 .bashrc, as root can, or the filesystem ignores modes"; then
+  t22k_fail=""
+  t22k_rc_file="$(sandbox_home "$t22k_id")/.bashrc"
+  done_ok $rc "$out" || t22k_fail+="[rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  grep -qF "$t22k_rc_file: " <<<"$out" || t22k_fail+="[no failed write to .bashrc in the output] "
+  ! grep -qxF "inner rc=0" <<<"$out" \
+    || t22k_fail+="[setup_path then print_summary exited 0 with .bashrc read-only] "
+  t22k_fail+="$(shown_patterns summary "$out" 'is in your shell config')"
+  [[ -f "$t22k_rc_file" && "$(<"$t22k_rc_file")" == "$t22k_rc_text" ]] \
+    || t22k_fail+="[.bashrc no longer holds only '$t22k_rc_text'] "
+  expect_none "$t22k_id" "$t22k_fail"
+fi
 
 # T22h: NEED_PATH_SETUP comes only with the reused or tarball method, so print_summary, given it with
 # any other method (existing here), has no cause to name: it stops with exit 1 and an error naming the
