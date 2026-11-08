@@ -34,8 +34,12 @@ WARNINGS=()
 PATH_WARNED_DIRS=()
 # true when this run's nvim is in $NVIM_INSTALL_DIR/bin and PATH did not reach it first. install_neovim
 # only records it; put_install_dir_first_on_path then puts that dir first on this run's PATH, after the
-# privileged phase, and setup_path adds it to the shell config.
+# privileged phase, and setup_path adds it to the shell config when it can.
 NEED_PATH_SETUP=false
+# true once setup_path has found or added the $NVIM_INSTALL_DIR/bin entry in the shell config. Apart from
+# NEED_PATH_SETUP because a run can need the entry and not be able to add it (setup_path then only prints
+# the line to add), and print_summary reports which happened.
+SHELL_CONFIG_HAS_PATH_ENTRY=false
 # Where this run's nvim came from: existing (a new enough nvim on PATH), reused (a new enough one in
 # $NVIM_INSTALL_DIR/bin that PATH did not reach first), the package manager's name, or tarball (installed
 # now). The PATH messages read it for the cause.
@@ -1167,9 +1171,9 @@ setup_config() {
 
 # When this run's nvim is in $NVIM_INSTALL_DIR/bin and PATH did not reach it first (NEED_PATH_SETUP), puts
 # that dir first on this run's PATH and exports it, so verify_nvim, verify_config, and what they start run
-# that nvim now; setup_path adds the same entry to the shell config for new shells. Only root can write the
-# tree (the tarball install chowns it, and reuse requires is_root_owned_tree), so the commands this run
-# starts afterwards cannot find one another account planted there. main runs this after
+# that nvim now; setup_path adds the same entry to the shell config for new shells when it can. Only root
+# can write the tree (the tarball install chowns it, and reuse requires is_root_owned_tree), so the
+# commands this run starts afterwards cannot find one another account planted there. main runs this after
 # forget_sudo_credentials has closed the privileged phase, because as_root runs plain sudo, which
 # searches the caller's PATH unless sudoers sets secure_path: past the drop, as_root stops the run, and
 # cleanup's sudo -k runs only for a ticket still held, which the drop clears, so no root command and no
@@ -1225,10 +1229,12 @@ setup_path() {
 
   if grep -qF "$nvim_bin" "$rc_file" 2>/dev/null; then
     success "PATH entry already in $rc_file"
+    SHELL_CONFIG_HAS_PATH_ENTRY=true
     return
   fi
 
   printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$line" >> "$rc_file"
+  SHELL_CONFIG_HAS_PATH_ENTRY=true
   success "Added PATH entry to $rc_file"
   info "Run 'source $rc_file' or open a new terminal to apply."
 }
@@ -1330,8 +1336,11 @@ print_summary() {
     if [[ "$PACKAGES_ONLY" == true ]]; then
       # setup_path did not run
       printf '  %-18s %s\n' "PATH:" "$path_cause; the full run adds $NVIM_INSTALL_DIR/bin to your shell config"
+    elif [[ "$SHELL_CONFIG_HAS_PATH_ENTRY" == true ]]; then
+      printf '  %-18s %s\n' "PATH:" "$path_cause; $NVIM_INSTALL_DIR/bin is in your shell config"
     else
-      printf '  %-18s %s\n' "PATH updated:" "yes, $NVIM_INSTALL_DIR/bin first, as $path_cause (restart shell to apply)"
+      # setup_path could not add it
+      printf '  %-18s %s\n' "PATH:" "$path_cause; put $NVIM_INSTALL_DIR/bin first on PATH in your shell config"
     fi
   fi
 

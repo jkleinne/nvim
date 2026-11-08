@@ -2015,10 +2015,12 @@ done
 # NEED_PATH_SETUP true, as after a tarball install (tarball) or a reuse (reused) of an install dir's nvim
 # that PATH did not reach first: packages-only shows the title, the config line, the PATH note with that
 # cause (setup_path did not run, so nothing was added yet), and the closing line that asks for the full
-# run; the full run shows its own title, PATH updated with that cause, and the Mason line, and none of
-# the packages-only texts (the bare word is not checked: the config path in the output sits under the
-# suite's temp dir, whose name could contain it). Neither shows the other method's cause. The test reads
-# the install dir from the script, so the texts it expects follow the script's constant.
+# run, and neither of the full run's PATH lines; the full run, where the real setup_path adds the entry
+# to an existing .bashrc as main runs it first (T22j covers its other outcomes), shows its own title, its
+# PATH line with that cause and nothing after it, and the Mason line, and none of the packages-only texts
+# (the bare word is not checked: the config path in the output sits under the suite's temp dir, whose
+# name could contain it). Neither shows PATH updated or the other method's cause. The test reads the
+# install dir from the script, so the texts it expects follow the script's constant.
 t22f_fail=""
 t22f_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22f_fail+="[the script sets no NVIM_INSTALL_DIR] "
 t22f_bin_dir_ere="$(ere_escape "$t22f_install_dir/bin")"
@@ -2033,6 +2035,11 @@ for mode in true false; do
       load_script
       # shellcheck disable=SC2030  # print_summary, in the script sourced into this subshell, reads them
       PACKAGES_ONLY="$mode" NEED_PATH_SETUP=true NVIM_INSTALL_METHOD="$method"
+      if [[ "$mode" == false ]]; then
+        USER_SHELL=bash
+        : >"$HOME/.bashrc"
+        setup_path >/dev/null
+      fi
       print_summary
       echo DONE
     ) </dev/null 2>&1)"
@@ -2046,13 +2053,14 @@ for mode in true false; do
       t22f_wanted=('Neovim Packages Installed' 'Config: +not cloned \(packages-only\)'
         "PATH: +$t22f_cause; the full run adds $t22f_bin_dir_ere to your shell config"
         'Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config\.')
-      t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Mason installs' "$t22f_other_cause")
+      t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Mason installs' 'is in your shell config'
+        "put $t22f_bin_dir_ere first on PATH" "$t22f_other_cause")
     else
       t22f_wanted=('Neovim Bootstrap Complete'
-        "PATH updated: +yes, $t22f_bin_dir_ere first, as $t22f_cause \\(restart shell to apply\\)"
+        "PATH: +$t22f_cause; $t22f_bin_dir_ere is in your shell config\$"
         'Open a file in nvim once so Mason installs its language servers\.')
-      t22f_unwanted=('Packages Installed' 'not cloned \(packages-only\)' 'without --packages-only' 'PATH: '
-        "$t22f_other_cause")
+      t22f_unwanted=('Packages Installed' 'not cloned \(packages-only\)' 'without --packages-only'
+        'the full run adds' 'PATH updated' "$t22f_other_cause")
     fi
     done_ok $rc "$out" || t22f_fail+="[packages_only=$mode $method: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
     t22f_fail+="$(missing_patterns "packages_only=$mode $method" "$out" "${t22f_wanted[@]}")"
@@ -2060,6 +2068,50 @@ for mode in true false; do
   done
 done
 expect_none T22f-summary-modes "$t22f_fail"
+
+# T22j: a full run's summary says whether the shell config has the NVIM_INSTALL_DIR/bin entry, which only
+# setup_path knows, so each case runs the real setup_path, then the real print_summary, with T26's stub
+# nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, and the reused method. Cases: name,
+# USER_SHELL, outcome, and the rc file under HOME with its text (both empty: no rc file). An rc file with
+# or without the entry, and posix's missing .profile, which setup_path creates, end with the entry there
+# (in-config). zsh's missing .zshenv and an unknown shell, set directly because detect_shell never gives
+# one, leave the line for the user to add (hand-step). No case may say PATH updated, which is false when
+# the entry was already there, or "<dir> first,": a later PATH change in the shell config can undo that,
+# and the hand step's "first on PATH" is an instruction, which the check leaves alone. The test reads the
+# install dir from the script, so the texts it expects follow the script's constant.
+t22j_fail=""
+t22j_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22j_fail+="[the script sets no NVIM_INSTALL_DIR] "
+t22j_bin_dir_ere="$(ere_escape "$t22j_install_dir/bin")"
+t22j_cause='the reused nvim was not first on PATH'
+for tc in "bash-without-entry:bash:in-config:.bashrc:# existing" \
+  "bash-with-entry:bash:in-config:.bashrc:export PATH=\"$t22j_install_dir/bin:\$PATH\"" \
+  "posix-no-profile:posix:in-config::" "zsh-no-zshenv:zsh:hand-step::" \
+  "unknown-shell:ksh:hand-step::"; do
+  IFS=: read -r t22j_case t22j_shell t22j_outcome t22j_rc t22j_rc_text <<<"$tc"
+  out="$( (
+    sandbox "T22j-$t22j_case" "$T26_BIN"
+    T26_VERSION=0.12.0
+    export T26_VERSION
+    load_script
+    NEED_PATH_SETUP=true NVIM_INSTALL_METHOD=reused USER_SHELL="$t22j_shell"
+    [[ -z "$t22j_rc" ]] || printf '%s\n' "$t22j_rc_text" >"$HOME/$t22j_rc"
+    setup_path >/dev/null
+    print_summary
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  if [[ "$t22j_outcome" == in-config ]]; then
+    t22j_wanted="PATH: +$t22j_cause; $t22j_bin_dir_ere is in your shell config"
+    t22j_unwanted="put $t22j_bin_dir_ere first on PATH"
+  else
+    t22j_wanted="PATH: +$t22j_cause; put $t22j_bin_dir_ere first on PATH in your shell config"
+    t22j_unwanted='is in your shell config'
+  fi
+  done_ok $rc "$out" || t22j_fail+="[$t22j_case: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  t22j_fail+="$(missing_patterns "$t22j_case" "$out" "$t22j_wanted")"
+  t22j_fail+="$(shown_patterns "$t22j_case" "$out" "$t22j_unwanted" 'PATH updated' "$t22j_bin_dir_ere first,")"
+done
+expect_none T22j-summary-path-entry "$t22j_fail"
 
 # T22h: NEED_PATH_SETUP comes only with the reused or tarball method, so print_summary, given it with
 # any other method (existing here), has no cause to name: it stops with exit 1 and an error naming the
@@ -2081,7 +2133,7 @@ for mode in true false; do
   done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" \
     && grep -qxF "  x print_summary: NEED_PATH_SETUP is true for install method 'existing' (expected reused or tarball)" <<<"$out" \
     || t22h_fail+="[packages_only=$mode: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
-  ! grep -qE 'PATH( updated)?: ' <<<"$out" || t22h_fail+="[packages_only=$mode: printed a PATH line] "
+  ! grep -qF 'PATH: ' <<<"$out" || t22h_fail+="[packages_only=$mode: printed a PATH line] "
 done
 expect_none T22h-summary-path-cause-invariant "$t22h_fail"
 
