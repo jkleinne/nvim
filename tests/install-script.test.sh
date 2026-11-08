@@ -642,11 +642,14 @@ else
 fi
 
 # T2: the plan screen names the platform and, on pacman, the upfront system upgrade, with no tier notice
-# (pacman is first-class); "n" cancels cleanly (exit 0), and end of input (no terminal to answer from, as
-# in a piped run) stops the run with exit 1 and says why
+# (pacman is first-class), and step 1 names the major.minor of the script's MIN_NVIM_VERSION; "n" cancels
+# cleanly (exit 0), and end of input (no terminal to answer from, as in a piped run) stops the run with
+# exit 1 and says why
 if [[ "$host_mgr" != pacman ]]; then
   echo "SKIP T2-plan-screen (the script detects '${host_mgr:-nothing}' here, not pacman)"
 else
+  t2_fail=""
+  t2_min_version="$(script_constant MIN_NVIM_VERSION)" || t2_fail+="[the script sets no MIN_NVIM_VERSION] "
   out="$( (
     sandbox T2 ""
     printf 'n\n' | run_script
@@ -658,13 +661,13 @@ else
   ) </dev/null 2>&1)"
   eof_rc=$?
   absent="$(missing_patterns plan "$out" 'OS: +linux' 'Architecture: +(x86_64|arm64)' 'Package manager: +pacman' \
-    'Support tier: +first-class' '0\. Upgrade the system first \(pacman -Syu' '1\. Install Neovim 0\.12\+' \
-    'Cancelled\.')"
+    'Support tier: +first-class' '0\. Upgrade the system first \(pacman -Syu' \
+    "1\\. Install Neovim $(ere_escape "${t2_min_version%.*}")\\+" 'Cancelled\.')"
   tier_notice="$(grep -m1 -E ' is (first-class|supported|best-effort): ' <<<"$out")"
-  [[ $rc -eq 0 && -z "$absent" && -z "$tier_notice" && $eof_rc -eq 1 ]] \
+  [[ -z "$t2_fail" && $rc -eq 0 && -z "$absent" && -z "$tier_notice" && $eof_rc -eq 1 ]] \
     && grep -qF 'No answer (stdin is closed or not a terminal); run the script from a terminal' <<<"$eof_out" \
     && ! grep -qF 'Cancelled.' <<<"$eof_out" && ! grep -qE 'STUB .* BLOCKED' <<<"$out$eof_out"
-  result T2-plan-screen $? "rc=$rc eof_rc=$eof_rc absent=$absent tier_notice=$tier_notice; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
+  result T2-plan-screen $? "${t2_fail}rc=$rc eof_rc=$eof_rc absent=$absent tier_notice=$tier_notice; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
 fi
 
 # Runs confirm_proceed, sourced so any host can run it, for package manager $2 and mode $3, answering "n",
@@ -684,18 +687,21 @@ t2_plan() {
 }
 # T2b: the plan screen for dnf names the supported tier and its notice (which names no distro, since RHEL
 # and CentOS reach this tier too, and gives the tarball fallback for a repo Neovim that is missing or
-# older than the script's MIN_NVIM_VERSION), lists the language servers in step 2, has no upfront
-# upgrade and no best-effort text, shows the shell t2_plan sets and Mode: full with the clone step, and
-# "n" cancels with exit 0.
+# older than the script's MIN_NVIM_VERSION), names that constant's major.minor and dnf in step 1, lists
+# the language servers in step 2, has no upfront upgrade and no best-effort text, shows the shell t2_plan
+# sets and Mode: full with the clone step, and "n" cancels with exit 0. The constant must be X.Y.Z, since
+# step 1 and the usage name its major.minor and the tests derive theirs the same way.
 t2_fail=""
 out="$(t2_plan dnf dnf false)"
 rc=$?
 t2_min_version="$(script_constant MIN_NVIM_VERSION)" || t2_fail+="[the script sets no MIN_NVIM_VERSION] "
+[[ $t2_min_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || t2_fail+="[MIN_NVIM_VERSION '$t2_min_version' is not X.Y.Z, the form step 1 and usage take major.minor from] "
 t2_fail+="$(missing_patterns dnf "$out" 'Support tier: +supported' 'Shell: +bash$' 'Mode: +full$' \
   'dnf is supported' \
   "Neovim comes from the release tarball when the repo's is missing or older than $(ere_escape "$t2_min_version")" \
   'lazygit and lazydocker come from go install at pinned versions in the full run' \
-  '1\. Install Neovim 0\.12\+ \(prefer dnf' \
+  "1\\. Install Neovim $(ere_escape "${t2_min_version%.*}")\\+ \\(prefer dnf" \
   '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' \
   '3\. Clone config' 'Cancelled\.')"
 [[ $rc -eq 0 ]] || t2_fail+="[dnf: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
@@ -3205,9 +3211,10 @@ expect_none "T30-ticket-windows order" "$problems"
 # unknown argument, the empty one, or a second argument beside --packages-only or --help) prints the error,
 # which shows each argument as given (quoted, so an empty one shows as '' and a space inside one stays
 # visible), and usage to stderr, and exits 1 before anything runs (nothing on stdout, and the recording
-# sudo logs nothing). --help and -h alone print usage to stdout and exit 0, naming the mode flag, the
-# Fedora tier row, what Mason installs and when (the first time nvim opens a file, a phrase the usage
-# keeps on one line), and the pylsp stand-in.
+# sudo logs nothing). --help and -h alone print usage to stdout and exit 0, naming the minimum Neovim
+# (the major.minor of the script's MIN_NVIM_VERSION), the mode flag, the Fedora tier row, what Mason
+# installs and when (the first time nvim opens a file, a phrase the usage keeps on one line), and the
+# pylsp stand-in.
 
 # Prints a problem unless the script, run with the arguments after $2 in a recording sandbox named $1,
 # exits 1 with nothing on stdout, no sudo call, and on stderr the usage and the error message $2 (as
@@ -3237,6 +3244,7 @@ done
 # The cases the word-splitting loop cannot express: an empty argument, and one with a space inside
 t31_fail+="$(t31_rejection_problems T31-empty "unknown argument: ''" "")"
 t31_fail+="$(t31_rejection_problems T31-quoted 'too many arguments: a\ b c' "a b" c)"
+t31_min_version="$(script_constant MIN_NVIM_VERSION)" || t31_fail+="[the script sets no MIN_NVIM_VERSION] "
 for flag in --help -h; do
   t31_err="$TMP/T31$flag.err"
   out="$( (
@@ -3244,7 +3252,9 @@ for flag in --help -h; do
     run_script_args "$flag" 2>"$t31_err"
   ) </dev/null)"
   rc=$?
-  absent="$(missing_patterns help "$out" 'Usage: nvim-install.sh' '--packages-only' '^  Fedora +\(dnf\) +supported$' \
+  absent="$(missing_patterns help "$out" 'Usage: nvim-install.sh' \
+    "^Bootstrap script for Neovim $(ere_escape "${t31_min_version%.*}")\\+ with" \
+    '--packages-only' '^  Fedora +\(dnf\) +supported$' \
     'Mason installs the native language' 'the first time nvim opens a file;' \
     'On Fedora, python-lsp-server stands in for pyright\.')"
   [[ $rc -eq 0 && -z "$absent" && ! -s "$t31_err" ]] \

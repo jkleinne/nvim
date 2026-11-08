@@ -2,6 +2,10 @@
 set -euo pipefail
 
 readonly MIN_NVIM_VERSION="0.12.0"
+# MIN_NVIM_VERSION without its patch number, the form the plan screen and usage name the minimum in
+# (Neovim X.Y+), so a bump of the minimum changes those texts too. It takes MIN_NVIM_VERSION to be
+# X.Y.Z, as Neovim numbers its releases (a test checks the form)
+readonly MIN_NVIM_MAJOR_MINOR="${MIN_NVIM_VERSION%.*}"
 readonly NVIM_REPO_SLUG="jkleinne/nvim"
 readonly NVIM_REPO="https://github.com/${NVIM_REPO_SLUG}.git"
 readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
@@ -363,7 +367,7 @@ confirm_proceed() {
   if [[ "$PKG_MGR" == "pacman" ]]; then
     printf '  %s\n' "0. Upgrade the system first (pacman -Syu, with pacman's own prompt) if anything needs installing"
   fi
-  printf '  %s\n' "1. Install Neovim 0.12+ (prefer $PKG_MGR, tarball fallback)"
+  printf '  %s\n' "1. Install Neovim $MIN_NVIM_MAJOR_MINOR+ (prefer $PKG_MGR, tarball fallback)"
   case "$PKG_MGR" in
     pacman | dnf)
       printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
@@ -1392,11 +1396,13 @@ print_summary() {
 # Usage
 # ---------------------------------------------------------------------------
 
+# Prints the help text. Its heredoc is unquoted so MIN_NVIM_MAJOR_MINOR expands; a $, backquote, or
+# backslash added to the text needs a backslash before it to print as written
 usage() {
-  cat <<'EOF'
+  cat <<EOF
 Usage: nvim-install.sh [--packages-only | --help]
 
-Bootstrap script for Neovim 0.12+ with a full dev environment on Linux.
+Bootstrap script for Neovim $MIN_NVIM_MAJOR_MINOR+ with a full dev environment on Linux.
 
 Installs Neovim, build tools, a clipboard tool, runtimes (Node, Go),
 formatters, linters, and TUI tools, and the language servers the distro
