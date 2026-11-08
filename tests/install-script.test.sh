@@ -2081,21 +2081,27 @@ expect_none T22f-summary-modes "$t22f_fail"
 
 # T22j: a full run's summary says whether the shell config has the NVIM_INSTALL_DIR/bin entry, which only
 # setup_path knows, so each case runs the real setup_path, then the real print_summary, with T26's stub
-# nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, and the reused method. Cases: name,
-# USER_SHELL, outcome, and the rc file under HOME with its text (both empty: no rc file). An rc file with
-# or without the entry, and posix's missing .profile, which setup_path creates, end with the entry there
-# (in-config). zsh's missing .zshenv and an unknown shell, set directly because detect_shell never gives
-# one, leave the line for the user to add (hand-step). No case may say PATH updated, which is false when
-# the entry was already there, or "<dir> first,": a later PATH change in the shell config can undo that,
-# and the hand step's "first on PATH" is an instruction, which the check leaves alone. The test reads the
+# nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, and the reused method, and checks
+# setup_path's own output too. Cases: name, USER_SHELL, outcome, and the rc file under HOME with its
+# text (no text: the file does not exist; no file either: the shell has none). An rc file with or
+# without the entry, and posix's missing .profile, which setup_path creates, end with the entry there
+# (in-config), and setup_path must not ask the user to add it. zsh's missing .zshenv and an unknown
+# shell, set directly because detect_shell never gives one, leave the line for the user to add
+# (hand-step): setup_path must print the warning that says why, as warn prints it (the summary's
+# warning list repeats it, indented further), the line that asks the user to add the entry, and the
+# entry, indented as setup_path prints it. No case may say PATH updated, which is false when the entry
+# was already there, or "<dir> first,": a later PATH change in the shell config can undo that, and the
+# hand step's "first on PATH" is an instruction, which the check leaves alone. The test reads the
 # install dir from the script, so the texts it expects follow the script's constant.
 t22j_fail=""
 t22j_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22j_fail+="[the script sets no NVIM_INSTALL_DIR] "
 t22j_bin_dir_ere="$(ere_escape "$t22j_install_dir/bin")"
+t22j_entry="export PATH=\"$t22j_install_dir/bin:\$PATH\""
+t22j_ask_ere="$(ere_escape 'Add this to your shell config manually')"
 t22j_cause='the reused nvim was not first on PATH'
 for tc in "bash-without-entry:bash:in-config:.bashrc:# existing" \
-  "bash-with-entry:bash:in-config:.bashrc:export PATH=\"$t22j_install_dir/bin:\$PATH\"" \
-  "posix-no-profile:posix:in-config::" "zsh-no-zshenv:zsh:hand-step::" \
+  "bash-with-entry:bash:in-config:.bashrc:$t22j_entry" \
+  "posix-no-profile:posix:in-config:.profile:" "zsh-no-zshenv:zsh:hand-step:.zshenv:" \
   "unknown-shell:ksh:hand-step::"; do
   IFS=: read -r t22j_case t22j_shell t22j_outcome t22j_rc t22j_rc_text <<<"$tc"
   out="$( (
@@ -2104,22 +2110,28 @@ for tc in "bash-without-entry:bash:in-config:.bashrc:# existing" \
     export T26_VERSION
     load_script
     NEED_PATH_SETUP=true NVIM_INSTALL_METHOD=reused USER_SHELL="$t22j_shell"
-    [[ -z "$t22j_rc" ]] || printf '%s\n' "$t22j_rc_text" >"$HOME/$t22j_rc"
-    setup_path >/dev/null
+    [[ -z "$t22j_rc_text" ]] || printf '%s\n' "$t22j_rc_text" >"$HOME/$t22j_rc"
+    setup_path
     print_summary
     echo DONE
   ) </dev/null 2>&1)"
   rc=$?
   if [[ "$t22j_outcome" == in-config ]]; then
-    t22j_wanted="PATH: +$t22j_cause; $t22j_bin_dir_ere is in your shell config"
-    t22j_unwanted="put $t22j_bin_dir_ere first on PATH"
+    t22j_wanted=("PATH: +$t22j_cause; $t22j_bin_dir_ere is in your shell config")
+    t22j_unwanted=("put $t22j_bin_dir_ere first on PATH" "$t22j_ask_ere")
   else
-    t22j_wanted="PATH: +$t22j_cause; put $t22j_bin_dir_ere first on PATH in your shell config"
-    t22j_unwanted='is in your shell config'
+    if [[ -n "$t22j_rc" ]]; then
+      t22j_reason="$(sandbox_home "T22j-$t22j_case")/$t22j_rc does not exist."
+    else
+      t22j_reason="Could not determine rc file for shell: $t22j_shell"
+    fi
+    t22j_wanted=("PATH: +$t22j_cause; put $t22j_bin_dir_ere first on PATH in your shell config"
+      "^  ! $(ere_escape "$t22j_reason")\$" "^==> $t22j_ask_ere:\$" "^  $(ere_escape "$t22j_entry")\$")
+    t22j_unwanted=('is in your shell config')
   fi
   done_ok $rc "$out" || t22j_fail+="[$t22j_case: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-  t22j_fail+="$(missing_patterns "$t22j_case" "$out" "$t22j_wanted")"
-  t22j_fail+="$(shown_patterns "$t22j_case" "$out" "$t22j_unwanted" 'PATH updated' "$t22j_bin_dir_ere first,")"
+  t22j_fail+="$(missing_patterns "$t22j_case" "$out" "${t22j_wanted[@]}")"
+  t22j_fail+="$(shown_patterns "$t22j_case" "$out" "${t22j_unwanted[@]}" 'PATH updated' "$t22j_bin_dir_ere first,")"
 done
 expect_none T22j-summary-path-entry "$t22j_fail"
 

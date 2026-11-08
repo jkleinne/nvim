@@ -1191,6 +1191,16 @@ put_install_dir_first_on_path() {
   export PATH
 }
 
+# Warns with reason $1, then prints the line $2 for the user to add to their shell config. Each way
+# setup_path can stop short of adding the entry leaves the user this same step, so they all print it
+# here and say it the same way.
+print_path_manual_step() {
+  local reason="$1" line="$2"
+  warn "$reason"
+  info "Add this to your shell config manually:"
+  printf '  %s\n' "$line"
+}
+
 setup_path() {
   if [[ "$NEED_PATH_SETUP" != true ]]; then
     return
@@ -1214,16 +1224,12 @@ setup_path() {
   line="$(path_line prepend "$nvim_bin")"
 
   if [[ -z "$rc_file" ]]; then
-    warn "Could not determine rc file for shell: $USER_SHELL"
-    info "Add this to your shell config manually:"
-    printf '  %s\n' "$line"
+    print_path_manual_step "Could not determine rc file for shell: $USER_SHELL" "$line"
     return
   fi
 
   if [[ "$rc_file" != "$HOME/.profile" ]] && [[ ! -f "$rc_file" ]]; then
-    warn "$rc_file does not exist."
-    info "Add this to your shell config manually:"
-    printf '  %s\n' "$line"
+    print_path_manual_step "$rc_file does not exist." "$line"
     return
   fi
 
