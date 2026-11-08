@@ -60,7 +60,7 @@ yay -S hadolint-bin
 
 ### Fedora
 
-One dnf command installs everything Fedora packages. Fedora 44 and newer package Neovim 0.12, while Fedora 43's is 0.11.6, so there the bootstrap script ([Method B](#method-b-bootstrap-script-recommended)) installs Neovim from the official release tarball; if you install by hand, leave `neovim` out of the dnf command on Fedora 43 (it would still install 0.11.6) and get Neovim 0.12 from the [Neovim releases](https://github.com/neovim/neovim/releases) instead. The script installs the same packages for you and picks the clipboard tool from your session; on an X11 session, replace `wl-clipboard` with `xclip`:
+One dnf command installs everything Fedora packages. Fedora 44 and newer package Neovim 0.12, while Fedora 43's is 0.11.6: there the bootstrap script ([Method B](#method-b-bootstrap-script-recommended)) installs the 0.11.6 package, finds it older than 0.12, and then also installs Neovim from the official release tarball and uses the tarball's nvim; if you install by hand, leave `neovim` out of the dnf command on Fedora 43 (it would still install 0.11.6) and get Neovim 0.12 from the [Neovim releases](https://github.com/neovim/neovim/releases) instead. The script installs the same packages for you and picks the clipboard tool from your session; on an X11 session, replace `wl-clipboard` with `xclip`:
 
 ```bash
 sudo dnf install --setopt=install_weak_deps=False neovim git ripgrep gcc make curl tar gzip unzip \
