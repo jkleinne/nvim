@@ -2135,14 +2135,18 @@ for tc in "bash-without-entry:bash:in-config:.bashrc:# existing" \
 done
 expect_none T22j-summary-path-entry "$t22j_fail"
 
-# T22k: setup_path appends the NVIM_INSTALL_DIR/bin entry under main's errexit, so a shell config it
-# cannot write stops the run there, before any summary can say the entry is in that file. With T26's
-# stub nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, the reused method, and bash's .bashrc
-# holding one line and made read-only, setup_path and then print_summary (main's order) run under
-# errexit: they must stop at the write (bash's error names the file, "<file>: ", which no message of
-# setup_path's does), exit nonzero, never print "is in your shell config", and leave .bashrc as it was.
-# A user who can write the file whatever its mode (root, or a filesystem that ignores modes) skips the
-# test, which could check nothing there.
+# T22k: a shell config setup_path cannot write leaves the user the manual step, as its other dead ends
+# do, and the run goes on to the checks and the summary instead of stopping at the write under main's
+# errexit. With T26's stub nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, the reused method,
+# and bash's .bashrc holding one line and made read-only, setup_path and then print_summary (main's
+# order) run under errexit: they must exit 0 and reach DONE; the output must show bash's error naming
+# the file ("<file>: ", which no message of setup_path's has), so the case is the failed write, then
+# setup_path's warning naming the file, as warn prints it, the line that asks the user to add the entry,
+# and the entry, indented as setup_path prints it; the summary must give the manual PATH line with the
+# reused cause and never "is in your shell config"; and .bashrc must still hold only its one line. A
+# user who can write the file whatever its mode (root, or a filesystem that ignores modes) skips the
+# test, which could check nothing there. The test reads the install dir from the script, so the texts
+# it expects follow the script's constant.
 t22k_id=T22k-summary-after-failed-write
 t22k_rc_text='# existing'
 out="$( (
@@ -2167,11 +2171,20 @@ rc=$?
 if ! report_skip_if_writable "$t22k_id" "$out" \
   "this user can write a mode 0444 .bashrc, as root can, or the filesystem ignores modes"; then
   t22k_fail=""
+  t22k_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22k_fail+="[the script sets no NVIM_INSTALL_DIR] "
+  t22k_bin_dir_ere="$(ere_escape "$t22k_install_dir/bin")"
+  t22k_entry="export PATH=\"$t22k_install_dir/bin:\$PATH\""
+  t22k_cause='the reused nvim was not first on PATH'
   t22k_rc_file="$(sandbox_home "$t22k_id")/.bashrc"
   done_ok $rc "$out" || t22k_fail+="[rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  grep -qxF "inner rc=0" <<<"$out" \
+    || t22k_fail+="[setup_path then print_summary did not exit 0 with .bashrc read-only: $(grep '^inner rc=' <<<"$out")] "
   grep -qF "$t22k_rc_file: " <<<"$out" || t22k_fail+="[no failed write to .bashrc in the output] "
-  ! grep -qxF "inner rc=0" <<<"$out" \
-    || t22k_fail+="[setup_path then print_summary exited 0 with .bashrc read-only] "
+  t22k_fail+="$(missing_patterns setup_path "$out" \
+    "^  ! $(ere_escape "Could not write the PATH entry to $t22k_rc_file.")\$" \
+    "^==> $(ere_escape 'Add this to your shell config manually'):\$" "^  $(ere_escape "$t22k_entry")\$")"
+  t22k_fail+="$(missing_patterns summary "$out" \
+    "PATH: +$t22k_cause; put $t22k_bin_dir_ere first on PATH in your shell config")"
   t22k_fail+="$(shown_patterns summary "$out" 'is in your shell config')"
   [[ -f "$t22k_rc_file" && "$(<"$t22k_rc_file")" == "$t22k_rc_text" ]] \
     || t22k_fail+="[.bashrc no longer holds only '$t22k_rc_text'] "

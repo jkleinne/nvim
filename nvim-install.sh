@@ -1201,6 +1201,12 @@ print_path_manual_step() {
   printf '  %s\n' "$line"
 }
 
+# When NEED_PATH_SETUP, adds the $NVIM_INSTALL_DIR/bin entry to the user's shell config, so new shells
+# reach this run's nvim first as this run does (put_install_dir_first_on_path changes only this run's
+# PATH). An rc file that already mentions $NVIM_INSTALL_DIR/bin, or one the entry is appended to, sets
+# SHELL_CONFIG_HAS_PATH_ENTRY true. An unknown shell, a missing rc file (posix's .profile excepted, which
+# the append creates), or a write that fails leaves the manual step (print_path_manual_step) and the
+# flag false instead, so the run goes on and print_summary asks the user to add the entry.
 setup_path() {
   if [[ "$NEED_PATH_SETUP" != true ]]; then
     return
@@ -1239,7 +1245,13 @@ setup_path() {
     return
   fi
 
-  printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$line" >> "$rc_file"
+  # Checked, so a shell config the user cannot write (its mode, a read-only filesystem, a link to a
+  # read-only file, a full disk) leaves the manual step instead of ending the run under errexit, and the
+  # checks and the summary still run. bash's own error stays, since it says why the write failed.
+  if ! printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$line" >> "$rc_file"; then
+    print_path_manual_step "Could not write the PATH entry to $rc_file." "$line"
+    return
+  fi
   SHELL_CONFIG_HAS_PATH_ENTRY=true
   success "Added PATH entry to $rc_file"
   info "Run 'source $rc_file' or open a new terminal to apply."
