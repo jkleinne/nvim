@@ -1697,9 +1697,10 @@ result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 # install_language_servers only, and its all case then runs install_deps (a Wayland display),
 # install_clipboard again (an X11 display only), and install_neovim. The pacman all case gives (b)'s
 # packages (SERVER_PKG) and (c)'s (PKG), and the apt-get servers case gives (a)'s binaries (MANUAL).
-# t20_readme_command_words prints the words of a command under Requirements in the README, and
-# t20_list_diff prints the names only the script installs and the names only the README lists; (c)
-# then drops the documented exceptions. (a) compares in byte order, as Lua's table.sort sorts.
+# t20_readme_command_words prints the words of a command under Requirements in the README,
+# t20_list_diff prints the names only the script installs and the names only the README lists, and
+# t20_list_diff_problems drops (c)'s documented exceptions from those, one per side, and reports each
+# side that still has names. (a) compares in byte order, as Lua's table.sort sorts.
 t20_xdg="$TMP/T20-xdg"
 mkdir -p "$t20_xdg/config" "$t20_xdg/data" "$t20_xdg/state" "$t20_xdg/cache" "$t20_xdg/tmp"
 # Prints system-servers.lua's lines for its arguments (none, or $1 = table and optional $2 = keys) and
@@ -1784,6 +1785,22 @@ t20_readme_command_words() {
 t20_list_diff() {
   comm -3 "$1" "$2" | awk '/^\t/ { print "README_ONLY " substr($0, 2); next } { print "SCRIPT_ONLY " $0 }'
 }
+# Prints, labelled $1, a problem for each side of t20_list_diff's lines on stdin that still has names
+# once $2 is dropped from the script's side and $3 (empty for none) from the README's, and nothing
+# when neither side does. It reads stdin in one pass, as the diff comes from process
+# substitutions that cannot be read twice. With grep -x an empty $3 drops only empty lines, and grep's
+# status when it keeps no names is never read, so it changes no result.
+t20_list_diff_problems() {
+  local t20_label="$1" t20_script_exception="$2" t20_readme_exception="$3"
+  local t20_diff t20_script_only t20_readme_only
+  t20_diff="$(cat)"
+  t20_script_only="$(sed -n 's/^SCRIPT_ONLY //p' <<<"$t20_diff" | grep -vxF -- "$t20_script_exception")"
+  t20_readme_only="$(sed -n 's/^README_ONLY //p' <<<"$t20_diff" | grep -vxF -- "$t20_readme_exception")"
+  [[ -z "$t20_script_only" ]] \
+    || printf '[%s the script installs, the README does not: %s] ' "$t20_label" "$(tr '\n' ' ' <<<"$t20_script_only")"
+  [[ -z "$t20_readme_only" ]] \
+    || printf '[%s the README lists, the script does not install: %s] ' "$t20_label" "$(tr '\n' ' ' <<<"$t20_readme_only")"
+}
 t20_pacman_out="$(t20_collect pacman all)"
 t20_pacman_rc=$?
 t20_apt_out="$(t20_collect apt-get servers)"
@@ -1813,11 +1830,8 @@ done
 if [[ ${#readme_pkgs[@]} -eq 0 ]]; then
   problems+="[(c) no '$t20_pacman_command' command under Requirements in README.md] "
 else
-  t20_pacman_diff="$(t20_list_diff <(printf '%s\n' "${t20_all_pkgs[@]}") <(printf '%s\n' "${readme_pkgs[@]}"))"
-  t20_script_only="$(sed -n 's/^SCRIPT_ONLY //p' <<<"$t20_pacman_diff" | grep -vxF xclip)"
-  t20_readme_only="$(sed -n 's/^README_ONLY //p' <<<"$t20_pacman_diff" | grep -vxF ttf-jetbrains-mono-nerd)"
-  [[ -z "$t20_script_only" ]] || problems+="[(c) the script installs, the README does not: $(tr '\n' ' ' <<<"$t20_script_only")] "
-  [[ -z "$t20_readme_only" ]] || problems+="[(c) the README lists, the script does not install: $(tr '\n' ' ' <<<"$t20_readme_only")] "
+  problems+="$(t20_list_diff <(printf '%s\n' "${t20_all_pkgs[@]}") <(printf '%s\n' "${readme_pkgs[@]}") \
+    | t20_list_diff_problems "(c)" xclip ttf-jetbrains-mono-nerd)"
 fi
 expect_none T20-server-list-sync "$problems"
 if [[ "$host_mgr" != pacman ]] || ! command -v pacman >/dev/null 2>&1; then
@@ -1864,9 +1878,10 @@ fi
 # exactly the packages the script installs on dnf, except xclip. The names come from t20_collect's all
 # case for dnf, as for pacman: SERVER_PKG for the language-server packages, PKG for the rest of the
 # run's, and WARN for the warning (the MANUAL lines, the tools Fedora does not package, stay out of
-# every list). The README's words come from t20_readme_command_words, and t20_list_diff compares its
-# packages with the script's. The server names come from t20_inventory: `system keys` (the names) and
-# `fallbacks` (name, replaced server, command).
+# every list). The README's words come from t20_readme_command_words, t20_list_diff compares its
+# packages with the script's, and t20_list_diff_problems drops xclip from the script's side (nothing
+# from the README's) and reports each side that still has names. The server names come from
+# t20_inventory: `system keys` (the names) and `fallbacks` (name, replaced server, command).
 mapfile -t t20_system_keys < <(t20_inventory system keys | sed '/^$/d')
 mapfile -t t20_fallbacks < <(t20_inventory fallbacks | sed '/^$/d')
 t20_dnf_out="$(t20_collect dnf all)"
@@ -1925,13 +1940,8 @@ if [[ ${#readme_dnf_words[@]} -eq 0 ]]; then
 else
   [[ "${readme_dnf_words[0]}" == "$t20_weak_deps_option" ]] \
     || problems+="[(e) the README's dnf command does not turn weak dependencies off] "
-  t20_dnf_diff="$(t20_list_diff <(printf '%s\n' "${dnf_all_pkgs[@]}") <(printf '%s\n' "${readme_dnf_pkgs[@]}"))"
-  t20_dnf_script_only="$(sed -n 's/^SCRIPT_ONLY //p' <<<"$t20_dnf_diff" | grep -vxF xclip)"
-  t20_dnf_readme_only="$(sed -n 's/^README_ONLY //p' <<<"$t20_dnf_diff")"
-  [[ -z "$t20_dnf_script_only" ]] \
-    || problems+="[(e) the script installs on dnf, the README does not: $(tr '\n' ' ' <<<"$t20_dnf_script_only")] "
-  [[ -z "$t20_dnf_readme_only" ]] \
-    || problems+="[(e) the README lists for Fedora, the script does not install: $(tr '\n' ' ' <<<"$t20_dnf_readme_only")] "
+  problems+="$(t20_list_diff <(printf '%s\n' "${dnf_all_pkgs[@]}") <(printf '%s\n' "${readme_dnf_pkgs[@]}") \
+    | t20_list_diff_problems "(e) dnf" xclip "")"
 fi
 expect_none "T20-server-list-sync (e) dnf" "$problems"
 
