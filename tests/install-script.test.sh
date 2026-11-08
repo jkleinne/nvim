@@ -685,12 +685,14 @@ t2_plan() {
 # T2b: the plan screen for dnf names the supported tier and its notice (which names no distro, since RHEL
 # and CentOS reach this tier too, and gives the tarball fallback for a repo Neovim that is missing or
 # older than the script's MIN_NVIM_VERSION), lists the language servers in step 2, has no upfront
-# upgrade and no best-effort text, shows Mode: full with the clone step, and "n" cancels with exit 0.
+# upgrade and no best-effort text, shows the shell t2_plan sets and Mode: full with the clone step, and
+# "n" cancels with exit 0.
 t2_fail=""
 out="$(t2_plan dnf dnf false)"
 rc=$?
 t2_min_version="$(script_constant MIN_NVIM_VERSION)" || t2_fail+="[the script sets no MIN_NVIM_VERSION] "
-t2_fail+="$(missing_patterns dnf "$out" 'Support tier: +supported' 'Mode: +full$' 'dnf is supported' \
+t2_fail+="$(missing_patterns dnf "$out" 'Support tier: +supported' 'Shell: +bash$' 'Mode: +full$' \
+  'dnf is supported' \
   "Neovim comes from the release tarball when the repo's is missing or older than $(ere_escape "$t2_min_version")" \
   'lazygit and lazydocker come from go install at pinned versions in the full run' \
   '1\. Install Neovim 0\.12\+ \(prefer dnf' \
@@ -2021,7 +2023,7 @@ for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
 done
 
 # T22f: print_summary says what the mode skipped, and why NVIM_INSTALL_DIR/bin goes on PATH. A sourced
-# case per mode and install method, with T26's stub nvim (version 0.12.0) first on PATH and
+# case per mode and install method, with T26's stub nvim (version 0.12.3) first on PATH and
 # NEED_PATH_SETUP true, as after a tarball install (tarball) or a reuse (reused) of an install dir's nvim
 # that PATH did not reach first: packages-only shows the title, the config line, the PATH note with that
 # cause, then both outcomes of the full run (it adds the entry, or prints the line to add when it cannot)
@@ -2030,19 +2032,22 @@ done
 # setup_path adds the entry to an existing .bashrc as main runs it first (T22j covers its other
 # outcomes), shows its own title, its PATH line with that cause and nothing after it, and the Mason
 # line, and none of the packages-only texts (the bare word is not checked: the config path in the output
-# sits under the suite's temp dir, whose name could contain it). Neither shows PATH updated or the other
-# method's cause. The test reads the install dir from the script, so the texts it expects follow the
-# script's constant.
+# sits under the suite's temp dir, whose name could contain it). Both show the stub's version, and
+# neither shows PATH updated or the other method's cause. The test reads the install dir from the
+# script, so the texts it expects follow the script's constant.
 t22f_fail=""
 t22f_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22f_fail+="[the script sets no NVIM_INSTALL_DIR] "
 t22f_bin_dir_ere="$(ere_escape "$t22f_install_dir/bin")"
 t22f_cause_tarball="the tarball's nvim was not first on PATH"
 t22f_cause_reused='the reused nvim was not first on PATH'
+# Not the script's MIN_NVIM_VERSION, so a Version line that printed the minimum would fail
+t22f_version=0.12.3
+t22f_version_ere="$(ere_escape "$t22f_version")"
 for mode in true false; do
   for method in tarball reused; do
     out="$( (
       sandbox "T22f-$mode-$method" "$T26_BIN"
-      T26_VERSION=0.12.0
+      T26_VERSION="$t22f_version"
       export T26_VERSION
       load_script
       # shellcheck disable=SC2030  # print_summary, in the script sourced into this subshell, reads them
@@ -2075,7 +2080,8 @@ for mode in true false; do
         'the full run adds' 'PATH updated' "$t22f_other_cause")
     fi
     done_ok $rc "$out" || t22f_fail+="[packages_only=$mode $method: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-    t22f_fail+="$(missing_patterns "packages_only=$mode $method" "$out" "${t22f_wanted[@]}")"
+    t22f_fail+="$(missing_patterns "packages_only=$mode $method" "$out" "${t22f_wanted[@]}" \
+      "Version: +$t22f_version_ere\$")"
     t22f_fail+="$(shown_patterns "packages_only=$mode $method" "$out" "${t22f_unwanted[@]}")"
   done
 done

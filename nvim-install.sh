@@ -80,6 +80,15 @@ section() {
   printf '\n%s\n' "${BOLD}${BLUE}--- $1 ---${RESET}"
 }
 
+# Prints label $1 and value $2 as one line of the plan screen (confirm_proceed) or the summary
+# (print_summary), the label padded so the values line up in one column. Both screens share this
+# layout, so it lives here alone: restated at each line, one edited copy could misalign a screen.
+print_field() {
+  # Fits the longest label, "Package manager:" (16 characters), with room to spare
+  local label_width=18
+  printf '  %-*s %s\n' "$label_width" "$1" "$2"
+}
+
 # Ask a y/N question: returns 0 for y or Y, 1 for any other answer, and 2 at end of input (no one to
 # answer, as when stdin is closed or the script comes through a pipe). Callers that only need yes or no
 # treat 1 and 2 alike.
@@ -332,12 +341,12 @@ confirm_proceed() {
     mode="packages only"
   fi
   section "Bootstrap Plan"
-  printf '  %-18s %s\n' "OS:" "$OS"
-  printf '  %-18s %s\n' "Architecture:" "$ARCH"
-  printf '  %-18s %s\n' "Package manager:" "$PKG_MGR"
-  printf '  %-18s %s\n' "Support tier:" "$PKG_TIER"
-  printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
-  printf '  %-18s %s\n' "Mode:" "$mode"
+  print_field "OS:" "$OS"
+  print_field "Architecture:" "$ARCH"
+  print_field "Package manager:" "$PKG_MGR"
+  print_field "Support tier:" "$PKG_TIER"
+  print_field "Shell:" "$USER_SHELL"
+  print_field "Mode:" "$mode"
   printf '\n'
   case "$PKG_MGR" in
     pacman) ;;
@@ -1336,13 +1345,13 @@ print_summary() {
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
   printf '%s\n' "${BOLD}${GREEN}  $title${RESET}"
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
-  printf '  %-18s %s\n' "Version:" "$installed_version"
-  printf '  %-18s %s\n' "Install method:" "$NVIM_INSTALL_METHOD"
-  printf '  %-18s %s\n' "Config:" "$config"
+  print_field "Version:" "$installed_version"
+  print_field "Install method:" "$NVIM_INSTALL_METHOD"
+  print_field "Config:" "$config"
 
   if [[ "$NEED_PATH_SETUP" == true ]]; then
     # Only these two methods set NEED_PATH_SETUP (reuse_install_dir_nvim, install_neovim_tarball)
-    local path_cause
+    local path_cause path_outcome
     case "$NVIM_INSTALL_METHOD" in
       reused) path_cause="the reused nvim was not first on PATH" ;;
       tarball) path_cause="the tarball's nvim was not first on PATH" ;;
@@ -1353,13 +1362,14 @@ print_summary() {
     esac
     if [[ "$PACKAGES_ONLY" == true ]]; then
       # setup_path did not run, and which outcome it has depends on the shell config the full run finds
-      printf '  %-18s %s\n' "PATH:" "$path_cause; the full run adds $NVIM_INSTALL_DIR/bin to your shell config, or prints the line to add when it cannot"
+      path_outcome="the full run adds $NVIM_INSTALL_DIR/bin to your shell config, or prints the line to add when it cannot"
     elif [[ "$SHELL_CONFIG_HAS_PATH_ENTRY" == true ]]; then
-      printf '  %-18s %s\n' "PATH:" "$path_cause; $NVIM_INSTALL_DIR/bin is in your shell config"
+      path_outcome="$NVIM_INSTALL_DIR/bin is in your shell config"
     else
       # setup_path could not add it
-      printf '  %-18s %s\n' "PATH:" "$path_cause; put $NVIM_INSTALL_DIR/bin first on PATH in your shell config"
+      path_outcome="put $NVIM_INSTALL_DIR/bin first on PATH in your shell config"
     fi
+    print_field "PATH:" "$path_cause; $path_outcome"
   fi
 
   if [[ ${#WARNINGS[@]} -gt 0 ]]; then
