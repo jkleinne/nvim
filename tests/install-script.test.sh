@@ -2024,13 +2024,15 @@ done
 # case per mode and install method, with T26's stub nvim (version 0.12.0) first on PATH and
 # NEED_PATH_SETUP true, as after a tarball install (tarball) or a reuse (reused) of an install dir's nvim
 # that PATH did not reach first: packages-only shows the title, the config line, the PATH note with that
-# cause (setup_path did not run, so nothing was added yet), and the closing line that asks for the full
-# run, and neither of the full run's PATH lines; the full run, where the real setup_path adds the entry
-# to an existing .bashrc as main runs it first (T22j covers its other outcomes), shows its own title, its
-# PATH line with that cause and nothing after it, and the Mason line, and none of the packages-only texts
-# (the bare word is not checked: the config path in the output sits under the suite's temp dir, whose
-# name could contain it). Neither shows PATH updated or the other method's cause. The test reads the
-# install dir from the script, so the texts it expects follow the script's constant.
+# cause, then both outcomes of the full run (it adds the entry, or prints the line to add when it cannot)
+# and nothing after them (setup_path did not run, so nothing was added yet), and the closing line that
+# asks for the full run, and neither of the full run's PATH lines; the full run, where the real
+# setup_path adds the entry to an existing .bashrc as main runs it first (T22j covers its other
+# outcomes), shows its own title, its PATH line with that cause and nothing after it, and the Mason
+# line, and none of the packages-only texts (the bare word is not checked: the config path in the output
+# sits under the suite's temp dir, whose name could contain it). Neither shows PATH updated or the other
+# method's cause. The test reads the install dir from the script, so the texts it expects follow the
+# script's constant.
 t22f_fail=""
 t22f_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22f_fail+="[the script sets no NVIM_INSTALL_DIR] "
 t22f_bin_dir_ere="$(ere_escape "$t22f_install_dir/bin")"
@@ -2061,7 +2063,7 @@ for mode in true false; do
     fi
     if [[ "$mode" == true ]]; then
       t22f_wanted=('Neovim Packages Installed' 'Config: +not cloned \(packages-only\)'
-        "PATH: +$t22f_cause; the full run adds $t22f_bin_dir_ere to your shell config"
+        "PATH: +$t22f_cause; the full run adds $t22f_bin_dir_ere to your shell config, or prints the line to add when it cannot\$"
         'Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config\.')
       t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Mason installs' 'is in your shell config'
         "put $t22f_bin_dir_ere first on PATH" "$t22f_other_cause")

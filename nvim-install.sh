@@ -1352,8 +1352,8 @@ print_summary() {
         ;;
     esac
     if [[ "$PACKAGES_ONLY" == true ]]; then
-      # setup_path did not run
-      printf '  %-18s %s\n' "PATH:" "$path_cause; the full run adds $NVIM_INSTALL_DIR/bin to your shell config"
+      # setup_path did not run, and which outcome it has depends on the shell config the full run finds
+      printf '  %-18s %s\n' "PATH:" "$path_cause; the full run adds $NVIM_INSTALL_DIR/bin to your shell config, or prints the line to add when it cannot"
     elif [[ "$SHELL_CONFIG_HAS_PATH_ENTRY" == true ]]; then
       printf '  %-18s %s\n' "PATH:" "$path_cause; $NVIM_INSTALL_DIR/bin is in your shell config"
     else
