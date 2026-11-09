@@ -464,15 +464,19 @@ install_neovim_tarball() {
   fi
 
   info "Extracting to $NVIM_INSTALL_DIR (requires sudo)..."
-  as_root mkdir -p "$NVIM_INSTALL_DIR"
-  # --no-same-owner: tar run as root otherwise gives each entry the owner the archive records until the
-  # chown below, long enough for an account with that uid to open a file for writing and keep it open,
-  # past the chown and into every later run that reuses the tree
+  # Private while it fills: until the chown and chmod below, the entries carry the modes the archive
+  # records, and no other account may reach them then, to keep a write handle open past the chmod or to
+  # add a file that the chown would make root's in a tree every later run reuses
+  as_root mkdir -p -m 0700 "$NVIM_INSTALL_DIR"
+  # --no-same-owner as well: tar run as root otherwise gives each entry the owner the archive records
   as_root tar -C "$NVIM_INSTALL_DIR" --no-same-owner --strip-components=1 -xzf "$tarball"
   # The dir's bin may go first on PATH (put_install_dir_first_on_path), so root owns the tree and only
   # root can write to it, whatever owners and modes the archive records
   as_root chown -R 0:0 "$NVIM_INSTALL_DIR"
   as_root chmod -R go-w "$NVIM_INSTALL_DIR"
+  # Open for every user only now, and whatever the umask: sudo never lowers it (sudoers(5)) and tar does
+  # not set the mode of the dir it extracts into, so under umask 077 no user could run this nvim
+  as_root chmod 0755 "$NVIM_INSTALL_DIR"
 
   if [[ -w "$NVIM_LINK_DIR" ]] || as_root test -w "$NVIM_LINK_DIR"; then
     as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" "${NVIM_LINK_DIR}/nvim"
