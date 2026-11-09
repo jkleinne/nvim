@@ -212,15 +212,22 @@ return {
 
     -- A fallback (servers.fallbacks) stands in for a system server a distro does not package.
     -- lsp_gates.fallbacks chooses which ones run, from the list above. Like the system servers, every
-    -- fallback gets its list cmd, chosen or not. The chosen ones join the list; the rest are disabled:
-    -- vim.lsp.enable only adds names, so after :Lazy reload one that an earlier run enabled would stay
-    -- enabled (and keep running) beside a primary that has since appeared.
+    -- fallback gets its list cmd, chosen or not. The chosen ones join the list; the rest are disabled,
+    -- and so is the server each chosen one replaces: vim.lsp.enable only adds names, so after :Lazy
+    -- reload a fallback that an earlier run enabled would stay enabled (and keep running) beside a
+    -- primary that has since appeared, and a primary that an earlier run enabled would start beside its
+    -- fallback once its binary is back.
     local chosen, passed_over = fallbacks.choose(servers.fallbacks, enable, is_executable)
     for name, spec in pairs(servers.fallbacks) do
       vim.lsp.config(name, { cmd = spec.cmd })
     end
+    local replaced = {}
+    for _, name in ipairs(chosen) do
+      table.insert(replaced, servers.fallbacks[name].replaces)
+    end
     vim.list_extend(enable, chosen)
     vim.lsp.enable(passed_over, false)
+    vim.lsp.enable(replaced, false)
 
     local mason_lspconfig = require "mason-lspconfig"
 

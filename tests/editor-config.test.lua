@@ -935,6 +935,22 @@ case("F6-fallback-disabled-on-reload", function()
   return joined(problems)
 end)
 
+-- F6b: running the config again once pyright is gone from PATH leaves pyright disabled, because
+-- vim.lsp.enable only adds names: the pyright that the first run enabled would otherwise start beside
+-- pylsp, the fallback chosen now, as soon as its binary is back. The case does not restore between the
+-- two runs.
+case("F6b-replaced-primary-disabled-on-reload", function()
+  local problems = {}
+  vim.env.PATH = bins.pylsp_and_pyright
+  load_spec "lsp"
+  want(problems, vim.lsp.is_enabled "pyright", "first run: pyright not enabled")
+  vim.env.PATH = bins.pylsp
+  load_spec "lsp"
+  want(problems, vim.lsp.is_enabled "pylsp", "second run: pylsp not enabled")
+  want(problems, not vim.lsp.is_enabled "pyright", "second run: pyright still enabled")
+  return joined(problems)
+end)
+
 -- An executable predicate for lsp_gates.fallbacks.choose that calls exactly the named commands
 -- executable, whatever PATH holds
 local function executable_among(commands)
