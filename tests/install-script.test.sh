@@ -9,21 +9,21 @@
 # to run when one does not, as on a noexec temp dir, where bash's PATH search skips the stubs and finds
 # the real commands. Sourced tests and direct script runs start with sandbox: a fake HOME, which also
 # becomes the working directory (git never finds the caller's repository from there), then
-# hermetic_env, so inherited GIT_*, ZDOTDIR, XDG_*, BASH_ENV, ENV, CDPATH, and GOTOOLCHAIN variables
-# are dropped (no shell a test starts reads a startup file that could put other commands ahead of the
-# stubs on PATH, and T17's go stub logs the toolchain mode the script sets, never an inherited one) and
-# git ignores the system and global config, refuses every protocol but file (no clone reaches the
-# network, however git is invoked), and never looks above $TMP for a repository. DENY_BIN, which sandbox
-# puts on PATH, refuses sudo, curl, wget, go, uv, and the language package managers and AUR helpers T5
-# forbids, and logs each call to $TMP/refused.log; a test that needs one puts its stub ahead (a
-# recording sudo that never runs its arguments, a curl that copies a tiny local tarball, go and uv stubs
-# that only log), and T21 fails when any test reached a refusing stub. The tests that run install
-# functions through their real code (T12's deps cases, T17, T20's collection) set PATH to stub dirs and
-# at most a dir of the few real tools that code needs, so nothing else on the caller's PATH can run.
-# Every command a recording sudo logs must be on the allowlist (sudo_allowlist_problems): sudo -v, -n
-# -v, and -k, each package manager's refresh and install, and the tarball install's steps. So, apart
-# from T4 under RUN_FULL=1 (the plugins, into scratch dirs) and T33 under RUN_FEDORA=1, no test can
-# install, upgrade, or download anything, and load_script, run_script, run_script_args, and the main
+# hermetic_env, so inherited GIT_*, ZDOTDIR, XDG_*, BASH_ENV, ENV, CDPATH, GOTOOLCHAIN, and
+# UV_PYTHON_DOWNLOADS variables are dropped (no shell a test starts reads a startup file that could put
+# other commands ahead of the stubs on PATH, and T17's go and uv stubs log the modes the script sets,
+# never inherited ones) and git ignores the system and global config, refuses every protocol but file (no
+# clone reaches the network, however git is invoked), and never looks above $TMP for a repository.
+# DENY_BIN, which sandbox puts on PATH, refuses sudo, curl, wget, go, uv, and the language package
+# managers and AUR helpers T5 forbids, and logs each call to $TMP/refused.log; a test that needs one puts
+# its stub ahead (a recording sudo that never runs its arguments, a curl that copies a tiny local
+# tarball, go and uv stubs that only log), and T21 fails when any test reached a refusing stub. The tests
+# that run install functions through their real code (T12's deps cases, T17, T20's collection) set PATH
+# to stub dirs and at most a dir of the few real tools that code needs, so nothing else on the caller's
+# PATH can run. Every command a recording sudo logs must be on the allowlist (sudo_allowlist_problems):
+# sudo -v, -n -v, and -k, each package manager's refresh and install, and the tarball install's steps.
+# So, apart from T4 under RUN_FULL=1 (the plugins, into scratch dirs) and T33 under RUN_FEDORA=1, no test
+# can install, upgrade, or download anything, and load_script, run_script, run_script_args, and the main
 # drivers (tests/lib/driver-*.sh, which share tests/lib/driver-lib.sh) run the script only under a fake
 # HOME, so NVIM_CONFIG_DIR never points at a real config. The suite and driver-lib.sh share the helpers in
 # tests/lib/common.sh. T20 reads the server list with nvim --clean --headless -l
@@ -94,13 +94,13 @@ expect_none() {
 # so an early exit (even with status 0) fails the test.
 done_ok() { [[ $1 -eq 0 && "$(tail -n1 <<<"$2")" == DONE ]]; }
 
-# Drops the variables that point git or the shell at real config or repos, or make a shell read a
-# startup file (BASH_ENV, ENV) or resolve cd elsewhere (CDPATH), or could stand in for what the script
-# sets itself (GOTOOLCHAIN: T17's go stub records the toolchain mode the script sets, so an inherited
-# value must not satisfy T17), and makes git ignore the system and global config, refuse every protocol
-# but file, and never look above $TMP for a repo
+# Drops the variables that point git or the shell at real config or repos, or make a shell read a startup
+# file (BASH_ENV, ENV) or resolve cd elsewhere (CDPATH), or could stand in for what the script sets
+# itself (GOTOOLCHAIN and UV_PYTHON_DOWNLOADS: T17's go and uv stubs record the modes the script sets, so
+# an inherited value must not satisfy T17), and makes git ignore the system and global config, refuse
+# every protocol but file, and never look above $TMP for a repo
 hermetic_env() {
-  unset "${!GIT_@}" ZDOTDIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME BASH_ENV ENV CDPATH GOTOOLCHAIN
+  unset "${!GIT_@}" ZDOTDIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME BASH_ENV ENV CDPATH GOTOOLCHAIN UV_PYTHON_DOWNLOADS
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=file GIT_CEILING_DIRECTORIES="$TMP"
 }
 
@@ -1435,36 +1435,38 @@ for answer in n eof; do
 done
 expect_none T16-decline-move-continues "$t16_fail"
 
-# The sandbox and log name of a T17 case: $1 = package manager, $2 = packages, $3 = the GOTOOLCHAIN
-# value the caller exports (optional)
+# The sandbox and log name of a T17 case: $1 = package manager, $2 = packages, $3 and $4 = the
+# GOTOOLCHAIN and UV_PYTHON_DOWNLOADS values the caller exports (optional)
 t17_case_name() {
-  printf 'T17-%s-%s%s\n' "$1" "$2" "${3:+-inherited-$3}"
+  printf 'T17-%s-%s%s%s\n' "$1" "$2" "${3:+-inherited-$3}" "${4:+-$4}"
 }
 
-# T17: main runs every package install first (install_deps), then forgets cached sudo credentials
-# once (sudo -k), then the go install and uv tool install user tools (install_user_tools), none of them
-# under sudo, and no sudo runs after the forget. A driver (tests/lib/driver-T17.sh) runs main with
-# install_deps and install_user_tools as they are and every other step stubbed. The forget runs also
-# when every package is already installed (all-installed), so no sudo -v ran: a ticket from before the
-# run may still be live. One event log records the sudo, go, and uv calls and the stubbed steps in
-# order; go and uv are stubs (T17_BIN) whose installs only log, so nothing real is installed, and the go
-# stub also logs GOTOOLCHAIN after each call: every go call must run with GOTOOLCHAIN=local, even when
-# the caller exports another value (the inherited-auto case exports auto), every go install must name
-# the pinned module of the script's GO_TOOL_<TOOL> constant, and setup_config (which the driver stubs to
-# log the GOTOOLCHAIN it sees) must see what the caller had, unset or auto, so the setting never
-# outlives install_go_tool. While main runs, PATH is three stub dirs and nothing else (T17_BIN: go and
-# uv; RECORD_BIN: sudo; DENY_BIN: curl and wget, and refusals the others shadow), so no user tool name
-# resolves and install_unless_on_path skips none of them; the driver stubs the TypeScript check (T24
-# covers it), and nothing else on that code path runs an external command. Run for every non-pacman
-# package manager: dnf installs only lazygit and lazydocker, with Go and no uv; apt-get and apk install
-# the whole list.
-# $1 = package manager, $2 = missing (every package missing) or all-installed, $3 = the GOTOOLCHAIN
-# value the caller exports (optional; unset when empty)
+# T17: main runs every package install first (install_deps), then forgets cached sudo credentials once
+# (sudo -k), then the go install and uv tool install user tools (install_user_tools), none of them under
+# sudo, and no sudo runs after the forget. A driver (tests/lib/driver-T17.sh) runs main with install_deps
+# and install_user_tools as they are and every other step stubbed. The forget runs also when every
+# package is already installed (all-installed), so no sudo -v ran: a ticket from before the run may still
+# be live. One event log records the sudo, go, and uv calls and the stubbed steps in order; go and uv are
+# stubs (T17_BIN) whose installs only log, so nothing real is installed, and after each call the go stub
+# also logs GOTOOLCHAIN and the uv stub UV_PYTHON_DOWNLOADS: every go call must run with
+# GOTOOLCHAIN=local and every uv call with UV_PYTHON_DOWNLOADS=never, even when the caller exports other
+# values (the inherited case exports GOTOOLCHAIN=auto and UV_PYTHON_DOWNLOADS=automatic), every go
+# install must name the pinned module of the script's GO_TOOL_<TOOL> constant, and setup_config (which
+# the driver stubs to log both values it sees) must see what the caller had, so neither setting outlives
+# install_go_tool or install_python_tool. While main runs, PATH is three stub dirs and nothing else
+# (T17_BIN: go and uv; RECORD_BIN: sudo; DENY_BIN: curl and wget, and refusals the others shadow), so no
+# user tool name resolves and install_unless_on_path skips none of them; the driver stubs the TypeScript
+# check (T24 covers it), and nothing else on that code path runs an external command. Run for every
+# non-pacman package manager: dnf installs only lazygit and lazydocker, with Go and no uv; apt-get and
+# apk install the whole list.
+# $1 = package manager, $2 = missing (every package missing) or all-installed, $3 and $4 = the
+# GOTOOLCHAIN and UV_PYTHON_DOWNLOADS values the caller exports (optional; unset when empty)
 t17_case() {
-  local mgr="$1" pkgs="$2" inherited="${3:-}"
+  local mgr="$1" pkgs="$2" inherited="${3:-}" inherited_python_downloads="${4:-}"
   (
-    recording_sandbox "$(t17_case_name "$mgr" "$pkgs" "$inherited")" "$T17_BIN"
+    recording_sandbox "$(t17_case_name "$mgr" "$pkgs" "$inherited" "$inherited_python_downloads")" "$T17_BIN"
     [[ -z "$inherited" ]] || export GOTOOLCHAIN="$inherited"
+    [[ -z "$inherited_python_downloads" ]] || export UV_PYTHON_DOWNLOADS="$inherited_python_downloads"
     T17_MGR="$mgr" T17_PKGS="$pkgs" T17_PATH="$T17_BIN:$RECORD_BIN:$DENY_BIN"
     export T17_MGR T17_PKGS T17_PATH
     bash "$LIB/driver-T17.sh" "$SCRIPT"
@@ -1474,13 +1476,14 @@ t17_case() {
 # Prints the problems with a T17 event log: $1 = log, $2 = the sudo -v calls expected, $3 = the uv tools
 # expected (space-separated; when empty, no uv call of any kind), $4 = the Go tools expected
 # (space-separated; each one's module comes from the script's GO_TOOL_<TOOL> constant, with - read as _),
-# $5 = the GOTOOLCHAIN value the caller exported (optional; unset when empty). Each tool is installed
-# once and nothing else is, the module's path ends in the tool's name (or its name and a /vN major
-# version), every go call runs with GOTOOLCHAIN=local whatever the caller exported, and setup_config sees
-# the caller's value again.
+# $5 and $6 = the GOTOOLCHAIN and UV_PYTHON_DOWNLOADS values the caller exported (optional; unset when
+# empty). Each tool is installed once and nothing else is, the module's path ends in the tool's name (or
+# its name and a /vN major version), every go call runs with GOTOOLCHAIN=local and every uv call with
+# UV_PYTHON_DOWNLOADS=never whatever the caller exported, and setup_config sees the caller's values
+# again.
 t17_check_events() {
-  local log="$1" want_v="$2" uv_tools="$3" go_tools="$4" k_line first_tool tool var module go_calls setup_config_lines
-  local want_setup_config="${5:-unset}"
+  local log="$1" want_v="$2" uv_tools="$3" go_tools="$4" k_line first_tool tool var module go_calls uv_calls
+  local setup_config_lines want_toolchain="${5:-unset}" want_python_downloads="${6:-unset}"
   [[ "$(grep -cxF 'sudo -v' "$log")" -eq "$want_v" ]] || echo "[sudo -v count $(grep -cxF 'sudo -v' "$log"), want $want_v]"
   [[ "$(grep -cxF 'sudo -k' "$log")" -eq 1 ]] || echo "[sudo -k count $(grep -cxF 'sudo -k' "$log"), want 1]"
   k_line="$(first_line '^sudo -k$' "$log")"
@@ -1509,27 +1512,31 @@ t17_check_events() {
   go_calls="$(grep -c '^go ' "$log")"
   [[ "$(grep -cxF 'go-env GOTOOLCHAIN=local' "$log")" -eq "$go_calls" && "$(grep -c '^go-env ' "$log")" -eq "$go_calls" ]] \
     || echo "[GOTOOLCHAIN=local not recorded for every go call: $(grep '^go-env ' "$log" | sort | uniq -c | tr -s ' \n' ' ')]"
+  uv_calls="$(grep -c '^uv ' "$log")"
+  [[ "$(grep -cxF 'uv-env UV_PYTHON_DOWNLOADS=never' "$log")" -eq "$uv_calls" && "$(grep -c '^uv-env ' "$log")" -eq "$uv_calls" ]] \
+    || echo "[UV_PYTHON_DOWNLOADS=never not recorded for every uv call: $(grep '^uv-env ' "$log" | sort | uniq -c | tr -s ' \n' ' ')]"
   setup_config_lines="$(grep '^setup_config' "$log" | tr '\n' ';')"
-  [[ "$setup_config_lines" == "setup_config GOTOOLCHAIN=$want_setup_config;" ]] \
-    || echo "[setup_config saw: ${setup_config_lines:-none}, want GOTOOLCHAIN=$want_setup_config]"
+  [[ "$setup_config_lines" == "setup_config GOTOOLCHAIN=$want_toolchain UV_PYTHON_DOWNLOADS=$want_python_downloads;" ]] \
+    || echo "[setup_config saw: ${setup_config_lines:-none}, want GOTOOLCHAIN=$want_toolchain UV_PYTHON_DOWNLOADS=$want_python_downloads]"
 }
-# Each case is packages:sudo -v calls expected:GOTOOLCHAIN the caller exports (empty for none)
+# Each case is packages:sudo -v calls expected:GOTOOLCHAIN and then UV_PYTHON_DOWNLOADS the caller
+# exports (empty for none)
 for mgr in apt-get dnf apk; do
   case "$mgr" in
     dnf) t17_uv="" t17_go="lazygit lazydocker" ;;
     *) t17_uv="black yamllint ruff" t17_go="$GO_TOOLS" ;;
   esac
-  for tc in missing:1: all-installed:0: missing:1:auto; do
-    IFS=: read -r pkgs want_v inherited <<<"$tc"
-    case_name="$(t17_case_name "$mgr" "$pkgs" "$inherited")"
-    out="$(t17_case "$mgr" "$pkgs" "$inherited")"
+  for tc in missing:1:: all-installed:0:: missing:1:auto:automatic; do
+    IFS=: read -r pkgs want_v inherited inherited_python_downloads <<<"$tc"
+    case_name="$(t17_case_name "$mgr" "$pkgs" "$inherited" "$inherited_python_downloads")"
+    out="$(t17_case "$mgr" "$pkgs" "$inherited" "$inherited_python_downloads")"
     events="$(event_log "$case_name")"
     problems=""
     grep -qxF "driver rc=0" <<<"$out" || problems+="[$(tail -n2 <<<"$out" | tr '\n' ' ')] "
-    problems+="$(t17_check_events "$events" "$want_v" "$t17_uv" "$t17_go" "$inherited" | tr '\n' ' ')"
+    problems+="$(t17_check_events "$events" "$want_v" "$t17_uv" "$t17_go" "$inherited" "$inherited_python_downloads" | tr '\n' ' ')"
     problems+="$(sudo_allowlist_problems "$(sudo_log "$case_name")")"
     [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$events")"
-    expect_none "T17-sudo-dropped $mgr $pkgs${inherited:+ inherited-$inherited}" "$problems"
+    expect_none "T17-sudo-dropped $mgr $pkgs${inherited:+ inherited-$inherited}${inherited_python_downloads:+-$inherited_python_downloads}" "$problems"
   done
 done
 
@@ -3567,6 +3574,33 @@ for id in go-missing go-env-fails; do
 done
 expect_none T32b-go-hints-local "$t32b_fail"
 
+# T32c: the manual hints in install_python_tool (uv missing, uv tool dir fails) carry
+# UV_PYTHON_DOWNLOADS=never, so following one never triggers the Python download the script avoids. PATH
+# has no uv (EMPTY_BIN) or only T17's uv stub, which answers uv tool dir --bin and fails it when
+# T17_UV_DIR_FAILS is set; nothing is installed.
+t32c_fail=""
+for id in uv-missing uv-dir-fails; do
+  case "$id" in
+    uv-missing) t32c_bin="$EMPTY_BIN" t32c_dir_fails="" t32c_hint="install uv, then run:" ;;
+    uv-dir-fails) t32c_bin="$T17_BIN" t32c_dir_fails=1 t32c_hint="could not resolve uv's tool bin dir; run:" ;;
+    *)
+      t32c_fail+="[$id: unknown case] "
+      continue
+      ;;
+  esac
+  out="$( (
+    recording_sandbox "T32c-$id"
+    load_script
+    PATH="$t32c_bin" T17_UV_DIR_FAILS="$t32c_dir_fails" install_python_tool black >/dev/null
+    want="black: $t32c_hint UV_PYTHON_DOWNLOADS=never uv tool install black"
+    [[ ${#WARNINGS[@]} -eq 1 && "${WARNINGS[0]}" == "$want" ]] \
+      || { echo "${#WARNINGS[@]} warnings: ${WARNINGS[*]}; want one: $want"; exit 1; }
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" || t32c_fail+="[$id hint: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T32c-uv-hints-no-python-downloads "$t32c_fail"
+
 # T33 (RUN_FEDORA=1): the dnf path end to end in a fedora:44 container (tests/lib/fedora-container.sh:
 # a --packages-only run, then a full run, then its checks that the full run installed no package again
 # (Fedora 44's nodejs is a Provides of nodejs22), nvim came from dnf, the two servers are on PATH, weak
@@ -3577,10 +3611,11 @@ expect_none T32b-go-hints-local "$t32b_fail"
 # installs packages inside the container, so it needs podman and network; without the variable or
 # podman it is skipped. It passes only when the driver exits 0 and its output has the closing line. The
 # driver runs without BASH_ENV, ENV, and CDPATH like the rest of the suite, but keeps the other
-# variables hermetic_env drops (GIT_*, ZDOTDIR, the XDG_* dirs, GOTOOLCHAIN): podman reads its storage
-# from XDG_DATA_HOME and its containers.conf and storage.conf from XDG_CONFIG_HOME (containers.conf(5),
-# containers-storage.conf(5)), so the run uses the user's podman setup. T33 keeps only the last lines of
-# the output; to see all of it, run bash tests/lib/fedora-container.sh "$PWD" from the repository root.
+# variables hermetic_env drops (GIT_*, ZDOTDIR, the XDG_* dirs, GOTOOLCHAIN, UV_PYTHON_DOWNLOADS): podman
+# reads its storage from XDG_DATA_HOME and its containers.conf and storage.conf from XDG_CONFIG_HOME
+# (containers.conf(5), containers-storage.conf(5)), so the run uses the user's podman setup. T33 keeps
+# only the last lines of the output; to see all of it, run bash tests/lib/fedora-container.sh "$PWD" from
+# the repository root.
 if [[ "${RUN_FEDORA:-0}" != 1 ]]; then
   echo "SKIP T33-fedora-container (set RUN_FEDORA=1 to run the dnf path in a fedora:44 container; needs podman and network)"
 elif ! command -v podman >/dev/null 2>&1; then

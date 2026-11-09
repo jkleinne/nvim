@@ -879,15 +879,20 @@ install_user_tool() {
 }
 
 # Best-effort distros: Python CLI tools go into isolated uv environments
-# (PEP 668 blocks user-site installs on most distros).
+# (PEP 668 blocks user-site installs on most distros). UV_PYTHON_DOWNLOADS=never holds for every uv call
+# here (uv tool dir, and uv tool install), as GOTOOLCHAIN=local does for go: uv's default, automatic,
+# downloads a managed Python when it needs one; with never it does not, so such a tool fails, reported as
+# a skip. local -x scopes the export to this function, so the config clone and Neovim's first launch
+# never inherit it, and the manual hints print the same setting.
 install_python_tool() {
   local name="$1" bin_dir
+  local -x UV_PYTHON_DOWNLOADS=never
   if ! command -v uv >/dev/null 2>&1; then
-    warn "$name: install uv, then run: uv tool install $name"
+    warn "$name: install uv, then run: UV_PYTHON_DOWNLOADS=$UV_PYTHON_DOWNLOADS uv tool install $name"
     return
   fi
   if ! bin_dir="$(uv tool dir --bin)" || [[ -z "$bin_dir" ]]; then
-    warn "$name: could not resolve uv's tool bin dir; run: uv tool install $name"
+    warn "$name: could not resolve uv's tool bin dir; run: UV_PYTHON_DOWNLOADS=$UV_PYTHON_DOWNLOADS uv tool install $name"
     return
   fi
   install_user_tool "$name" "$bin_dir" uv tool install "$name"
