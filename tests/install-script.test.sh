@@ -266,7 +266,7 @@ sudo_allowlist_problems() {
     -e "dnf install -y --setopt=install_weak_deps=False$sudo_pkgs"
     -e 'apk update' -e "apk add$sudo_pkgs"
     -e "rm -rf $dir" -e "mkdir -p -m 0700 $dir" -e "tar -C $dir --no-same-owner --strip-components=1 -xzf /[^ ]+\\.tar\\.gz"
-    -e "chown -R 0:0 $dir" -e "chmod -R go-w $dir" -e "chmod 0755 $dir"
+    -e "chown -R 0:0 $dir" -e "chmod -R go-w $dir" -e "chmod -R a\\+rX $dir"
     -e "test -w $link_dir" -e "ln -sf $dir/bin/nvim $link_dir/nvim"
   )
   if [[ ! -f "$log" || ! -r "$log" ]]; then
@@ -2416,15 +2416,15 @@ done
 # extracted, linked, or changed for real). The link dir exists in every case, and in all but
 # writable-link-dir this user cannot write it (mode a-w, standing in for a link dir only root can
 # write), so the script checks it as root. Cases: fresh, no existing dir: the ticket, then a mkdir that
-# makes the dir 0700 (no other account reaches the entries while they carry the archive's owners and
-# modes), tar of the downloaded file with --no-same-owner (tar run as root would otherwise give each
-# entry the owner the archive records until the chown), chown -R 0:0 and chmod -R go-w of the dir (the
-# dir's bin may go first on PATH), chmod 0755 of the dir (sudo never lowers the umask, so under 077 it
-# would stay closed to every user), the link dir check (test -w), and the symlink, all through as_root,
-# each root command after the first preceded by the ticket check (sudo -n -v); keep, an existing dir and
-# answer n: exit 1 with "Cannot install without removing" and no root command; replace, answer y: the
-# same as fresh with rm -rf of the dir first; no-symlink: the link dir check fails, so the same as fresh
-# without the symlink, with a warning that names the link dir, and the real
+# makes the dir 0700 (no other account reaches the entries while they carry the archive's modes), tar of
+# the downloaded file with --no-same-owner (tar run as root would otherwise give each entry the owner the
+# archive records until the chown), chown -R 0:0 and chmod -R go-w of the dir (the dir's bin may go first
+# on PATH), chmod -R a+rX of the dir (the mkdir made it 0700, and a dir the archive does not list gets
+# the umask's mode, which sudo never lowers), the link dir check (test -w), and the symlink, all through
+# as_root, each root command after the first preceded by the ticket check (sudo -n -v); keep, an existing
+# dir and answer n: exit 1 with "Cannot install without removing" and no root command; replace, answer y:
+# the same as fresh with rm -rf of the dir first; no-symlink: the link dir check fails, so the same as
+# fresh without the symlink, with a warning that names the link dir, and the real
 # install_dir_nvim_is_first_on_path finds no install dir nvim on PATH, so NEED_PATH_SETUP is set;
 # writable-link-dir: this user can write the link dir, so the same as fresh without the link dir check.
 # A user who can write even a mode a-w dir (root) skips fresh, replace, and no-symlink, where the script
@@ -2522,7 +2522,7 @@ t25_want_log() {
     replace) cmds+=("rm -rf $2") ;;
   esac
   cmds+=("mkdir -p -m 0700 $2" "tar -C $2 --no-same-owner --strip-components=1 -xzf $3" "chown -R 0:0 $2" "chmod -R go-w $2"
-    "chmod 0755 $2")
+    "chmod -R a+rX $2")
   if [[ "$1" != writable-link-dir ]]; then
     cmds+=("test -w $link_dir")
   fi

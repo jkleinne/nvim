@@ -474,9 +474,11 @@ install_neovim_tarball() {
   # root can write to it, whatever owners and modes the archive records
   as_root chown -R 0:0 "$NVIM_INSTALL_DIR"
   as_root chmod -R go-w "$NVIM_INSTALL_DIR"
-  # Open for every user only now, and whatever the umask: sudo never lowers it (sudoers(5)) and tar does
-  # not set the mode of the dir it extracts into, so under umask 077 no user could run this nvim
-  as_root chmod 0755 "$NVIM_INSTALL_DIR"
+  # Open for every user only now: the mkdir made the dir 0700, tar does not set the mode of the dir it
+  # extracts into, and a dir the archive does not list gets the umask's mode, which sudo never lowers
+  # (sudoers(5)). a+rX opens every dir and every file already executable; it adds no write bit, so the
+  # chmod above still holds
+  as_root chmod -R a+rX "$NVIM_INSTALL_DIR"
 
   if [[ -w "$NVIM_LINK_DIR" ]] || as_root test -w "$NVIM_LINK_DIR"; then
     as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" "${NVIM_LINK_DIR}/nvim"
