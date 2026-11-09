@@ -2909,14 +2909,15 @@ t26_case() {
 }
 # Case id, the PATH nvim's version (or none, or broken), the install dir nvim's version (or none, or
 # broken, or where PATH reaches it: t26_load's $3), the install dir's ownership check (root, user, or
-# "-"), the package's nvim after the install (t26_load's $5, or "-" when the install never runs),
-# whether pkg_install neovim runs, whether the tarball runs, the install method when it does not (or
-# "-"), or stop when install_neovim ends the run, NEED_PATH_SETUP afterwards, and PATH after
-# put_install_dir_first_on_path (unchanged, or install-dir: the install dir's bin first, then PATH as it
-# was); both are "-" for a stop, after which nothing runs. A broken PATH nvim must come with its warning
-# line, a broken package nvim with one that names its own path, a package nvim that is too old with one
-# that names its own version, and a package that lists no nvim with one that says so; any other case
-# with none of them. A stop must come with its error lines (t26_stop_errors), and no other.
+# "-"), the package's nvim after the install (t26_load's $5; fail where the install never runs, so a
+# stray pkg_install falls through to the tarball, which those rows do not expect), whether pkg_install
+# neovim runs, whether the tarball runs, the install method when it does not (or "-"), or stop when
+# install_neovim ends the run, NEED_PATH_SETUP afterwards, and PATH after put_install_dir_first_on_path
+# (unchanged, or install-dir: the install dir's bin first, then PATH as it was); both are "-" for a stop,
+# after which nothing runs. A broken PATH nvim must come with its warning line, a broken package nvim
+# with one that names its own path, a package nvim that is too old with one that names its own version,
+# and a package that lists no nvim with one that says so; any other case with none of them. A stop must
+# come with its error lines (t26_stop_errors), and no other.
 t26_not_reused="Not reusing the nvim in"
 t26_not_reused_why="something in it, or a directory above it, is not owned by root, is writable by group or others, or is a broken link; installing Neovim instead"
 t26_path_unusable="  ! Neovim at $T26_BIN/nvim failed to report its version; treating it as unusable."
@@ -2967,7 +2968,7 @@ t26_stop_errors() {
       ;;
   esac
 }
-for tc in "current:0.12.0:none:-:-:no:no:existing:false:unchanged" \
+for tc in "current:0.12.0:none:-:fail:no:no:existing:false:unchanged" \
   "old-package-new:0.11.4:none:-:0.12.6:yes:no:pacman:false:unchanged" \
   "old-package-old:0.11.4:none:-:0.11.5:yes:yes:-:false:unchanged" \
   "package-fails:0.11.4:none:-:fail:yes:yes:-:false:unchanged" \
@@ -2977,7 +2978,7 @@ for tc in "current:0.12.0:none:-:-:no:no:existing:false:unchanged" \
   "old-path-install-dir-old:0.11.4:0.11.6:root:0.11.5:yes:yes:-:false:unchanged" \
   "install-dir-broken:none:broken:root:fail:yes:yes:-:false:unchanged" \
   "install-dir-not-root-owned:none:0.12.6:user:fail:yes:yes:-:false:unchanged" \
-  "new-path-install-dir-new:0.12.0:0.12.6:root:-:no:no:existing:false:unchanged" \
+  "new-path-install-dir-new:0.12.0:0.12.6:root:fail:no:no:existing:false:unchanged" \
   "broken-path-package-new:broken:none:-:0.12.6:yes:no:pacman:false:unchanged" \
   "broken-path-install-dir-new:broken:0.12.6:root:fail:no:no:reused:true:install-dir" \
   "old-path-package-broken:0.11.4:none:-:broken:yes:yes:-:false:unchanged" \
