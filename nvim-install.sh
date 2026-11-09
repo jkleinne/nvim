@@ -12,6 +12,9 @@ readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
 # Where install_neovim_tarball links the tarball's nvim, so it is on PATH without a shell config entry
 readonly NVIM_LINK_DIR="/usr/local/bin"
+# Linux follows at most 40 links while it resolves one path (path_resolution(7)); first_unsafe_path_dir,
+# which walks the path to NVIM_INSTALL_DIR the same way, gives up past as many
+readonly MAX_PATH_LINKS=40
 # The comment line setup_path writes above the $NVIM_INSTALL_DIR/bin entry it adds to the shell config,
 # so the user can find that entry; the stop for an earlier tarball install ahead of the package names it
 readonly NVIM_PATH_ENTRY_MARKER="# Neovim (added by nvim-install.sh)"
@@ -435,16 +438,25 @@ is_own_install_nvim_path() {
 install_neovim_tarball() {
   local filename="nvim-${OS}-${ARCH}.tar.gz"
   local url="${NVIM_RELEASE_BASE}/${filename}"
-  local install_parent="${NVIM_INSTALL_DIR%/*}"
+  local install_parent="${NVIM_INSTALL_DIR%/*}" unsafe_dir unsafe_status=0
+  install_parent="${install_parent:-/}"
 
   # Each root command below names $NVIM_INSTALL_DIR, and tar -C and chmod -R follow a link there: an
-  # account that could rename an entry in a dir above it could swap it for a link to a tree of its
+  # account that could replace an entry or a link on the way to it could point it at a tree of its
   # choosing between two of those commands, and have root extract into that tree and open it for reading
-  if ! is_root_only_with_ancestors "${install_parent:-/}"; then
-    error "Not installing Neovim in $NVIM_INSTALL_DIR: ${install_parent:-/} (as it resolves) or a directory above it is not owned by root or is writable by group or others"
-    error "Another account could replace $NVIM_INSTALL_DIR while root installs into it. Make root the only account that can write those directories, then run this script again."
-    exit 1
-  fi
+  unsafe_dir="$(first_unsafe_path_dir "$install_parent")" || unsafe_status=$?
+  case "$unsafe_status" in
+    0) ;;
+    1)
+      error "Not installing Neovim in $NVIM_INSTALL_DIR: $unsafe_dir, on the way to $install_parent, is not owned by root or is writable by group or others"
+      error "Another account could replace $NVIM_INSTALL_DIR while root installs into it. Make root the only account that can write that directory, then run this script again."
+      exit 1
+      ;;
+    *)
+      error "Not installing Neovim in $NVIM_INSTALL_DIR: could not check the directories on the way to $install_parent (a link loop, a file on the way, or an error shown above)"
+      exit 1
+      ;;
+  esac
 
   create_tmpdir
   local tarball="${SCRIPT_TMPDIR}/${filename}"
@@ -506,69 +518,97 @@ install_neovim_tarball() {
   NVIM_INSTALL_METHOD="tarball"
 }
 
-# Succeeds when each dir given (one or more absolute paths with no symlink in them, as readlink -f prints
-# them) is owned by uid 0 with no group or other write bit, so only root can rename, remove, or replace
-# what it holds. Fails on a find error, and with no dir given, since find would check the current dir
-# instead. A sticky dir (such as /tmp, mode 1777) gets no exception, though unlink(2) and rename(2) do
+# Prints the first of the dirs given (one or more absolute paths with no symlink in them) that is not
+# owned by uid 0 or has a group or other write bit, and fails with status 1; succeeds, printing nothing,
+# when each is owned by uid 0 with no such bit, so only root can rename, remove, or replace what it
+# holds. Fails with status 2, printing nothing, on a find error (find reports it), and with no dir given,
+# since find would check the current dir instead (the statuses follow diff's: 1 for a finding, 2 for
+# trouble). A sticky dir (such as /tmp, mode 1777) gets no exception, though unlink(2) and rename(2) do
 # not let another account remove or replace a root-owned entry there: OpenSSH's check of the dirs above
 # a file (safe_path) makes none either, and neither /opt nor / is sticky on a standard layout, so
 # refusing costs no more than a fresh install.
 are_root_only_dirs() {
   local first_offender
   if [[ $# -eq 0 ]]; then
-    return 1
+    return 2
   fi
-  first_offender="$(find "$@" -maxdepth 0 \( ! -user 0 -o -perm /go=w \) -print -quit)" || return 1
-  [[ -z "$first_offender" ]]
+  first_offender="$(find "$@" -maxdepth 0 \( ! -user 0 -o -perm /go=w \) -print -quit)" || return 2
+  if [[ -z "$first_offender" ]]; then
+    return 0
+  fi
+  printf '%s\n' "$first_offender"
+  return 1
 }
 
-# Succeeds when only root can rename, remove, or replace an entry in the dir $1 or in any dir above it,
-# so a path through them names what root put there until root changes it. $1 must be absolute. When $1
-# does not exist, the nearest dir above it that does, or that is a link, stands in: no other account can
-# create what root's mkdir -p then creates below it, though those dirs get the mode of the umask sudo
-# runs that mkdir with. That dir is resolved with readlink -f, as the nvim lookup and PATH resolve it
-# (a broken link resolves to the missing path it names, which are_root_only_dirs fails on), and it and
-# each dir above it, up to /, must pass are_root_only_dirs. Fails for a relative $1 and on a readlink
-# error.
-is_root_only_with_ancestors() {
-  local dir="$1" resolved
-  local dirs=()
-  if [[ "$dir" != /* ]]; then
-    return 1
+# Prints the first dir that another account could change on the way to the path $1, and fails with
+# status 1; succeeds, printing nothing, when there is none. The way is walked as the kernel resolves it,
+# one name at a time from /, following each link with plain readlink (one hop): every dir a name is
+# looked up in, which takes in the dir that holds each link met, and the dir $1 names must pass
+# are_root_only_dirs, so once the walk passes, only root can make the path lead elsewhere. A missing name
+# ends the walk with success: root's mkdir -p creates it and what follows inside a dir that passed,
+# though with the mode of the umask sudo runs that mkdir with. Fails with status 2, printing nothing, for
+# a relative $1, a file on the way, more than MAX_PATH_LINKS links (a loop), a readlink error, and
+# status 2 from are_root_only_dirs. util-linux's namei -l lists the same hops, but as text for people,
+# and BusyBox has no namei.
+first_unsafe_path_dir() {
+  local dir=/ rest="$1" name entry target link_count=0
+  if [[ "$rest" != /* ]]; then
+    return 2
   fi
-  while [[ ! -e "$dir" && ! -L "$dir" ]]; do
-    dir="${dir%/*}"
-    dir="${dir:-/}"
+  while true; do
+    # $dir is where the next name is looked up, or the dir the path names once no name is left
+    are_root_only_dirs "$dir" || return
+    rest="${rest#"${rest%%[!/]*}"}"
+    if [[ -z "$rest" ]]; then
+      return 0
+    fi
+    name="${rest%%/*}"
+    rest="${rest#"$name"}"
+    case "$name" in
+      .) continue ;;
+      ..)
+        dir="${dir%/*}"
+        dir="${dir:-/}"
+        continue
+        ;;
+    esac
+    entry="${dir%/}/$name"
+    if [[ -L "$entry" ]]; then
+      link_count=$((link_count + 1))
+      if ((link_count > MAX_PATH_LINKS)); then
+        return 2
+      fi
+      target="$(readlink -- "$entry")" || return 2
+      if [[ "$target" == /* ]]; then
+        dir=/
+      fi
+      rest="$target/$rest"
+    elif [[ -d "$entry" ]]; then
+      dir="$entry"
+    elif [[ -e "$entry" ]]; then
+      return 2
+    else
+      return 0
+    fi
   done
-  resolved="$(readlink -f -- "$dir")" || return 1
-  dir="$resolved"
-  while [[ "$dir" != / ]]; do
-    dirs+=("$dir")
-    dir="${dir%/*}"
-    dir="${dir:-/}"
-  done
-  dirs+=(/)
-  are_root_only_dirs "${dirs[@]}"
 }
 
-# Succeeds when only root can change the tree at $1, as the tarball install leaves it, or the dirs above
-# it. That tree's bin may go first on PATH, where a file another account could write or put in place
-# could shadow commands such as sudo. $1 is resolved first, as the nvim lookup and PATH resolve it, with
-# readlink -f (GNU coreutils and BusyBox both take it with --, which BusyBox's realpath does not). The
-# dirs above the resolved path, up to /, must pass is_root_only_with_ancestors, and every entry of the
-# tree must be owned by uid 0 with no group or other write bit. find -L checks each symlink in the tree
-# through to its target and descends a linked dir, so no link can lead to a file or dir another account
-# can write. A broken link (the only kind find -L reports as -type l) fails, since its target, which may
-# lie outside the tree, could later appear with anyone's contents. Any readlink or find error (a link
-# loop, an unreadable entry, or no tree) counts as not root-owned. Not checked: the dirs above a link's
-# target outside the tree, and a dir that holds a symlink on the way to the tree unless it is also above
-# the resolved path (/opt, when /opt/nvim is itself a link). GNU find and BusyBox's find (with the
+# Succeeds when only root can change the tree at $1, as the tarball install leaves it, or the way to it.
+# That tree's bin may go first on PATH, where a file another account could write or put in place could
+# shadow commands such as sudo. Every dir on the way to $1, each link followed and the dir that holds it
+# checked too, must pass first_unsafe_path_dir. $1 is then resolved, as the nvim lookup and PATH resolve
+# it, with readlink -f (GNU coreutils and BusyBox both take it with --, which BusyBox's realpath does
+# not), and every entry of the tree must be owned by uid 0 with no group or other write bit. find -L
+# checks each symlink in the tree through to its target and descends a linked dir, so no link can lead to
+# a file or dir another account can write. A broken link (the only kind find -L reports as -type l)
+# fails, since its target, which may lie outside the tree, could later appear with anyone's contents. Any
+# readlink or find error (a link loop, an unreadable entry, or no tree) counts as not root-owned. Not
+# checked: the dirs above a link's target outside the tree. GNU find and BusyBox's find (with the
 # features Alpine builds in) both take every option used here, -L and -maxdepth included.
 is_root_owned_tree() {
-  local tree tree_parent first_offender
+  local tree first_offender
+  first_unsafe_path_dir "$1" >/dev/null || return 1
   tree="$(readlink -f -- "$1")" || return 1
-  tree_parent="${tree%/*}"
-  is_root_only_with_ancestors "${tree_parent:-/}" || return 1
   first_offender="$(find -L "$tree" \( -type l -o ! -user 0 -o -perm /go=w \) -print -quit)" || return 1
   [[ -z "$first_offender" ]]
 }
@@ -576,7 +616,7 @@ is_root_owned_tree() {
 # An earlier tarball install can leave its nvim only in $NVIM_INSTALL_DIR/bin: the $NVIM_LINK_DIR link
 # failed, or neither the link nor setup_path's shell config entry is in effect for this run. Succeeds,
 # after recording the reuse (the install method, and NEED_PATH_SETUP), when a new enough nvim is there
-# and only root can change the tree or the dirs above it (is_root_owned_tree), which is checked before
+# and only root can change the tree or the way to it (is_root_owned_tree), which is checked before
 # that nvim runs; fails otherwise (with a warning when the check fails), so install_neovim installs. The
 # version is read inside the condition, where errexit does not apply, so a binary there that fails
 # --version falls through to the install instead of ending the run.
@@ -586,7 +626,7 @@ reuse_install_dir_nvim() {
     return 1
   fi
   if ! is_root_owned_tree "$NVIM_INSTALL_DIR"; then
-    warn "Not reusing the nvim in $NVIM_INSTALL_DIR: something in it, or a directory above it, is not owned by root, is writable by group or others, or is a broken link; installing Neovim instead"
+    warn "Not reusing the nvim in $NVIM_INSTALL_DIR: something in it, or a directory on the way to it, is not owned by root, is writable by group or others, or is a broken link; installing Neovim instead"
     return 1
   fi
   if ! install_dir_version="$(get_nvim_version "$install_dir_nvim")" \
@@ -1346,12 +1386,10 @@ setup_config() {
 # that dir first on this run's PATH and exports it, so verify_nvim, verify_config, and what they start run
 # that nvim now; setup_path adds the same entry to the shell config for new shells when it can. Only root
 # can write the tree's own entries (the tarball install chowns them and drops group and other write, and
-# reuse requires is_root_owned_tree). An account that can write a dir above the tree, or above the target
-# of a link in it that points outside it, could still put files of its own in their place: reuse checks
-# the dirs above the path the tree resolves to (so the dir that holds a linked $NVIM_INSTALL_DIR only when
-# that path is under it too, and a dir above such a target only when it is above that path too), and a
-# fresh tarball install, before it installs, checks the dir that holds $NVIM_INSTALL_DIR and the dirs
-# above it, as that dir resolves (is_root_only_with_ancestors), and no dir above a link target outside the
+# reuse requires is_root_owned_tree). An account that can write a dir on the way to the tree, or above the
+# target of a link in it that points outside it, could still put files of its own in their place: reuse,
+# and a fresh tarball install before it installs, check every dir on the way, each link followed and the
+# dir that holds it checked too (first_unsafe_path_dir), but no dir above a link target outside the
 # tree. main runs this after forget_sudo_credentials has closed the privileged phase, because as_root runs
 # plain sudo, which searches the caller's PATH unless sudoers sets secure_path: past the drop, as_root
 # stops the run, and cleanup's sudo -k runs only for a ticket still held, which the drop clears, so no
