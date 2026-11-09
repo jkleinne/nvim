@@ -9,33 +9,33 @@
 # to run when one does not, as on a noexec temp dir, where bash's PATH search skips the stubs and finds
 # the real commands. Sourced tests and direct script runs start with sandbox: a fake HOME, which also
 # becomes the working directory (git never finds the caller's repository from there), then
-# hermetic_env, so inherited GIT_*, ZDOTDIR, XDG_*, BASH_ENV, ENV, CDPATH, GOTOOLCHAIN, and
-# UV_PYTHON_DOWNLOADS variables are dropped (no shell a test starts reads a startup file that could put
-# other commands ahead of the stubs on PATH, and T17's go and uv stubs log the modes the script sets,
-# never inherited ones) and git ignores the system and global config, refuses every protocol but file (no
-# clone reaches the network, however git is invoked), and never looks above $TMP for a repository.
-# DENY_BIN, which sandbox puts on PATH, refuses sudo, curl, wget, go, uv, and the language package
-# managers and AUR helpers T5 forbids, and logs each call to $TMP/refused.log; a test that needs one puts
-# its stub ahead (a recording sudo that never runs its arguments, a curl that copies a tiny local
-# tarball, go and uv stubs that only log), and T21 fails when any test reached a refusing stub. The tests
-# that run install functions through their real code (T12's deps cases, T17, T20's collection) set PATH
-# to stub dirs and at most a dir of the few real tools that code needs, so nothing else on the caller's
-# PATH can run. Every command a recording sudo logs must be on the allowlist (sudo_allowlist_problems):
-# sudo -v, -n -v, and -k, each package manager's refresh and install, and the tarball install's steps.
-# So, apart from T4 under RUN_FULL=1 (the plugins, into scratch dirs) and T33 under RUN_FEDORA=1, no test
-# can install, upgrade, or download anything, and load_script, run_script, run_script_args, and the main
-# drivers (tests/lib/driver-*.sh, which share tests/lib/driver-lib.sh) run the script only under a fake
-# HOME, so NVIM_CONFIG_DIR never points at a real config. The suite and driver-lib.sh share the helpers in
-# tests/lib/common.sh. T20 reads the server list with nvim --clean --headless -l
-# tests/lib/system-servers.lua, with scratch XDG dirs and TMPDIR, and T35 runs verify_config's headless
-# nvim on a config it writes under a sandbox HOME, with a scratch TMPDIR. Each test sets up what it needs
-# itself, from the stubs and host facts the setup sections below provide, so the tests do not depend
-# on each other's order (T21, which reads what every test left, runs last). RUN_FULL=1 adds T4, an
-# end-to-end run on this machine (see T4), which also reads the real ~/.config/nvim and runs the real
-# sudo -k (it never prompts or elevates) to drop this terminal's cached ticket. The only real package
-# manager queries are read-only: pacman -Q (T4's run and T20 (d)), pacman -Qlq (T20 (d)), and pacman
-# -Si (T20 (b0)). REQUIRE_ALL=1 turns the skips of T3 and T26b's fake-root cases (no way to fake root
-# here) into failures.
+# hermetic_env, so inherited GIT_*, ZDOTDIR, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME,
+# XDG_CACHE_HOME, BASH_ENV, ENV, CDPATH, GOTOOLCHAIN, and UV_PYTHON_DOWNLOADS variables are dropped (no
+# shell a test starts reads a startup file that could put other commands ahead of the stubs on PATH, and
+# T17's go and uv stubs log the modes the script sets, never inherited ones) and git ignores the system
+# and global config, refuses every protocol but file (no clone reaches the network, however git is
+# invoked), and never looks above $TMP for a repository. DENY_BIN, which sandbox puts on PATH, refuses
+# sudo, curl, wget, go, uv, and the language package managers and AUR helpers T5 forbids, and logs each
+# call to $TMP/refused.log; a test that needs one puts its stub ahead (a recording sudo that never runs
+# its arguments, a curl that copies a tiny local tarball, go and uv stubs that only log), and T21 fails
+# when any test reached a refusing stub. The tests that run install functions through their real code
+# (T12's deps cases, T17, T20's collection) set PATH to stub dirs and at most a dir of the few real tools
+# that code needs, so nothing else on the caller's PATH can run. Every command a recording sudo logs must
+# be on the allowlist (sudo_allowlist_problems): sudo -v, -n -v, and -k, each package manager's refresh
+# and install, and the tarball install's steps. So, apart from T4 under RUN_FULL=1 (the plugins, into
+# scratch dirs) and T33 under RUN_FEDORA=1, no test can install, upgrade, or download anything, and
+# load_script, run_script, run_script_args, and the main drivers (tests/lib/driver-*.sh, which share
+# tests/lib/driver-lib.sh) run the script only under a fake HOME, so NVIM_CONFIG_DIR never points at a
+# real config. The suite and driver-lib.sh share the helpers in tests/lib/common.sh. T20 reads the server
+# list with nvim --clean --headless -l tests/lib/system-servers.lua, with scratch XDG dirs and TMPDIR,
+# and T35 runs verify_config's headless nvim on a config it writes under a sandbox HOME, with a scratch
+# TMPDIR. Each test sets up what it needs itself, from the stubs and host facts the setup sections below
+# provide, so the tests do not depend on each other's order (T21, which reads what every test left, runs
+# last). RUN_FULL=1 adds T4, an end-to-end run on this machine (see T4), which also reads the real
+# ~/.config/nvim and runs the real sudo -k (it never prompts or elevates) to drop this terminal's cached
+# ticket. The only real package manager queries are read-only: pacman -Q (T4's run and T20 (d)), pacman
+# -Qlq (T20 (d)), and pacman -Si (T20 (b0)). REQUIRE_ALL=1 turns the skips of T3 and T26b's fake-root
+# cases (no way to fake root here) into failures.
 # RUN_FEDORA=1 adds T33 (see T33), which pulls the fedora:44 image into the user's podman storage (it
 # stays after the run) and installs packages only inside a throwaway container.
 # shellcheck source-path=SCRIPTDIR/..
@@ -3645,11 +3645,11 @@ expect_none T32c-uv-hints-no-python-downloads "$t32c_fail"
 # installs packages inside the container, so it needs podman and network; without the variable or
 # podman it is skipped. It passes only when the driver exits 0 and its output has the closing line. The
 # driver runs without BASH_ENV, ENV, and CDPATH like the rest of the suite, but keeps the other
-# variables hermetic_env drops (GIT_*, ZDOTDIR, the XDG_* dirs, GOTOOLCHAIN, UV_PYTHON_DOWNLOADS): podman
-# reads its storage from XDG_DATA_HOME and its containers.conf and storage.conf from XDG_CONFIG_HOME
-# (containers.conf(5), containers-storage.conf(5)), so the run uses the user's podman setup. T33 keeps
-# only the last lines of the output; to see all of it, run bash tests/lib/fedora-container.sh "$PWD" from
-# the repository root.
+# variables hermetic_env drops (GIT_*, ZDOTDIR, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME,
+# XDG_CACHE_HOME, GOTOOLCHAIN, UV_PYTHON_DOWNLOADS): podman reads its storage from XDG_DATA_HOME and its
+# containers.conf and storage.conf from XDG_CONFIG_HOME (containers.conf(5), containers-storage.conf(5)),
+# so the run uses the user's podman setup. T33 keeps only the last lines of the output; to see all of it,
+# run bash tests/lib/fedora-container.sh "$PWD" from the repository root.
 if [[ "${RUN_FEDORA:-0}" != 1 ]]; then
   echo "SKIP T33-fedora-container (set RUN_FEDORA=1 to run the dnf path in a fedora:44 container; needs podman and network)"
 elif ! command -v podman >/dev/null 2>&1; then
