@@ -3639,14 +3639,17 @@ expect_none T34-driver-lists-current "$t34_fail"
 # print no "Config loads cleanly" line. hermetic_env unsets XDG_CONFIG_HOME, XDG_DATA_HOME,
 # XDG_STATE_HOME (only unwritable-state-dir sets it again), and XDG_CACHE_HOME, so Neovim reads that
 # config and writes its data and state under the sandbox HOME. It keeps XDG_CONFIG_DIRS and
-# XDG_DATA_DIRS, which each case points at an empty scratch dir under $TMP, because T35 checks
-# verify_config's detection on a config it writes and the host's sysinit.vim and plugins must not count
-# (XDG_CONFIG_DIRS can list a dir under the real HOME, and Arch's /etc/xdg/nvim/sysinit.vim adds
-# /usr/share/vim/vimfiles to the runtimepath): a host plugin that errors would fail the clean cases, and
-# pass the three that error for the wrong reason. Neovim still finds its own runtime ($VIMRUNTIME does
-# not come from those dirs). TMPDIR is a scratch dir under $TMP too, and NVIM_APPNAME and VIMINIT (which
-# would make Neovim read another config) and NVIM_LOG_FILE (which would put its log elsewhere) are
-# unset. Without nvim on PATH, T35 fails and says so.
+# XDG_DATA_DIRS, which each case points at an empty scratch dir under $TMP, and points VIM at that dir
+# too, because T35 checks verify_config's detection on a config it writes and the host's sysinit.vim and
+# plugins must not count (XDG_CONFIG_DIRS can list a dir under the real HOME, Arch's
+# /etc/xdg/nvim/sysinit.vim adds /usr/share/vim/vimfiles to the runtimepath, and with no
+# nvim/sysinit.vim in XDG_CONFIG_DIRS Neovim reads the system vimrc, $VIM/sysinit.vim): a host plugin or
+# system vimrc that errors would fail the clean cases, and pass the three that error for the wrong
+# reason. Neovim still finds its own runtime: each case sets VIMRUNTIME to the dir t35_nvim_runtime
+# reads once, since Neovim would otherwise take a VIM that holds no runtime dir as the runtime itself
+# (starting.txt, $VIMRUNTIME). TMPDIR is a scratch dir under $TMP too, and NVIM_APPNAME and VIMINIT
+# (which would make Neovim read another config) and NVIM_LOG_FILE (which would put its log elsewhere)
+# are unset. Without nvim on PATH, or when nvim reports no runtime dir, T35 fails and says so.
 t35_fail=""
 t35_loads="Config loads cleanly"
 t35_log_name="nvim-install-config-check.log"
@@ -3664,8 +3667,23 @@ vim.schedule(function() vim.notify(table.concat(report, "\n"), vim.log.levels.ER
 vim.schedule(function() for line = 1, 25 do print("after the report " .. line) end end)
 EOF
 )"
+# Prints the runtime dir nvim finds on its own, read as starting.txt shows with VIM and VIMRUNTIME
+# unset, so neither the caller's values nor a case's scratch VIM decide it; fails when that dir holds
+# no doc/help.txt
+t35_nvim_runtime() {
+  local runtime
+  # shellcheck disable=SC2016  # $VIMRUNTIME is for nvim's :echo to expand, not the shell
+  runtime="$(env -u VIM -u VIMRUNTIME nvim --clean --headless --cmd 'echo $VIMRUNTIME|q' 2>&1)" || return 1
+  [[ -f "$runtime/doc/help.txt" ]] || return 1
+  printf '%s\n' "$runtime"
+}
 if ! type -P nvim >/dev/null; then
   t35_fail="[nvim not on PATH] "
+elif ! t35_runtime="$(
+  sandbox T35-runtime ""
+  t35_nvim_runtime
+)"; then
+  t35_fail="[nvim reports no runtime dir that holds doc/help.txt] "
 else
   # Each case sets its init.lua, its kind (clean, error, or skipped), and what its kind checks: the
   # exact log a clean case leaves, or the text a case that errors must leave in the log and the shown
@@ -3714,7 +3732,9 @@ else
       TMPDIR="$TMP/T35-$id-tmp"
       XDG_CONFIG_DIRS="$TMP/T35-$id-system-dirs"
       XDG_DATA_DIRS="$TMP/T35-$id-system-dirs"
-      export TMPDIR XDG_CONFIG_DIRS XDG_DATA_DIRS
+      VIM="$TMP/T35-$id-system-dirs"
+      VIMRUNTIME="$t35_runtime"
+      export TMPDIR XDG_CONFIG_DIRS XDG_DATA_DIRS VIM VIMRUNTIME
       mkdir -p "$TMPDIR" "$XDG_CONFIG_DIRS" "$HOME/.config/nvim"
       if [[ "$t35_state_home_is_file" == true ]]; then
         XDG_STATE_HOME="$t35_state_home"
