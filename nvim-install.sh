@@ -465,9 +465,12 @@ install_neovim_tarball() {
 
   info "Extracting to $NVIM_INSTALL_DIR (requires sudo)..."
   as_root mkdir -p "$NVIM_INSTALL_DIR"
-  as_root tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
-  # tar run as root keeps the owners the archive records, and the dir's bin may go first on PATH
-  # (put_install_dir_first_on_path), so root owns the tree and only root can write to it
+  # --no-same-owner: tar run as root otherwise gives each entry the owner the archive records until the
+  # chown below, long enough for an account with that uid to open a file for writing and keep it open,
+  # past the chown and into every later run that reuses the tree
+  as_root tar -C "$NVIM_INSTALL_DIR" --no-same-owner --strip-components=1 -xzf "$tarball"
+  # The dir's bin may go first on PATH (put_install_dir_first_on_path), so root owns the tree and only
+  # root can write to it, whatever owners and modes the archive records
   as_root chown -R 0:0 "$NVIM_INSTALL_DIR"
   as_root chmod -R go-w "$NVIM_INSTALL_DIR"
 
