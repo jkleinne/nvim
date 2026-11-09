@@ -1978,6 +1978,33 @@ fi
 expect_none "T20-server-list-sync (e) dnf" "$problems"
 
 
+# The nvim versions T26's stubs print where a case needs one on a given side of the script's
+# MIN_NVIM_VERSION: the minimum itself (new enough, as a version equal to it is), a newer one, and three
+# older ones, kept apart so a case can tell whose version an output shows (an old nvim on PATH, an old one
+# in the install dir, and the old one a package install leaves). T22's main run and T26's cases take them
+# by name. A bump of the minimum that leaves one on the wrong side fails T26-fixture-versions, which names
+# it, beside the cases that use it.
+t26_fixture_problems=""
+T26_MIN_VERSION="$(script_constant MIN_NVIM_VERSION)" \
+  || t26_fixture_problems+="[the script sets no MIN_NVIM_VERSION] "
+T26_NEW_VERSION=0.12.6
+T26_OLD_PATH_VERSION=0.11.4
+T26_OLD_INSTALL_DIR_VERSION=0.11.6
+T26_OLD_PACKAGE_VERSION=0.11.5
+t26_fixture_problems+="$( (
+  sandbox T26-fixture-versions ""
+  load_script
+  problems=""
+  version_gte "$T26_NEW_VERSION" "$MIN_NVIM_VERSION" \
+    || problems+="[T26_NEW_VERSION $T26_NEW_VERSION is older than MIN_NVIM_VERSION $MIN_NVIM_VERSION] "
+  for name in T26_OLD_PATH_VERSION T26_OLD_INSTALL_DIR_VERSION T26_OLD_PACKAGE_VERSION; do
+    ! version_gte "${!name}" "$MIN_NVIM_VERSION" \
+      || problems+="[$name ${!name} is not older than MIN_NVIM_VERSION $MIN_NVIM_VERSION] "
+  done
+  printf '%s' "$problems"
+) </dev/null 2>&1)"
+expect_none T26-fixture-versions "$t26_fixture_problems"
+
 # T22: main's single privilege boundary: install_neovim and install_deps, the steps that run root
 # commands, come first; then main forgets cached sudo credentials; then put_install_dir_first_on_path
 # (only after the forget, so no root command and no lookup of sudo ever searches NVIM_INSTALL_DIR/bin),
@@ -1988,7 +2015,7 @@ expect_none "T20-server-list-sync (e) dnf" "$problems"
 # main with install_neovim taking a ticket through ensure_sudo_ticket (so moved after the forget, it
 # stops the run), install_deps and the steps before it stubbed to log their names, and
 # put_install_dir_first_on_path, setup_path, verify_nvim, verify_config, and print_summary logging their
-# names and then running for real, with T26's stub nvim (version 0.12.0) first on PATH, so a root
+# names and then running for real, with T26's stub nvim (T26_MIN_VERSION) first on PATH, so a root
 # command in them reaches the recording sudo, which logs to the same event log; the real
 # forget_sudo_credentials and cleanup run against it, and main gets the words of T22_ARGS as its
 # arguments. Cases: main-order, where install_neovim takes a ticket; T22b, the same where sudo is not
@@ -2009,7 +2036,7 @@ for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
   t22_log="$(sudo_log "$t22_name")"
   out="$( (
     recording_sandbox "$t22_name" "$T26_BIN" "$t22_fail_on"
-    T22_TICKET="$t22_ticket" T26_VERSION=0.12.0 T22_ARGS="$t22_args"
+    T22_TICKET="$t22_ticket" T26_VERSION="$T26_MIN_VERSION" T22_ARGS="$t22_args"
     export T22_TICKET T26_VERSION T22_ARGS
     bash "$LIB/driver-T22.sh" "$SCRIPT"
     echo "driver rc=$?"
@@ -3000,34 +3027,34 @@ t26_stop_errors() {
       ;;
   esac
 }
-for tc in "current:0.12.0:none:-:fail:no:no:existing:false:unchanged" \
-  "old-package-new:0.11.4:none:-:0.12.6:yes:no:pacman:false:unchanged" \
-  "old-package-old:0.11.4:none:-:0.11.5:yes:yes:-:false:unchanged" \
-  "package-fails:0.11.4:none:-:fail:yes:yes:-:false:unchanged" \
+for tc in "current:$T26_MIN_VERSION:none:-:fail:no:no:existing:false:unchanged" \
+  "old-package-new:$T26_OLD_PATH_VERSION:none:-:$T26_NEW_VERSION:yes:no:pacman:false:unchanged" \
+  "old-package-old:$T26_OLD_PATH_VERSION:none:-:$T26_OLD_PACKAGE_VERSION:yes:yes:-:false:unchanged" \
+  "package-fails:$T26_OLD_PATH_VERSION:none:-:fail:yes:yes:-:false:unchanged" \
   "no-nvim:none:none:-:fail:yes:yes:-:false:unchanged" \
-  "install-dir-only:none:0.12.6:root:fail:no:no:reused:true:install-dir" \
-  "old-path-install-dir-new:0.11.4:0.12.6:root:fail:no:no:reused:true:install-dir" \
-  "old-path-install-dir-old:0.11.4:0.11.6:root:0.11.5:yes:yes:-:false:unchanged" \
+  "install-dir-only:none:$T26_NEW_VERSION:root:fail:no:no:reused:true:install-dir" \
+  "old-path-install-dir-new:$T26_OLD_PATH_VERSION:$T26_NEW_VERSION:root:fail:no:no:reused:true:install-dir" \
+  "old-path-install-dir-old:$T26_OLD_PATH_VERSION:$T26_OLD_INSTALL_DIR_VERSION:root:$T26_OLD_PACKAGE_VERSION:yes:yes:-:false:unchanged" \
   "install-dir-broken:none:broken:root:fail:yes:yes:-:false:unchanged" \
-  "install-dir-not-root-owned:none:0.12.6:user:fail:yes:yes:-:false:unchanged" \
-  "new-path-install-dir-new:0.12.0:0.12.6:root:fail:no:no:existing:false:unchanged" \
-  "broken-path-package-new:broken:none:-:0.12.6:yes:no:pacman:false:unchanged" \
-  "broken-path-install-dir-new:broken:0.12.6:root:fail:no:no:reused:true:install-dir" \
-  "old-path-package-broken:0.11.4:none:-:broken:yes:yes:-:false:unchanged" \
-  "old-path-package-apart:0.11.4:none:-:apart-0.12.6:yes:no:stop:-:-" \
-  "broken-path-package-apart:broken:none:-:apart-0.12.6:yes:no:stop:-:-" \
-  "no-nvim-package-apart:none:none:-:apart-0.12.6:yes:no:stop:-:-" \
-  "old-path-package-apart-old:0.11.4:none:-:apart-0.11.5:yes:yes:-:false:unchanged" \
-  "old-path-package-apart-broken:0.11.4:none:-:apart-broken:yes:yes:-:false:unchanged" \
-  "old-path-package-linked:0.11.4:none:-:linked-0.12.6:yes:no:pacman:false:unchanged" \
-  "old-path-package-unlisted:0.11.4:none:-:unlisted:yes:yes:-:false:unchanged" \
-  "old-install-dir-link-first-package-apart:0.11.6:link-first:root:apart-0.12.6:yes:no:stop:-:-" \
-  "old-install-dir-bin-first-package-apart:0.11.6:bin-first:root:apart-0.12.6:yes:no:stop:-:-" \
-  "old-install-dir-bin-then-link-package-apart:0.11.6:bin-then-link:root:apart-0.12.6:yes:no:stop:-:-" \
-  "old-install-dir-user-link-first-package-apart:0.11.6:user-link-first:root:apart-0.12.6:yes:no:stop:-:-" \
-  "old-install-dir-other-in-link-dir-package-apart:0.11.6:other-in-link-dir:root:apart-0.12.6:yes:no:stop:-:-" \
-  "old-install-dir-bin-then-other-link-package-apart:0.11.6:bin-then-other-link:root:apart-0.12.6:yes:no:stop:-:-" \
-  "old-install-dir-link-via-dir-link-package-apart:0.11.6:link-via-dir-link:root:apart-0.12.6:yes:no:stop:-:-"; do
+  "install-dir-not-root-owned:none:$T26_NEW_VERSION:user:fail:yes:yes:-:false:unchanged" \
+  "new-path-install-dir-new:$T26_MIN_VERSION:$T26_NEW_VERSION:root:fail:no:no:existing:false:unchanged" \
+  "broken-path-package-new:broken:none:-:$T26_NEW_VERSION:yes:no:pacman:false:unchanged" \
+  "broken-path-install-dir-new:broken:$T26_NEW_VERSION:root:fail:no:no:reused:true:install-dir" \
+  "old-path-package-broken:$T26_OLD_PATH_VERSION:none:-:broken:yes:yes:-:false:unchanged" \
+  "old-path-package-apart:$T26_OLD_PATH_VERSION:none:-:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "broken-path-package-apart:broken:none:-:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "no-nvim-package-apart:none:none:-:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-path-package-apart-old:$T26_OLD_PATH_VERSION:none:-:apart-$T26_OLD_PACKAGE_VERSION:yes:yes:-:false:unchanged" \
+  "old-path-package-apart-broken:$T26_OLD_PATH_VERSION:none:-:apart-broken:yes:yes:-:false:unchanged" \
+  "old-path-package-linked:$T26_OLD_PATH_VERSION:none:-:linked-$T26_NEW_VERSION:yes:no:pacman:false:unchanged" \
+  "old-path-package-unlisted:$T26_OLD_PATH_VERSION:none:-:unlisted:yes:yes:-:false:unchanged" \
+  "old-install-dir-link-first-package-apart:$T26_OLD_INSTALL_DIR_VERSION:link-first:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-bin-first-package-apart:$T26_OLD_INSTALL_DIR_VERSION:bin-first:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-bin-then-link-package-apart:$T26_OLD_INSTALL_DIR_VERSION:bin-then-link:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-user-link-first-package-apart:$T26_OLD_INSTALL_DIR_VERSION:user-link-first:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-other-in-link-dir-package-apart:$T26_OLD_INSTALL_DIR_VERSION:other-in-link-dir:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-bin-then-other-link-package-apart:$T26_OLD_INSTALL_DIR_VERSION:bin-then-other-link:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-link-via-dir-link-package-apart:$T26_OLD_INSTALL_DIR_VERSION:link-via-dir-link:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-"; do
   IFS=: read -r id before install_dir tree after want_pkg want_tarball want_method want_path_setup want_path <<<"$tc"
   out="$(t26_case "$id" "$before" "$install_dir" "$tree" "$after")"
   rc=$?
@@ -3107,7 +3134,7 @@ done
 # get. The setup is T26's bin-first case (t26_load), with USER_SHELL fish, as detect_shell sets it.
 t26e_dir="$TMP/T26-own-install-fish/opt-nvim"
 out="$( (
-  t26_load own-install-fish 0.11.6 bin-first root apart-0.12.6
+  t26_load own-install-fish "$T26_OLD_INSTALL_DIR_VERSION" bin-first root "apart-$T26_NEW_VERSION"
   # shellcheck disable=SC2034  # install_neovim, in the script sourced into this subshell, reads it
   USER_SHELL=fish
   install_neovim
@@ -3124,7 +3151,7 @@ result T26e-own-install-entry-in-shell-form $? "rc=$rc; $(grep '^  x ' <<<"$out"
 # older nvim comes first on PATH: it exits 0, names reused as the install method, and its PATH line
 # gives that cause, not the tarball's. The setup is T26's (t26_load).
 out="$( (
-  t26_load packages-only-reuse 0.11.6 0.12.6 root fail
+  t26_load packages-only-reuse "$T26_OLD_INSTALL_DIR_VERSION" "$T26_NEW_VERSION" root fail
   PACKAGES_ONLY=true
   # shellcheck disable=SC2329  # run_errexit calls it
   packages_only_end() {
@@ -3143,7 +3170,7 @@ out="$( (
 rc=$?
 problems=""
 done_ok $rc "$out" && grep -qxF "end rc=0" <<<"$out" || problems+="[want exit 0: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
-grep -qF 'Neovim 0.12.6 on PATH' <<<"$out" || problems+="[verify_nvim did not find the install dir's nvim] "
+grep -qF "Neovim $T26_NEW_VERSION on PATH" <<<"$out" || problems+="[verify_nvim did not find the install dir's nvim] "
 grep -qE 'Install method: +reused$' <<<"$out" || problems+="[want install method reused] "
 grep -qE "PATH: +the reused nvim was not first on PATH; the full run adds $(ere_escape "$TMP")/T26-packages-only-reuse/opt-nvim/bin to your shell config" <<<"$out" \
   || problems+="[no PATH line naming the reuse] "
