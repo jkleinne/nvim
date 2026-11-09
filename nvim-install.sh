@@ -1441,7 +1441,9 @@ verify_config() {
   local report_startup_error="+if v:errmsg != '' | echo 'Last error message:' v:errmsg | cquit | endif"
   local shown_lines
 
-  if ! mkdir -p -- "$log_dir" || ! : >"$log_file"; then
+  # The dirs it creates are private, as Neovim creates its own (it keeps an existing dir's mode, and its
+  # undo files go there): with NVIM_LOG_FILE set, nothing before this has made them
+  if ! (umask 077 && mkdir -p -- "$log_dir") || ! : >"$log_file"; then
     warn "Skipped the config check: could not write its log $log_file"
     return
   fi

@@ -3850,6 +3850,38 @@ else
 fi
 expect_none T35-config-errors "$t35_fail"
 
+# T35b: verify_config creates the dirs on its log's path private to the user (0700), as Neovim creates
+# its own, whatever the caller's umask: with NVIM_LOG_FILE set, Neovim's launch creates none of them, so
+# on a fresh account they are the ones verify_config made, and Neovim's undo files (undofile) later land
+# under them. The case runs verify_config with the real nvim on a fresh sandbox HOME, with umask 022,
+# NVIM_LOG_FILE at a scratch file outside HOME, and T35's isolation from the host's system dirs, and
+# requires ~/.local, ~/.local/state, and ~/.local/state/nvim to be 0700. Without the runtime dir T35 read
+# (no nvim on PATH, or none reported), it fails and says so.
+t35b_fail=""
+if [[ -z "${t35_runtime:-}" ]]; then
+  t35b_fail="[no nvim runtime dir from T35: nvim is missing or reports none] "
+else
+  out="$( (
+    sandbox T35b-private-state ""
+    load_script
+    umask 022
+    unset NVIM_APPNAME VIMINIT
+    TMPDIR="$TMP/T35b-tmp" NVIM_LOG_FILE="$TMP/T35b-nvim.log" VIMRUNTIME="$t35_runtime"
+    XDG_CONFIG_DIRS="$TMP/T35b-system-dirs" XDG_DATA_DIRS="$TMP/T35b-system-dirs" VIM="$TMP/T35b-system-dirs"
+    export TMPDIR NVIM_LOG_FILE VIMRUNTIME XDG_CONFIG_DIRS XDG_DATA_DIRS VIM
+    mkdir -p "$TMPDIR" "$XDG_CONFIG_DIRS" "$HOME/.config/nvim"
+    printf '%s\n' '-- no settings' >"$HOME/.config/nvim/init.lua"
+    verify_config >/dev/null
+    stat -c 'MODE %a %n' "$HOME/.local" "$HOME/.local/state" "$HOME/.local/state/nvim"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" || t35b_fail+="[rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  t35b_modes="$(sed -n 's/^MODE //p' <<<"$out")"
+  [[ "$(grep -c '^700 ' <<<"$t35b_modes")" -eq 3 ]] || t35b_fail+="[want 700 for each: ${t35b_modes//$'\n'/; }] "
+fi
+expect_none T35b-config-check-state-dir-private "$t35b_fail"
+
 # T36: on dnf, pkg_is_installed finds a package by what an installed package provides, as dnf install
 # resolves a name, and not only by the installed package names. Fedora 44's nodejs is a Provides of
 # nodejs22, so rpm -q nodejs fails with nodejs22 installed, and a check by name alone made every rerun
