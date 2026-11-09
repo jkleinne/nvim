@@ -28,6 +28,14 @@ local function set_lsp_keymaps(args)
   keymap("n", "gr", vim.lsp.buf.references, opts)
 end
 
+-- The interpreter pylsp's jedi starts as a subprocess to complete and infer against. Pinned to the
+-- system's: left unset, jedi takes the one an active VIRTUAL_ENV or CONDA_PREFIX names, so opening
+-- Neovim from a project's venv would run that project's interpreter and its site hooks. The pin covers
+-- jedi's subprocess only: the pylsp command is a bare name resolved on PATH, so a pylsp installed in an
+-- active venv runs from there, on that venv's interpreter, as the venv's black and ruff do through
+-- conform and nvim-lint. PATH is trusted, as for the system servers.
+local SYSTEM_PYTHON = "/usr/bin/python3"
+
 return {
   "neovim/nvim-lspconfig",
   event = { "BufReadPre", "BufNewFile" },
@@ -36,21 +44,24 @@ return {
     "mason-org/mason-lspconfig.nvim",
   },
   config = function()
-    -- The server inventory: Mason's servers, the system package manager's, retired ones, and ones
-    -- that never start
+    -- The server inventory: Mason's servers, the system package manager's and its fallbacks, retired
+    -- ones, and ones that never start
     local servers = require "lsp_gates.servers"
     local typescript = require "lsp_gates.typescript"
     local terraform_trust = require "lsp_gates.terraform_trust"
+    local fallbacks = require "lsp_gates.fallbacks"
 
     -- Each config run (for example :Lazy reload) starts a new session: the gates' notices show again
     terraform_trust.reset()
     typescript.reset()
 
-    -- lsp.lua alone decides whether a system server runs. mason-lspconfig would otherwise enable any
+    -- Only lsp.lua enables a system server or a fallback. mason-lspconfig would otherwise enable any
     -- Mason-installed copy by name with lspconfig's defaults, skipping the gates below; Mason puts its
     -- bin dir first on PATH, so a Mason-only copy still runs through the gated loop.
     local never_start = vim.list_extend(vim.list_extend({}, servers.retired), servers.never)
-    local not_auto_enabled = vim.list_extend(vim.tbl_keys(servers.system), never_start)
+    local not_auto_enabled = vim.tbl_keys(servers.system)
+    vim.list_extend(not_auto_enabled, vim.tbl_keys(servers.fallbacks))
+    vim.list_extend(not_auto_enabled, never_start)
     table.sort(not_auto_enabled)
 
     -- ts_ls's whole policy (lsp_gates.typescript): with a system TypeScript, ts_ls uses it, checks it
@@ -125,12 +136,58 @@ return {
     -- schemas still work
     vim.lsp.config("jsonls", { init_options = { handledSchemaProtocols = { "file" } } })
 
+    -- pylsp, where it stands in for pyright (servers.fallbacks). jedi runs the interpreter it is given
+    -- as a subprocess: SYSTEM_PYTHON, never a project's. Its auto_import_modules default, { "numpy" },
+    -- names modules jedi imports (runs) instead of analyzing, so the list is empty. The linters and
+    -- formatters pylsp bundles are off: the standalone ruff and black do that work through nvim-lint
+    -- and conform, and two sets of diagnostics would overlap. So are the add-on plugins Fedora packages
+    -- for it, which pylsp enables once installed: python-lsp-ruff, when the ruff Python module is
+    -- installed, runs `python -m ruff` from Neovim's cwd, and `-m` puts that cwd first on sys.path, so a
+    -- repo's ruff.py there would run in its place. python-lsp-black formats with black. An empty Lua
+    -- table reaches pylsp as the JSON array []. Preloading is off too: pylsp imports dozens of
+    -- libraries (numpy, pandas, scipy) into its own process at startup. That one is an init_option, not
+    -- a setting: pylsp runs the preload hook during initialize, before the client's settings arrive in
+    -- didChangeConfiguration, so only init_options can turn it off. Signature formatting is off as well:
+    -- pylsp formats the signatures in its hover and completion replies by running `<python> -m black`
+    -- (or ruff) from Neovim's cwd, where a repo's black.py would run in its place. It is set in
+    -- init_options too, so it holds before the settings arrive, and it is false rather than vim.NIL
+    -- because pylsp's merge skips a null and keeps the default.
+    vim.lsp.config("pylsp", {
+      init_options = {
+        pylsp = {
+          plugins = { preload = { enabled = false } },
+          signature = { formatter = false },
+        },
+      },
+      settings = {
+        pylsp = {
+          plugins = {
+            jedi = { environment = SYSTEM_PYTHON, auto_import_modules = {} },
+            pycodestyle = { enabled = false },
+            pyflakes = { enabled = false },
+            mccabe = { enabled = false },
+            autopep8 = { enabled = false },
+            yapf = { enabled = false },
+            ruff = { enabled = false },
+            black = { enabled = false },
+          },
+          signature = { formatter = false },
+        },
+      },
+    })
+
     vim.lsp.config(terraform_trust.SERVER, { root_dir = terraform_trust.root_dir })
 
     -- A leftover Mason copy of a retired server, and a server that runs a repo's code
     -- (servers.never), never start, even with a bare :lsp enable
     for _, server in ipairs(never_start) do
       vim.lsp.config(server, { root_dir = function() end })
+    end
+
+    -- The one check of whether a server's command can run, for the system servers and the fallbacks:
+    -- binary is the command's first word, and a bare name is looked up on PATH
+    local function is_executable(binary)
+      return vim.fn.executable(binary) == 1
     end
 
     -- Configuration and activation are separate. Every system server gets its list cmd, so an
@@ -148,10 +205,29 @@ return {
     for server, cmd in pairs(servers.system) do
       vim.lsp.config(server, { cmd = cmd })
       local gate = activation_gates[server]
-      if vim.fn.executable(cmd[1]) == 1 and (gate == nil or gate()) then
+      if is_executable(cmd[1]) and (gate == nil or gate()) then
         table.insert(enable, server)
       end
     end
+
+    -- A fallback (servers.fallbacks) stands in for a system server a distro does not package.
+    -- lsp_gates.fallbacks chooses which ones run, from the list above. Like the system servers, every
+    -- fallback gets its list cmd, chosen or not. The chosen ones join the list; the rest are disabled,
+    -- and so is the server each chosen one replaces: vim.lsp.enable only adds names, so after :Lazy
+    -- reload a fallback that an earlier run enabled would stay enabled (and keep running) beside a
+    -- primary that has since appeared, and a primary that an earlier run enabled would start beside its
+    -- fallback once its binary is back.
+    local chosen, passed_over = fallbacks.choose(servers.fallbacks, enable, is_executable)
+    for name, spec in pairs(servers.fallbacks) do
+      vim.lsp.config(name, { cmd = spec.cmd })
+    end
+    local replaced = {}
+    for _, name in ipairs(chosen) do
+      table.insert(replaced, servers.fallbacks[name].replaces)
+    end
+    vim.list_extend(enable, chosen)
+    vim.lsp.enable(passed_over, false)
+    vim.lsp.enable(replaced, false)
 
     local mason_lspconfig = require "mason-lspconfig"
 

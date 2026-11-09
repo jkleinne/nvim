@@ -2,14 +2,37 @@
 set -euo pipefail
 
 readonly MIN_NVIM_VERSION="0.12.0"
+# MIN_NVIM_VERSION without its patch number, the form the plan screen and usage name the minimum in
+# (Neovim X.Y+), so a bump of the minimum changes those texts too. It takes MIN_NVIM_VERSION to be
+# X.Y.Z, as Neovim numbers its releases (a test checks the form)
+readonly MIN_NVIM_MAJOR_MINOR="${MIN_NVIM_VERSION%.*}"
 readonly NVIM_REPO_SLUG="jkleinne/nvim"
 readonly NVIM_REPO="https://github.com/${NVIM_REPO_SLUG}.git"
 readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
+# Where install_neovim_tarball links the tarball's nvim, so it is on PATH without a shell config entry
+readonly NVIM_LINK_DIR="/usr/local/bin"
+# Linux follows at most 40 links while it resolves one path (path_resolution(7)); first_unsafe_path_dir,
+# which walks the path to NVIM_INSTALL_DIR the same way, gives up past as many
+readonly MAX_PATH_LINKS=40
+# The comment line setup_path writes above the $NVIM_INSTALL_DIR/bin entry it adds to the shell config,
+# so the user can find that entry; the stop for an earlier tarball install ahead of the package names it
+readonly NVIM_PATH_ENTRY_MARKER="# Neovim (added by nvim-install.sh)"
+# The name of the Neovim package in each supported manager's repos: install_neovim installs it, and
+# pkg_installed_nvim reads its file list for the nvim binary it installed
+readonly NVIM_PACKAGE="neovim"
 readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
 # Arch's TypeScript (a dependency of typescript-language-server), the first place the editor's ts_ls
 # gate looks; has_system_typescript makes the same check
 readonly ARCH_TSSERVER="/usr/lib/node_modules/typescript/lib/tsserver.js"
+# Go tools the distro repos lack (install_user_tools), pinned to exact releases: an update is a
+# deliberate change here, and Go's checksum database (GOSUMDB, sum.golang.org by default) verifies the
+# exact module. The releases current on 2026-10-28 (proxy.golang.org). A test checks the form.
+readonly GO_TOOL_SHFMT="mvdan.cc/sh/v3/cmd/shfmt@v3.14.1"
+readonly GO_TOOL_GOIMPORTS="golang.org/x/tools/cmd/goimports@v0.52.0"
+readonly GO_TOOL_GOLANGCI_LINT="github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.15.0"
+readonly GO_TOOL_LAZYGIT="github.com/jesseduffield/lazygit@v0.66.2"
+readonly GO_TOOL_LAZYDOCKER="github.com/jesseduffield/lazydocker@v0.25.2"
 
 # The directory this script is in, resolved without CDPATH. Empty when the script has no file (run as
 # bash -c "$(curl ...)", or through a pipe); setup_config then skips its checks for running from a
@@ -22,7 +45,17 @@ SCRIPT_TMPDIR=""
 CLONE_STAGING=""
 WARNINGS=()
 PATH_WARNED_DIRS=()
+# true when this run's nvim is in $NVIM_INSTALL_DIR/bin and PATH did not reach it first. install_neovim
+# only records it; put_install_dir_first_on_path then puts that dir first on this run's PATH, after the
+# privileged phase, and setup_path adds it to the shell config when it can.
 NEED_PATH_SETUP=false
+# true once setup_path has found or added the $NVIM_INSTALL_DIR/bin entry in the shell config. Apart from
+# NEED_PATH_SETUP because a run can need the entry and not be able to add it (setup_path then only prints
+# the line to add), and print_summary reports which happened.
+SHELL_CONFIG_HAS_PATH_ENTRY=false
+# Where this run's nvim came from: existing (a new enough nvim on PATH), reused (a new enough one in
+# $NVIM_INSTALL_DIR/bin that PATH did not reach first), the package manager's name, or tarball (installed
+# now). The PATH messages read it for the cause.
 NVIM_INSTALL_METHOD=""
 OS=""
 ARCH=""
@@ -32,6 +65,9 @@ PKG_DB_SYNCED=false
 SUDO_TICKET_HELD=false
 PRIVILEGE_CLOSED=false
 USER_SHELL=""
+# --packages-only: stop after the system packages (no user tools, clone, shell config PATH entry, or
+# config check); this run's own PATH step and nvim check still run, so a reused or tarball nvim is found
+PACKAGES_ONLY=false
 
 # ---------------------------------------------------------------------------
 # Color / output helpers
@@ -56,6 +92,15 @@ warn()    { printf '%s\n' "${YELLOW}${BOLD}  !${RESET} $1"; WARNINGS+=("$1"); }
 error()   { printf '%s\n' "${RED}${BOLD}  x${RESET} $1" >&2; }
 section() {
   printf '\n%s\n' "${BOLD}${BLUE}--- $1 ---${RESET}"
+}
+
+# Prints label $1 and value $2 as one line of the plan screen (confirm_proceed) or the summary
+# (print_summary), the label padded so the values line up in one column. Both screens share this
+# layout, so it lives here alone: restated at each line, one edited copy could misalign a screen.
+print_field() {
+  # Fits the longest label, "Package manager:" (16 characters), with room to spare
+  local label_width=18
+  printf '  %-*s %s\n' "$label_width" "$1" "$2"
 }
 
 # Ask a y/N question: returns 0 for y or Y, 1 for any other answer, and 2 at end of input (no one to
@@ -187,7 +232,7 @@ detect_os() {
   kernel="$(uname -s)"
   if [[ "$kernel" != "Linux" ]]; then
     error "Unsupported operating system: $kernel"
-    error "This script supports Linux only (Arch Linux first-class, other distros best-effort)."
+    error "This script supports Linux only (Arch Linux first-class; Fedora supported; other distros best-effort)."
     exit 1
   fi
   OS="linux"
@@ -226,13 +271,15 @@ os_release_pkg_mgr() {
   esac
 }
 
-# Sets the package manager ($1) and its support tier together: pacman is first-class, the rest
-# best-effort. Behavior that only pacman gets keys on PKG_MGR; PKG_TIER is for display. Any other
-# manager stops the run: the install functions' case statements know only these four.
+# Sets the package manager ($1) and its support tier together: pacman is first-class, dnf is supported
+# (Fedora's repos cover the core tools, runtimes, and many formatters and linters; the script installs or
+# lists the rest), apt-get and apk are best-effort. Behavior keys on PKG_MGR; PKG_TIER is for display.
+# Any other manager stops the run: the install functions' case statements know only these four.
 set_pkg_manager() {
   case "$1" in
     pacman) PKG_TIER="first-class" ;;
-    apt-get | dnf | apk) PKG_TIER="best-effort" ;;
+    dnf) PKG_TIER="supported" ;;
+    apt-get | apk) PKG_TIER="best-effort" ;;
     *)
       error "set_pkg_manager: unknown package manager '$1' (expected pacman, apt-get, dnf, or apk)"
       exit 1
@@ -260,7 +307,7 @@ detect_pkg_manager() {
 
   if [[ -z "$found" ]]; then
     error "No supported package manager found."
-    error "Supported: pacman (Arch Linux, first-class); apt-get, dnf, apk (best-effort)."
+    error "Supported: pacman (Arch Linux, first-class); dnf (Fedora, supported); apt-get, apk (best-effort)."
     exit 1
   fi
 
@@ -295,33 +342,55 @@ version_gte() {
   [[ $have_num -ge $need_num ]]
 }
 
+# Prints the version of the nvim on PATH, or of the nvim binary $1 when given (install_neovim checks
+# the one in $NVIM_INSTALL_DIR, which may not be on PATH)
 get_nvim_version() {
-  nvim --version 2>/dev/null | head -n1 | sed 's/^NVIM v//'
+  local nvim_binary="${1:-nvim}"
+  "$nvim_binary" --version 2>/dev/null | head -n1 | sed 's/^NVIM v//'
 }
 
 confirm_proceed() {
-  section "Bootstrap Plan"
-  printf '  %-18s %s\n' "OS:" "$OS"
-  printf '  %-18s %s\n' "Architecture:" "$ARCH"
-  printf '  %-18s %s\n' "Package manager:" "$PKG_MGR"
-  printf '  %-18s %s\n' "Support tier:" "$PKG_TIER"
-  printf '  %-18s %s\n' "Shell:" "$USER_SHELL"
-  printf '\n'
-  if [[ "$PKG_TIER" == "best-effort" ]]; then
-    info "$PKG_MGR is best-effort: tools missing from its repos are installed with go install or uv tool install when available (latest upstream), otherwise listed as manual steps at the end."
-    printf '\n'
+  local mode="full"
+  if [[ "$PACKAGES_ONLY" == true ]]; then
+    mode="packages only"
   fi
+  section "Bootstrap Plan"
+  print_field "OS:" "$OS"
+  print_field "Architecture:" "$ARCH"
+  print_field "Package manager:" "$PKG_MGR"
+  print_field "Support tier:" "$PKG_TIER"
+  print_field "Shell:" "$USER_SHELL"
+  print_field "Mode:" "$mode"
+  printf '\n'
+  case "$PKG_MGR" in
+    pacman) ;;
+    dnf)
+      info "$PKG_MGR is $PKG_TIER: packages come from the distro's repos; Neovim comes from the release tarball when the repo's is missing or older than $MIN_NVIM_VERSION; lazygit and lazydocker come from go install at pinned versions in the full run; tools the repos lack are listed at the end."
+      printf '\n'
+      ;;
+    apt-get | apk)
+      info "$PKG_MGR is $PKG_TIER: tools missing from its repos are installed with go install (pinned versions) or uv tool install (latest upstream) in the full run when available, otherwise listed as manual steps at the end."
+      printf '\n'
+      ;;
+  esac
   info "This script will:"
   if [[ "$PKG_MGR" == "pacman" ]]; then
     printf '  %s\n' "0. Upgrade the system first (pacman -Syu, with pacman's own prompt) if anything needs installing"
   fi
-  printf '  %s\n' "1. Install Neovim 0.12+ (prefer $PKG_MGR, tarball fallback)"
-  if [[ "$PKG_MGR" == "pacman" ]]; then
-    printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
-  else
-    printf '  %s\n' "2. Install build tools, clipboard, runtimes, formatters, linters, TUI tools (language servers: manual steps)"
+  # install_neovim keeps the first nvim on PATH when it is new enough, then a new enough one in
+  # $NVIM_INSTALL_DIR, and installs only when neither is usable, so the step names both first
+  printf '  %s\n' "1. Use the Neovim $MIN_NVIM_MAJOR_MINOR+ first on PATH or in $NVIM_INSTALL_DIR, or install it (prefer $PKG_MGR, tarball fallback)"
+  case "$PKG_MGR" in
+    pacman | dnf)
+      printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
+      ;;
+    apt-get | apk)
+      printf '  %s\n' "2. Install build tools, clipboard, runtimes, formatters, linters, TUI tools (language servers: manual steps)"
+      ;;
+  esac
+  if [[ "$PACKAGES_ONLY" != true ]]; then
+    printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
   fi
-  printf '  %s\n' "3. Clone config to $NVIM_CONFIG_DIR"
   printf '\n'
 
   local answer=0
@@ -343,9 +412,51 @@ confirm_proceed() {
 # Neovim installation
 # ---------------------------------------------------------------------------
 
+# Succeeds when the nvim PATH reaches first is the one in $NVIM_INSTALL_DIR/bin, directly or through the
+# $NVIM_LINK_DIR link; fails when it is another, or PATH has none. It compares files (-ef), not paths,
+# because the link's path differs from that nvim's though running either runs the same file. It only
+# reads PATH and runs no nvim: the one PATH reaches first can be a broken one.
+install_dir_nvim_is_first_on_path() {
+  local first_nvim
+  first_nvim="$(command -v nvim)" || return 1
+  [[ "$first_nvim" -ef "$NVIM_INSTALL_DIR/bin/nvim" ]]
+}
+
+# Succeeds when the nvim path $1 is one of this script's own paths to its tarball install's nvim: that
+# nvim in $NVIM_INSTALL_DIR/bin, or the $NVIM_LINK_DIR link to it. Those are what
+# print_install_dir_nvim_ahead_of_package tells the user to undo; a link to that nvim anywhere else is
+# one the user made, and print_shadowed_package_nvim's step to remove it fits better. It compares the
+# dirs by -ef, so a PATH entry that names one of them through a link to the dir still counts, and
+# requires the file to be that nvim, so another nvim in $NVIM_LINK_DIR (an AppImage the user put there,
+# say) does not.
+is_own_install_nvim_path() {
+  local nvim_dir="${1%/*}"
+  [[ "$1" -ef "$NVIM_INSTALL_DIR/bin/nvim" ]] || return 1
+  [[ "$nvim_dir" -ef "$NVIM_INSTALL_DIR/bin" || "$nvim_dir" -ef "$NVIM_LINK_DIR" ]]
+}
+
 install_neovim_tarball() {
   local filename="nvim-${OS}-${ARCH}.tar.gz"
   local url="${NVIM_RELEASE_BASE}/${filename}"
+  local install_parent="${NVIM_INSTALL_DIR%/*}" unsafe_dir unsafe_status=0
+  install_parent="${install_parent:-/}"
+
+  # Each root command below names $NVIM_INSTALL_DIR, and tar -C and chmod -R follow a link there: an
+  # account that could replace an entry or a link on the way to it could point it at a tree of its
+  # choosing between two of those commands, and have root extract into that tree and open it for reading
+  unsafe_dir="$(first_unsafe_path_dir "$install_parent")" || unsafe_status=$?
+  case "$unsafe_status" in
+    0) ;;
+    1)
+      error "Not installing Neovim in $NVIM_INSTALL_DIR: $unsafe_dir, on the way to $install_parent, is not owned by root or is writable by group or others"
+      error "Another account could replace $NVIM_INSTALL_DIR while root installs into it. Make root the only account that can write that directory, then run this script again."
+      exit 1
+      ;;
+    *)
+      error "Not installing Neovim in $NVIM_INSTALL_DIR: could not check the directories on the way to $install_parent (a directory you cannot search, a link to nothing, a link loop, a file on the way, or an error shown above)"
+      exit 1
+      ;;
+  esac
 
   create_tmpdir
   local tarball="${SCRIPT_TMPDIR}/${filename}"
@@ -365,7 +476,10 @@ install_neovim_tarball() {
 
   success "Downloaded $(du -h "$tarball" | cut -f1 | xargs)"
 
-  if [[ -d "$NVIM_INSTALL_DIR" ]]; then
+  # Any entry there, a link to nothing too, which -d misses: root's mkdir -p would then fail on the link,
+  # or, once what it names exists, make nothing and leave the commands below to follow it. rm -rf
+  # removes a link, never what it names
+  if [[ -e "$NVIM_INSTALL_DIR" || -L "$NVIM_INSTALL_DIR" ]]; then
     warn "Existing installation at $NVIM_INSTALL_DIR will be replaced."
     if ! confirm "  Remove $NVIM_INSTALL_DIR?"; then
       error "Cannot install without removing existing directory."
@@ -375,49 +489,266 @@ install_neovim_tarball() {
   fi
 
   info "Extracting to $NVIM_INSTALL_DIR (requires sudo)..."
-  as_root mkdir -p "$NVIM_INSTALL_DIR"
-  as_root tar -C "$NVIM_INSTALL_DIR" --strip-components=1 -xzf "$tarball"
-  # tar run as root keeps the owners the archive records, and the dir's bin may go first on PATH
-  # (setup_path prepends it), so root owns the tree and only root can write to it
+  # Private while it fills: until the chown and chmod below, the entries carry the modes the archive
+  # records, and no other account may reach them then, to keep a write handle open past the chmod or to
+  # add a file that the chown would make root's in a tree every later run reuses
+  as_root mkdir -p -m 0700 "$NVIM_INSTALL_DIR"
+  # --no-same-owner as well: tar run as root otherwise gives each entry the owner the archive records
+  as_root tar -C "$NVIM_INSTALL_DIR" --no-same-owner --strip-components=1 -xzf "$tarball"
+  # The dir's bin may go first on PATH (put_install_dir_first_on_path), so root owns the tree and only
+  # root can write to it, whatever owners and modes the archive records
   as_root chown -R 0:0 "$NVIM_INSTALL_DIR"
   as_root chmod -R go-w "$NVIM_INSTALL_DIR"
+  # Open for every user only now: the mkdir made the dir 0700, tar does not set the mode of the dir it
+  # extracts into, and a dir the archive does not list gets the umask's mode, which sudo never lowers
+  # (sudoers(5)). a+rX opens every dir and every file already executable; it adds no write bit, so the
+  # chmod above still holds
+  as_root chmod -R a+rX "$NVIM_INSTALL_DIR"
 
-  if [[ -w "/usr/local/bin" ]] || as_root test -w "/usr/local/bin"; then
-    as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" /usr/local/bin/nvim
-    success "Symlinked nvim to /usr/local/bin/nvim"
+  if [[ -w "$NVIM_LINK_DIR" ]] || as_root test -w "$NVIM_LINK_DIR"; then
+    as_root ln -sf "${NVIM_INSTALL_DIR}/bin/nvim" "${NVIM_LINK_DIR}/nvim"
+    success "Symlinked nvim to $NVIM_LINK_DIR/nvim"
   else
+    warn "Could not link nvim into $NVIM_LINK_DIR: root cannot write it"
+  fi
+
+  # A link is not enough: an nvim in a dir ahead of the link dir, or a link dir PATH does not list,
+  # keeps this one from being found
+  if ! install_dir_nvim_is_first_on_path; then
     NEED_PATH_SETUP=true
   fi
 
   NVIM_INSTALL_METHOD="tarball"
 }
 
+# Prints the first of the dirs given (one or more absolute paths with no symlink in them) that is not
+# owned by uid 0 or has a group or other write bit, and fails with status 1; succeeds, printing nothing,
+# when each is owned by uid 0 with no such bit, so only root can rename, remove, or replace what it
+# holds. Fails with status 2, printing nothing, on a find error (find reports it), and with no dir given,
+# since find would check the current dir instead (the statuses follow diff's: 1 for a finding, 2 for
+# trouble). A sticky dir (such as /tmp, mode 1777) gets no exception, though unlink(2) and rename(2) do
+# not let another account remove or replace a root-owned entry there: OpenSSH's check of the dirs above
+# a file (safe_path) makes none either, and neither /opt nor / is sticky on a standard layout, so
+# refusing costs no more than a fresh install.
+are_root_only_dirs() {
+  local first_offender
+  if [[ $# -eq 0 ]]; then
+    return 2
+  fi
+  first_offender="$(find "$@" -maxdepth 0 \( ! -user 0 -o -perm /go=w \) -print -quit)" || return 2
+  if [[ -z "$first_offender" ]]; then
+    return 0
+  fi
+  printf '%s\n' "$first_offender"
+  return 1
+}
+
+# Prints the first dir that another account could change on the way to the path $1, and fails with
+# status 1; succeeds, printing nothing, when there is none. The way is walked as the kernel resolves it,
+# one name at a time from /, following each link with plain readlink (one hop): every dir a name is
+# looked up in, which takes in the dir that holds each link met, and the dir $1 names must pass
+# are_root_only_dirs, so once the walk passes, only root can make the path lead elsewhere. A missing name
+# ends the walk with success: root's mkdir -p creates it and what follows inside a dir that passed,
+# though with the mode of the umask sudo runs that mkdir with. Fails with status 2, printing nothing, for
+# a relative $1, a dir on the way the user cannot search (bash's -L, -d and -e are false on any lstat
+# error, so a name there would look missing), a link to nothing (root's mkdir -p would fail on it), a
+# file on the way, more than MAX_PATH_LINKS links (a loop), a readlink error, and status 2 from
+# are_root_only_dirs. util-linux's namei -l lists the same hops, but as text for people,
+# and BusyBox has no namei.
+first_unsafe_path_dir() {
+  local dir=/ rest="$1" name entry target link_count=0
+  if [[ "$rest" != /* ]]; then
+    return 2
+  fi
+  while true; do
+    # $dir is where the next name is looked up, or the dir the path names once no name is left
+    are_root_only_dirs "$dir" || return
+    [[ -x "$dir" ]] || return 2
+    rest="${rest#"${rest%%[!/]*}"}"
+    if [[ -z "$rest" ]]; then
+      return 0
+    fi
+    name="${rest%%/*}"
+    rest="${rest#"$name"}"
+    case "$name" in
+      .) continue ;;
+      ..)
+        dir="${dir%/*}"
+        dir="${dir:-/}"
+        continue
+        ;;
+    esac
+    entry="${dir%/}/$name"
+    if [[ -L "$entry" ]]; then
+      link_count=$((link_count + 1))
+      if ((link_count > MAX_PATH_LINKS)); then
+        return 2
+      fi
+      if [[ ! -e "$entry" ]]; then
+        return 2
+      fi
+      target="$(readlink -- "$entry")" || return 2
+      if [[ "$target" == /* ]]; then
+        dir=/
+      fi
+      rest="$target/$rest"
+    elif [[ -d "$entry" ]]; then
+      dir="$entry"
+    elif [[ -e "$entry" ]]; then
+      return 2
+    else
+      return 0
+    fi
+  done
+}
+
+# Succeeds when only root can change the tree at $1, as the tarball install leaves it, or the way to it.
+# That tree's bin may go first on PATH, where a file another account could write or put in place could
+# shadow commands such as sudo. Every dir on the way to $1, each link followed and the dir that holds it
+# checked too, must pass first_unsafe_path_dir. $1 is then resolved, as the nvim lookup and PATH resolve
+# it, with readlink -f (GNU coreutils and BusyBox both take it with --, which BusyBox's realpath does
+# not), and every entry of the tree must be owned by uid 0 with no group or other write bit. find -L
+# checks each symlink in the tree through to its target and descends a linked dir, so no link can lead to
+# a file or dir another account can write. A broken link (the only kind find -L reports as -type l)
+# fails, since its target, which may lie outside the tree, could later appear with anyone's contents. Any
+# readlink or find error (a link loop, an unreadable entry, or no tree) counts as not root-owned. Not
+# checked: the dirs above a link's target outside the tree. GNU find and BusyBox's find (with the
+# features Alpine builds in) both take every option used here, -L and -maxdepth included.
+is_root_owned_tree() {
+  local tree first_offender
+  first_unsafe_path_dir "$1" >/dev/null || return 1
+  tree="$(readlink -f -- "$1")" || return 1
+  first_offender="$(find -L "$tree" \( -type l -o ! -user 0 -o -perm /go=w \) -print -quit)" || return 1
+  [[ -z "$first_offender" ]]
+}
+
+# An earlier tarball install can leave its nvim only in $NVIM_INSTALL_DIR/bin: the $NVIM_LINK_DIR link
+# failed, or neither the link nor setup_path's shell config entry is in effect for this run. Succeeds,
+# after recording the reuse (the install method, and NEED_PATH_SETUP), when a new enough nvim is there
+# and only root can change the tree or the way to it (is_root_owned_tree), which is checked before
+# that nvim runs; fails otherwise (with a warning when the check fails), so install_neovim installs. The
+# version is read inside the condition, where errexit does not apply, so a binary there that fails
+# --version falls through to the install instead of ending the run.
+reuse_install_dir_nvim() {
+  local install_dir_nvim="$NVIM_INSTALL_DIR/bin/nvim" install_dir_version
+  if [[ ! -x "$install_dir_nvim" ]]; then
+    return 1
+  fi
+  if ! is_root_owned_tree "$NVIM_INSTALL_DIR"; then
+    warn "Not reusing the nvim in $NVIM_INSTALL_DIR: something in it, or a directory on the way to it, is not owned by root, is writable by group or others, or is a broken link; installing Neovim instead"
+    return 1
+  fi
+  if ! install_dir_version="$(get_nvim_version "$install_dir_nvim")" \
+    || ! version_gte "$install_dir_version" "$MIN_NVIM_VERSION"; then
+    return 1
+  fi
+  success "Neovim $install_dir_version already installed in $NVIM_INSTALL_DIR (>= $MIN_NVIM_VERSION)"
+  NVIM_INSTALL_METHOD="reused"
+  NEED_PATH_SETUP=true
+}
+
+# Prints, as errors, why the run stops when the package's nvim $1 (version $2) is new enough but PATH
+# reaches another nvim first ($3), one not on this script's own paths (is_own_install_nvim_path), such
+# as a link the user made to its install, or none ($3 empty), and what to change so the package's nvim
+# comes first. install_neovim stops there rather than install the release tarball, whose nvim would go
+# ahead of the working one from the package. For an nvim in $NVIM_LINK_DIR the only step is to remove
+# it: putting the package's dir ahead of $NVIM_LINK_DIR on PATH would demote every local override
+# there, not just this nvim.
+print_shadowed_package_nvim() {
+  local package_nvim="$1" package_version="$2" first_nvim="$3"
+  if [[ -z "$first_nvim" ]]; then
+    error "Neovim $package_version from $PKG_MGR is at $package_nvim, but PATH reaches no nvim."
+    error "Add ${package_nvim%/*} to PATH, then run this script again."
+    return
+  fi
+  error "Neovim $package_version from $PKG_MGR is at $package_nvim, but PATH reaches $first_nvim first."
+  if [[ "${first_nvim%/*}" -ef "$NVIM_LINK_DIR" ]]; then
+    error "Remove $first_nvim, then run this script again."
+    return
+  fi
+  error "Remove $first_nvim, or put ${package_nvim%/*} ahead of ${first_nvim%/*} on PATH, then run this script again."
+}
+
+# Prints, as errors, why the run stops when the package's nvim $1 (version $2) is new enough but PATH
+# reaches the nvim of this script's earlier tarball install in $NVIM_INSTALL_DIR first ($3), through one
+# of the script's own paths to it (is_own_install_nvim_path), as after a MIN_NVIM_VERSION bump, and the
+# steps that take that install out of the way: removing its $NVIM_LINK_DIR link if that link is there
+# (with sudo, since install_neovim_tarball made it as root), and the line that puts $NVIM_INSTALL_DIR/bin
+# on PATH in the shell config, then a new shell. The link step does not wait for PATH to reach the link
+# first: with both the link and the entry in place, PATH reaches the bin dir first, and removing only
+# the entry would leave the link ahead of the package for the next run. It names that line as path_line
+# gives it for the user's shell, the line setup_path writes, or prints for the user to add when it
+# cannot (then without its marker line), so a user who added it by hand can find it too. It does not
+# suggest putting the package's dir ahead of $NVIM_LINK_DIR on PATH, which would demote every local
+# override there, not just this nvim.
+print_install_dir_nvim_ahead_of_package() {
+  local package_nvim="$1" package_version="$2" first_nvim="$3" path_entry
+  path_entry="$(path_line prepend "$NVIM_INSTALL_DIR/bin")"
+  error "Neovim $package_version from $PKG_MGR is at $package_nvim, but PATH reaches $first_nvim first, and that nvim is this script's earlier tarball install in $NVIM_INSTALL_DIR."
+  if [[ "$NVIM_LINK_DIR/nvim" -ef "$NVIM_INSTALL_DIR/bin/nvim" ]]; then
+    error "Remove its link in $NVIM_LINK_DIR: sudo rm $NVIM_LINK_DIR/nvim"
+  fi
+  error "Remove the $NVIM_INSTALL_DIR/bin entry from your shell config, if it has one: the line '$path_entry', which follows the line '$NVIM_PATH_ENTRY_MARKER' where this script added it."
+  error "Then open a new shell and run this script again."
+}
+
+# Tries, in order: a new enough nvim on PATH, the one an earlier tarball install left in
+# $NVIM_INSTALL_DIR, the package manager's, and the release tarball. The nvim on PATH and the package's
+# have their versions read inside a condition, where errexit does not apply, so one that fails --version
+# (an AppImage on a host without FUSE, or a broken version manager shim) is passed over with a warning
+# that names it, and one that is too old with a warning that names its version, instead of ending the
+# run. reuse_install_dir_nvim reads the install dir's the same way but passes over one that fails or is
+# too old without a warning. After the package install, the nvim judged is the one the package lists
+# (pkg_installed_nvim), not the first one on PATH, which can be another file ahead of it. When the
+# package lists none (or its list cannot be read), or its nvim fails --version or is too old, a warning
+# says so and the tarball follows. When its nvim is new enough but PATH does not reach it first, the run
+# stops before the tarball, which would only put an unmanaged nvim ahead of a working one, with errors
+# that name the package's nvim and say what to change. When PATH reaches this script's own earlier
+# tarball install in $NVIM_INSTALL_DIR first, through its bin dir or the $NVIM_LINK_DIR link
+# (is_own_install_nvim_path), they say how to take that install out of the way
+# (print_install_dir_nvim_ahead_of_package); when it reaches another nvim, a link the user made to that
+# install included, to remove that one or reorder PATH (only to remove it when it is in $NVIM_LINK_DIR),
+# and when it reaches none, to add the package's dir (print_shadowed_package_nvim).
 install_neovim() {
   section "Neovim"
 
   if command -v nvim >/dev/null 2>&1; then
     local current_version
-    current_version="$(get_nvim_version)"
-    if version_gte "$current_version" "$MIN_NVIM_VERSION"; then
+    if ! current_version="$(get_nvim_version)"; then
+      warn "Neovim at $(command -v nvim) failed to report its version; treating it as unusable."
+    elif version_gte "$current_version" "$MIN_NVIM_VERSION"; then
       success "Neovim $current_version already installed (>= $MIN_NVIM_VERSION)"
       NVIM_INSTALL_METHOD="existing"
       return
+    else
+      warn "Neovim $current_version found, but $MIN_NVIM_VERSION+ is required."
     fi
-    warn "Neovim $current_version found, but $MIN_NVIM_VERSION+ is required."
+  fi
+
+  if reuse_install_dir_nvim; then
+    return
   fi
 
   info "Installing Neovim via $PKG_MGR..."
-  if pkg_install neovim; then
-    local pkg_version
-    pkg_version="$(get_nvim_version)"
-    if version_gte "$pkg_version" "$MIN_NVIM_VERSION"; then
-      success "Neovim $pkg_version installed via $PKG_MGR"
-      NVIM_INSTALL_METHOD="$PKG_MGR"
-      return
-    fi
-    warn "Package manager installed Neovim $pkg_version, but $MIN_NVIM_VERSION+ is required."
-  else
+  local package_nvim package_version first_nvim=""
+  if ! pkg_install "$NVIM_PACKAGE"; then
     warn "Package manager install failed. Falling back to GitHub release."
+  elif ! package_nvim="$(pkg_installed_nvim)"; then
+    warn "The $NVIM_PACKAGE package from $PKG_MGR lists no nvim binary, or its file list could not be read. Falling back to GitHub release."
+  elif ! package_version="$(get_nvim_version "$package_nvim")"; then
+    warn "Package manager installed Neovim, but $package_nvim failed to report its version."
+  elif ! version_gte "$package_version" "$MIN_NVIM_VERSION"; then
+    warn "Package manager installed Neovim $package_version, but $MIN_NVIM_VERSION+ is required."
+  elif first_nvim="$(command -v nvim)" && [[ "$first_nvim" -ef "$package_nvim" ]]; then
+    success "Neovim $package_version installed via $PKG_MGR"
+    NVIM_INSTALL_METHOD="$PKG_MGR"
+    return
+  elif is_own_install_nvim_path "$first_nvim"; then
+    print_install_dir_nvim_ahead_of_package "$package_nvim" "$package_version" "$first_nvim"
+    exit 1
+  else
+    print_shadowed_package_nvim "$package_nvim" "$package_version" "$first_nvim"
+    exit 1
   fi
 
   install_neovim_tarball
@@ -453,6 +784,8 @@ sync_pkg_db_once() {
       info "Updating package index..."
       as_root apk update || warn "apk update failed; installing from the existing package index"
       ;;
+    # dnf refreshes expired metadata itself before an install, and Fedora supports installing against a
+    # newer database without a full upgrade, so there is no upfront step
     dnf) ;;
   esac
   PKG_DB_SYNCED=true
@@ -461,17 +794,45 @@ sync_pkg_db_once() {
 pkg_is_installed() {
   case "$PKG_MGR" in
     apt-get) dpkg-query -W -f='${Status}' "$1" 2>/dev/null | grep -q 'install ok installed' ;;
-    dnf)     rpm -q "$1" &>/dev/null ;;
+    # dnf install matches a name against package names and then Provides (on Fedora 44, nodejs is a
+    # Provides of nodejs22), but rpm -q matches package names only; every package also provides its own
+    # name, so --whatprovides finds both
+    dnf)     rpm -q --whatprovides "$1" &>/dev/null ;;
     pacman)  pacman -Q "$1" &>/dev/null ;;
     apk)     apk info -e "$1" &>/dev/null ;;
   esac
+}
+
+# Prints the absolute path of the nvim binary the installed $NVIM_PACKAGE package lists: the first entry
+# of its file list that is bin/nvim or ends in /bin/nvim. Fails, printing nothing, when the list has none
+# or the query fails. install_neovim judges this binary after the package install, and not the first
+# nvim on PATH, which can be another one ahead of it (an old AppImage or a broken version manager shim in
+# ~/.local/bin), so a working package is not taken for an old or broken one. apk info -L prints paths
+# relative to /, which this prints absolute: after a header line by default, or, at a higher verbosity
+# (-v, or, with apk-tools 3, verbose in /etc/apk/config), each after the package name and ": ", which the
+# apk arm drops, so a verbose apk still finds a working package's nvim. The other managers print
+# absolute paths.
+pkg_installed_nvim() {
+  local files="" nvim_entries first_entry
+  case "$PKG_MGR" in
+    apt-get) files="$(dpkg-query -L "$NVIM_PACKAGE")" ;;
+    dnf)     files="$(rpm -ql "$NVIM_PACKAGE")" ;;
+    pacman)  files="$(pacman -Qlq "$NVIM_PACKAGE")" ;;
+    apk)     files="$(apk info -L "$NVIM_PACKAGE" | sed "s/^$NVIM_PACKAGE: //")" ;;
+  esac || return 1
+  nvim_entries="$(grep -E '(^|/)bin/nvim$' <<<"$files")" || return 1
+  first_entry="${nvim_entries%%$'\n'*}"
+  printf '/%s\n' "${first_entry#/}"
 }
 
 pkg_install() {
   sync_pkg_db_once
   case "$PKG_MGR" in
     apt-get) as_root apt-get install -y "$@" ;;
-    dnf)     as_root dnf install -y "$@" ;;
+    # dnf installs Recommends by default, and Fedora's nodejs recommends its package manager, which this
+    # config never uses; with weak dependencies off, only the listed packages and their hard
+    # dependencies land
+    dnf)     as_root dnf install -y --setopt=install_weak_deps=False "$@" ;;
     pacman)  as_root pacman -S --noconfirm "$@" ;;
     apk)     as_root apk add "$@" ;;
   esac
@@ -610,29 +971,39 @@ install_user_tool() {
 }
 
 # Best-effort distros: Python CLI tools go into isolated uv environments
-# (PEP 668 blocks user-site installs on most distros).
+# (PEP 668 blocks user-site installs on most distros). UV_PYTHON_DOWNLOADS=never holds for every uv call
+# here (uv tool dir, and uv tool install), as GOTOOLCHAIN=local does for go: uv's default, automatic,
+# downloads a managed Python when it needs one; with never it does not, so such a tool fails, reported as
+# a skip. local -x scopes the export to this function, so the config clone and Neovim's first launch
+# never inherit it, and the manual hints print the same setting.
 install_python_tool() {
   local name="$1" bin_dir
+  local -x UV_PYTHON_DOWNLOADS=never
   if ! command -v uv >/dev/null 2>&1; then
-    warn "$name: install uv, then run: uv tool install $name"
+    warn "$name: install uv, then run: UV_PYTHON_DOWNLOADS=$UV_PYTHON_DOWNLOADS uv tool install $name"
     return
   fi
   if ! bin_dir="$(uv tool dir --bin)" || [[ -z "$bin_dir" ]]; then
-    warn "$name: could not resolve uv's tool bin dir; run: uv tool install $name"
+    warn "$name: could not resolve uv's tool bin dir; run: UV_PYTHON_DOWNLOADS=$UV_PYTHON_DOWNLOADS uv tool install $name"
     return
   fi
   install_user_tool "$name" "$bin_dir" uv tool install "$name"
 }
 
-# Best-effort distros: Go CLI tools go into Go's user bin dir.
+# Go CLI tools go into Go's user bin dir, at the exact version the module string ($2) pins.
+# GOTOOLCHAIN=local holds for every go call here (go env through go_bin_dir, and go install): Go's
+# default, auto, downloads a newer toolchain when a module asks for one; with local that is a failure,
+# reported as a skip. local -x scopes the export to this function, so the config clone and Neovim's
+# first launch never inherit it.
 install_go_tool() {
   local name="$1" module="$2" bin_dir
+  local -x GOTOOLCHAIN=local
   if ! command -v go >/dev/null 2>&1; then
-    warn "$name: install Go, then run: go install $module"
+    warn "$name: install Go, then run: GOTOOLCHAIN=local go install $module"
     return
   fi
   if ! bin_dir="$(go_bin_dir)"; then
-    warn "$name: could not resolve Go's bin dir; run: go install $module"
+    warn "$name: could not resolve Go's bin dir; run: GOTOOLCHAIN=local go install $module"
     return
   fi
   install_user_tool "$name" "$bin_dir" go install "$module"
@@ -737,7 +1108,10 @@ install_runtimes() {
 install_language_servers() {
   section "Language Servers"
 
-  # Node-based servers come from the system; Mason installs the native ones on first launch
+  # The system servers in lua/lsp_gates/servers.lua come from the system package manager where it
+  # packages them and are listed as manual steps where it does not; a fallback is installed only where a
+  # distro packages one in place of its server. Mason installs the native ones the first time nvim
+  # opens a file
   case "$PKG_MGR" in
     pacman)
       # Keep in sync with the system table in lua/lsp_gates/servers.lua
@@ -745,7 +1119,12 @@ install_language_servers() {
         bash-language-server dockerfile-language-server vscode-json-languageserver pyright \
         typescript-language-server yaml-language-server
       ;;
-    *)
+    dnf)
+      # Keep in sync with the system and fallbacks tables in lua/lsp_gates/servers.lua (a test checks)
+      install_pkgs optional "language servers" nodejs-bash-language-server python3-lsp-server
+      warn "Fedora packages no server for dockerls, jsonls, ts_ls or yamlls: they stay off unless their commands are on PATH (ts_ls also needs a system TypeScript); python-lsp-server (pylsp) stands in for pyright"
+      ;;
+    apt-get | apk)
       warn_manual bash-language-server docker-langserver vscode-json-language-server pyright-langserver \
         typescript-language-server yaml-language-server
       if ! has_system_typescript; then
@@ -762,7 +1141,11 @@ install_formatters() {
     pacman)
       install_pkgs optional "formatters" stylua shfmt prettier python-black go-tools terraform
       ;;
-    *)
+    dnf)
+      install_pkgs optional "formatters" shfmt black golang-x-tools-goimports
+      warn_manual stylua prettier terraform
+      ;;
+    apt-get | apk)
       warn_manual stylua prettier terraform
       ;;
   esac
@@ -776,10 +1159,10 @@ install_linters() {
       install_pkgs optional "linters" selene shellcheck yamllint tflint golangci-lint ruff
       ;;
     dnf)
-      install_pkgs optional "shellcheck" ShellCheck
+      install_pkgs optional "linters" ShellCheck yamllint ruff golangci-lint hadolint
       warn_manual selene tflint
       ;;
-    *)
+    apt-get | apk)
       install_pkgs optional "shellcheck" shellcheck
       warn_manual selene tflint
       ;;
@@ -802,32 +1185,51 @@ install_tui_tools() {
     pacman)
       install_pkgs optional "TUI tools" lazygit lazydocker fortune-mod
       ;;
+    dnf)
+      install_pkgs optional "fortune" fortune-mod
+      ;;
     apk)
       install_pkgs optional "fortune" fortune
       ;;
-    *)
+    apt-get)
       install_pkgs optional "fortune" fortune-mod
       ;;
   esac
 }
 
-# Best-effort distros: the formatters, linters, and TUI tools their repos lack, from uv tool install
-# and go install (latest upstream). They fetch and build code from the network, so main runs this
-# only after forget_sudo_credentials, and it runs no root command.
+# Succeeds when the full run has user tools to install (install_user_tools): every manager's repos but
+# pacman's lack some, so the packages-only summary promises them only where that step does something
+has_user_tools() {
+  [[ "$PKG_MGR" != pacman ]]
+}
+
+# The tools a distro's repos lack, installed as the user into Go's and uv's bin directories: on dnf,
+# lazygit and lazydocker from go install; on apt-get and apk, also the formatters and linters, from go
+# install and uv tool install. Each Go module is pinned by its GO_TOOL_* constant. They fetch and build
+# code from the network, so main runs this only after forget_sudo_credentials, and it runs no root
+# command. pacman installs all of them.
 install_user_tools() {
-  if [[ "$PKG_MGR" == pacman ]]; then
+  if ! has_user_tools; then
     return
   fi
 
   section "User Tools"
-  install_python_tool black
-  install_python_tool yamllint
-  install_python_tool ruff
-  install_go_tool shfmt mvdan.cc/sh/v3/cmd/shfmt@latest
-  install_go_tool goimports golang.org/x/tools/cmd/goimports@latest
-  install_go_tool golangci-lint github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
-  install_go_tool lazygit github.com/jesseduffield/lazygit@latest
-  install_go_tool lazydocker github.com/jesseduffield/lazydocker@latest
+  case "$PKG_MGR" in
+    dnf)
+      install_go_tool lazygit "$GO_TOOL_LAZYGIT"
+      install_go_tool lazydocker "$GO_TOOL_LAZYDOCKER"
+      ;;
+    apt-get | apk)
+      install_python_tool black
+      install_python_tool yamllint
+      install_python_tool ruff
+      install_go_tool shfmt "$GO_TOOL_SHFMT"
+      install_go_tool goimports "$GO_TOOL_GOIMPORTS"
+      install_go_tool golangci-lint "$GO_TOOL_GOLANGCI_LINT"
+      install_go_tool lazygit "$GO_TOOL_LAZYGIT"
+      install_go_tool lazydocker "$GO_TOOL_LAZYDOCKER"
+      ;;
+  esac
 }
 
 # ---------------------------------------------------------------------------
@@ -986,9 +1388,50 @@ setup_config() {
 }
 
 # ---------------------------------------------------------------------------
-# PATH setup (tarball installs only)
+# PATH setup (an nvim in NVIM_INSTALL_DIR that PATH did not reach first)
 # ---------------------------------------------------------------------------
 
+# When this run's nvim is in $NVIM_INSTALL_DIR/bin and PATH did not reach it first (NEED_PATH_SETUP), puts
+# that dir first on this run's PATH and exports it, so verify_nvim, verify_config, and what they start run
+# that nvim now; setup_path adds the same entry to the shell config for new shells when it can. Only root
+# can write the tree's own entries (the tarball install chowns them and drops group and other write, and
+# reuse requires is_root_owned_tree). An account that can write a dir on the way to the tree, or above the
+# target of a link in it that points outside it, could still put files of its own in their place: reuse,
+# and a fresh tarball install before it installs, check every dir on the way, each link followed and the
+# dir that holds it checked too (first_unsafe_path_dir), but no dir above a link target outside the
+# tree. main runs this after forget_sudo_credentials has closed the privileged phase, because as_root runs
+# plain sudo, which searches the caller's PATH unless sudoers sets secure_path: past the drop, as_root
+# stops the run, and cleanup's sudo -k runs only for a ticket still held, which the drop clears, so no
+# root command and no lookup of sudo ever searches this dir. Called before the drop, it stops the run,
+# whether or not this run needs the PATH change.
+put_install_dir_first_on_path() {
+  if [[ "$PRIVILEGE_CLOSED" != true ]]; then
+    error "put_install_dir_first_on_path: called before forget_sudo_credentials closed the privileged phase"
+    exit 1
+  fi
+  if [[ "$NEED_PATH_SETUP" != true ]]; then
+    return
+  fi
+  PATH="$NVIM_INSTALL_DIR/bin:$PATH"
+  export PATH
+}
+
+# Warns with reason $1, then prints the line $2 for the user to add to their shell config. Each way
+# setup_path can stop short of adding the entry leaves the user this same step, so they all print it
+# here and say it the same way.
+print_path_manual_step() {
+  local reason="$1" line="$2"
+  warn "$reason"
+  info "Add this to your shell config manually:"
+  printf '  %s\n' "$line"
+}
+
+# When NEED_PATH_SETUP, adds the $NVIM_INSTALL_DIR/bin entry to the user's shell config, so new shells
+# reach this run's nvim first as this run does (put_install_dir_first_on_path changes only this run's
+# PATH). An rc file that already mentions $NVIM_INSTALL_DIR/bin, or one the entry is appended to, sets
+# SHELL_CONFIG_HAS_PATH_ENTRY true. An unknown shell, a missing rc file (posix's .profile excepted, which
+# the append creates), or a write that fails leaves the manual step (print_path_manual_step) and the
+# flag false instead, so the run goes on and print_summary asks the user to add the entry.
 setup_path() {
   if [[ "$NEED_PATH_SETUP" != true ]]; then
     return
@@ -1006,30 +1449,35 @@ setup_path() {
     fish)  rc_file="${HOME}/.config/fish/config.fish" ;;
     posix) rc_file="$HOME/.profile" ;;
   esac
-  # Prepended, unlike the user-tool dirs: the tarball is installed exactly when the packaged nvim is
-  # missing or too old, so its nvim must win over an older one in /usr/bin
+  # Prepended, unlike the user-tool dirs: the tarball's nvim is installed or reused only when the nvim on
+  # PATH is missing or too old, so it must win over an older one in /usr/bin, as it does in this run
+  # (put_install_dir_first_on_path)
   line="$(path_line prepend "$nvim_bin")"
 
   if [[ -z "$rc_file" ]]; then
-    warn "Could not determine rc file for shell: $USER_SHELL"
-    info "Add this to your shell config manually:"
-    printf '  %s\n' "$line"
+    print_path_manual_step "Could not determine rc file for shell: $USER_SHELL" "$line"
     return
   fi
 
   if [[ "$rc_file" != "$HOME/.profile" ]] && [[ ! -f "$rc_file" ]]; then
-    warn "$rc_file does not exist."
-    info "Add this to your shell config manually:"
-    printf '  %s\n' "$line"
+    print_path_manual_step "$rc_file does not exist." "$line"
     return
   fi
 
   if grep -qF "$nvim_bin" "$rc_file" 2>/dev/null; then
     success "PATH entry already in $rc_file"
+    SHELL_CONFIG_HAS_PATH_ENTRY=true
     return
   fi
 
-  printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$line" >> "$rc_file"
+  # Checked, so a shell config the user cannot write (its mode, a read-only filesystem, a link to a
+  # read-only file, a full disk) leaves the manual step instead of ending the run under errexit, and the
+  # checks and the summary still run. bash's own error stays, since it says why the write failed.
+  if ! printf '\n%s\n%s\n' "$NVIM_PATH_ENTRY_MARKER" "$line" >> "$rc_file"; then
+    print_path_manual_step "Could not write the PATH entry to $rc_file." "$line"
+    return
+  fi
+  SHELL_CONFIG_HAS_PATH_ENTRY=true
   success "Added PATH entry to $rc_file"
   info "Run 'source $rc_file' or open a new terminal to apply."
 }
@@ -1038,47 +1486,109 @@ setup_path() {
 # Verification and summary
 # ---------------------------------------------------------------------------
 
-verify_install() {
+# Both modes: nvim is on PATH, reports its version, and is new enough; otherwise the run stops. The
+# version is read inside a condition, as install_neovim reads it, so an nvim that fails --version stops
+# the run with an error that names it, not with no message.
+verify_nvim() {
   section "Verification"
 
-  if ! command -v nvim >/dev/null 2>&1; then
+  local nvim_path installed_version
+  if ! nvim_path="$(command -v nvim)"; then
     error "nvim not found on PATH after installation."
-    if [[ "$NEED_PATH_SETUP" == true ]]; then
-      error "You may need to open a new terminal or source your shell config."
-    fi
     exit 1
   fi
 
-  local installed_version
-  installed_version="$(get_nvim_version)"
+  if ! installed_version="$(get_nvim_version)"; then
+    error "Neovim at $nvim_path failed to report its version; run '$nvim_path --version' to see why."
+    exit 1
+  fi
   if ! version_gte "$installed_version" "$MIN_NVIM_VERSION"; then
     error "Neovim $installed_version is installed, but $MIN_NVIM_VERSION+ is required."
     exit 1
   fi
   success "Neovim $installed_version on PATH"
+}
 
-  if nvim --headless "+qa" 2>/dev/null; then
-    success "Config loads cleanly"
-  else
-    warn "Config reported errors (expected on first run before plugins sync)"
-    warn "Launch nvim interactively to complete plugin installation"
+# Full run only: the config loads (Neovim's first launch, which installs plugins and runs their build
+# steps, so main runs this after forget_sudo_credentials). Neovim exits 0 even when the config errors at
+# startup, so the launch reads v:errmsg before +qa and, when it is set, echoes it and quits with an
+# error status. Some plugins, lazy.nvim among them, report errors through vim.schedule, so the launch
+# first runs the callbacks startup queued (a 0 ms vim.wait, which a deferred-error test checks). That
+# catches errors raised while init.lua, lazy's setup, and the start plugins run, and errors they queue,
+# but not a failed plugin build: in headless mode lazy prints build output to stdout and does not record
+# a failed make as an error (lazy.nvim 306a055: lua/lazy/manage/task/init.lua:153 and :197-224,
+# task/plugin.lua:31-40). Errors from a timer (vim.defer_fn) not yet due when that wait runs, or from
+# anything during +qa, go unchecked. An error hidden with :silent! (in init.lua or a plugin) still sets
+# v:errmsg, so it makes this warn. Headless Neovim writes its messages to stderr, which goes to a log in
+# Neovim's state dir, overwritten each run. On an error the warning names the log and shows its last
+# lines, which end with the echoed message, so later messages cannot push it out of view (a test
+# checks a long report). When the log cannot be written, the check is skipped with a warning.
+verify_config() {
+  local log_dir="${XDG_STATE_HOME:-$HOME/.local/state}/nvim"
+  local log_file="$log_dir/nvim-install-config-check.log"
+  # Covers lazy.nvim's 15-line report of a failed plugin config, with a few lines before it
+  local shown_line_count=20
+  local run_scheduled_callbacks="+lua vim.wait(0)"
+  local report_startup_error="+if v:errmsg != '' | echo 'Last error message:' v:errmsg | cquit | endif"
+  local shown_lines
+
+  # The dirs it creates are private, as Neovim creates its own (it keeps an existing dir's mode, and its
+  # undo files go there): with NVIM_LOG_FILE set, nothing before this has made them
+  if ! (umask 077 && mkdir -p -- "$log_dir") || ! : >"$log_file"; then
+    warn "Skipped the config check: could not write its log $log_file"
+    return
   fi
+  if nvim --headless "$run_scheduled_callbacks" "$report_startup_error" "+qa" 2>"$log_file"; then
+    success "Config loads cleanly"
+    return
+  fi
+
+  warn "Config reported errors at startup (full log: $log_file)"
+  mapfile -t shown_lines < <(tail -n "$shown_line_count" -- "$log_file")
+  if [[ ${#shown_lines[@]} -gt 0 ]]; then
+    printf '      %s\n' "${shown_lines[@]}"
+  fi
+  warn "Launch nvim to see them"
 }
 
 print_summary() {
-  local installed_version
+  local installed_version title="Neovim Bootstrap Complete" config="$NVIM_CONFIG_DIR"
+  local full_run_steps="clone the config"
   installed_version="$(get_nvim_version 2>/dev/null || echo "unknown")"
+  if [[ "$PACKAGES_ONLY" == true ]]; then
+    title="Neovim Packages Installed"
+    config="not cloned (packages-only)"
+  fi
 
   printf '\n'
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
-  printf '%s\n' "${BOLD}${GREEN}  Neovim Bootstrap Complete${RESET}"
+  printf '%s\n' "${BOLD}${GREEN}  $title${RESET}"
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
-  printf '  %-18s %s\n' "Version:" "$installed_version"
-  printf '  %-18s %s\n' "Install method:" "$NVIM_INSTALL_METHOD"
-  printf '  %-18s %s\n' "Config:" "$NVIM_CONFIG_DIR"
+  print_field "Version:" "$installed_version"
+  print_field "Install method:" "$NVIM_INSTALL_METHOD"
+  print_field "Config:" "$config"
 
   if [[ "$NEED_PATH_SETUP" == true ]]; then
-    printf '  %-18s %s\n' "PATH updated:" "yes (restart shell to apply)"
+    # Only these two methods set NEED_PATH_SETUP (reuse_install_dir_nvim, install_neovim_tarball)
+    local path_cause path_outcome
+    case "$NVIM_INSTALL_METHOD" in
+      reused) path_cause="the reused nvim was not first on PATH" ;;
+      tarball) path_cause="the tarball's nvim was not first on PATH" ;;
+      *)
+        error "print_summary: NEED_PATH_SETUP is true for install method '$NVIM_INSTALL_METHOD' (expected reused or tarball)"
+        exit 1
+        ;;
+    esac
+    if [[ "$PACKAGES_ONLY" == true ]]; then
+      # setup_path did not run, and which outcome it has depends on the shell config the full run finds
+      path_outcome="the full run adds $NVIM_INSTALL_DIR/bin to your shell config, or prints the line to add when it cannot"
+    elif [[ "$SHELL_CONFIG_HAS_PATH_ENTRY" == true ]]; then
+      path_outcome="$NVIM_INSTALL_DIR/bin is in your shell config"
+    else
+      # setup_path could not add it
+      path_outcome="put $NVIM_INSTALL_DIR/bin first on PATH in your shell config"
+    fi
+    print_field "PATH:" "$path_cause; $path_outcome"
   fi
 
   if [[ ${#WARNINGS[@]} -gt 0 ]]; then
@@ -1090,29 +1600,47 @@ print_summary() {
 
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
   printf '\n'
-  info "Launch nvim to complete plugin installation."
+  if [[ "$PACKAGES_ONLY" == true ]]; then
+    if has_user_tools; then
+      full_run_steps="install the user tools and $full_run_steps"
+    fi
+    info "Run this script again without --packages-only where Neovim will run, to $full_run_steps."
+  else
+    info "Open a file in nvim once so Mason installs its language servers."
+  fi
 }
 
 # ---------------------------------------------------------------------------
 # Usage
 # ---------------------------------------------------------------------------
 
+# Prints the help text. Its heredoc is unquoted so MIN_NVIM_MAJOR_MINOR expands; a $, backquote, or
+# backslash added to the text needs a backslash before it to print as written
 usage() {
-  cat <<'EOF'
-Usage: nvim-install.sh [--help]
+  cat <<EOF
+Usage: nvim-install.sh [--packages-only | --help]
 
-Bootstrap script for Neovim 0.12+ with a full dev environment on Linux.
+Bootstrap script for Neovim $MIN_NVIM_MAJOR_MINOR+ with a full dev environment on Linux.
 
 Installs Neovim, build tools, a clipboard tool, runtimes (Node, Go),
-formatters, linters, and TUI tools, and on Arch the Node-based language
-servers (listed as manual steps elsewhere), then clones the Neovim
-configuration to ~/.config/nvim. Mason installs the remaining language
-servers on first launch.
+formatters, linters, and TUI tools, and the language servers the distro
+packages (Arch: the Node-based ones; Fedora: bash-language-server and
+python-lsp-server; elsewhere: manual steps), then clones the Neovim
+configuration to ~/.config/nvim. Mason installs the native language
+servers the first time nvim opens a file; the others stay off until
+installed.
+On Fedora, python-lsp-server stands in for pyright.
+
+Options:
+  --packages-only  install the system packages and stop; run again
+                   without it where Neovim will run
+  --help, -h       show this help
 
 Supported platforms:
   Arch Linux     (pacman)  first-class
+  Fedora         (dnf)     supported
+  RHEL/CentOS    (dnf)     same path, fewer packages
   Debian/Ubuntu  (apt)     best-effort
-  Fedora/RHEL    (dnf)     best-effort
   Alpine         (apk)     best-effort
 
 Run it as your normal user; it calls sudo when it needs to.
@@ -1123,6 +1651,37 @@ EOF
 # Main
 # ---------------------------------------------------------------------------
 
+# Turns the command line into the run mode, or stops. No arguments: the full run. One argument: --help
+# or -h prints usage and exits 0, --packages-only sets the mode, and anything else (including the empty
+# argument) is an error. More than one argument is an error too. Errors print the arguments as given
+# (shell-quoted, so an empty one and a space inside one stay visible) and usage to stderr and exit 1,
+# before anything runs
+parse_args() {
+  if [[ $# -eq 0 ]]; then
+    return
+  fi
+  local shown
+  printf -v shown '%q ' "$@"
+  shown="${shown% }"
+  if [[ $# -gt 1 ]]; then
+    error "too many arguments: $shown (at most one: --packages-only, --help, or -h)"
+    usage >&2
+    exit 1
+  fi
+  case "$1" in
+    --help | -h)
+      usage
+      exit 0
+      ;;
+    --packages-only) PACKAGES_ONLY=true ;;
+    *)
+      error "unknown argument: $shown"
+      usage >&2
+      exit 1
+      ;;
+  esac
+}
+
 main() {
   setup_colors
   # On INT or TERM, run the EXIT cleanup and die by the same signal, so a calling shell or loop sees
@@ -1131,11 +1690,7 @@ main() {
   trap 'trap - INT; kill -s INT "$BASHPID"' INT
   trap 'trap - TERM; kill -s TERM "$BASHPID"' TERM
 
-  if [[ "${1:-}" == "--help" ]] || [[ "${1:-}" == "-h" ]]; then
-    usage
-    exit 0
-  fi
-
+  parse_args "$@"
   require_non_root
 
   info "Neovim bootstrap starting"
@@ -1150,10 +1705,18 @@ main() {
   # The one privilege boundary: every root command runs above, none below, and no cached credentials
   # reach the go and uv builds, the config clone, or Neovim's first launch
   forget_sudo_credentials
+  # Past the boundary, so no root command and no lookup of sudo searches the dir it puts on PATH
+  put_install_dir_first_on_path
+  if [[ "$PACKAGES_ONLY" == true ]]; then
+    verify_nvim
+    print_summary
+    return
+  fi
   install_user_tools
   setup_config
   setup_path
-  verify_install
+  verify_nvim
+  verify_config
   print_summary
 }
 

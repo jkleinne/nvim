@@ -9,29 +9,35 @@
 # to run when one does not, as on a noexec temp dir, where bash's PATH search skips the stubs and finds
 # the real commands. Sourced tests and direct script runs start with sandbox: a fake HOME, which also
 # becomes the working directory (git never finds the caller's repository from there), then
-# hermetic_env, so inherited GIT_*, ZDOTDIR, XDG_*, BASH_ENV, ENV, and CDPATH variables are dropped (no
-# shell a test starts reads a startup file that could put other commands ahead of the stubs on PATH)
-# and git ignores the system and global config, refuses every protocol but file (no clone reaches the
-# network, however git is invoked), and never looks above $TMP for a repository. DENY_BIN, which sandbox
-# puts on PATH, refuses sudo, curl, wget, go, uv, and the language package managers and AUR helpers T5
-# forbids, and logs each call to $TMP/refused.log; a test that needs one puts its stub ahead (a
-# recording sudo that never runs its arguments, a curl that copies a tiny local tarball, go and uv stubs
-# that only log), and T21 fails when any test reached a refusing stub. The tests that run install
-# functions through their real code (T12's deps cases, T17, T20's collection) set PATH to stub dirs and
-# at most a dir of the few real tools that code needs, so nothing else on the caller's PATH can run.
-# Every command a recording sudo logs must be on the allowlist (sudo_allowlist_problems): sudo -v, -n
-# -v, and -k, each package manager's refresh and install, and the tarball install's steps. So no test
-# can install, upgrade, or download anything, and load_script, run_script, and the main drivers
-# (tests/lib/driver-*.sh, which share tests/lib/driver-lib.sh) run the script only under a fake HOME, so
-# NVIM_CONFIG_DIR never points at a real config. The suite and driver-lib.sh share the helpers in
-# tests/lib/common.sh. T20 reads the server list with nvim --clean --headless -l
-# tests/lib/system-servers.lua, with scratch XDG dirs and TMPDIR. Each test sets up what it needs
-# itself, from the stubs and host facts the setup sections below provide, so the tests do not depend
-# on each other's order (T21, which reads what every test left, runs last). RUN_FULL=1 adds T4, an
-# end-to-end run on this machine (see T4), which also reads the real ~/.config/nvim and runs the real
-# sudo -k (it never prompts or elevates) to drop this terminal's cached ticket. The only real package
-# manager queries are read-only: pacman -Q (T4's run and T20 (d)), pacman -Qlq (T20 (d)), and pacman
-# -Si (T20 (b0)). REQUIRE_ALL=1 turns T3's skip (no way to fake root here) into a failure.
+# hermetic_env, so inherited GIT_*, ZDOTDIR, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME,
+# XDG_CACHE_HOME, BASH_ENV, ENV, CDPATH, GOTOOLCHAIN, and UV_PYTHON_DOWNLOADS variables are dropped (no
+# shell a test starts reads a startup file that could put other commands ahead of the stubs on PATH, and
+# T17's go and uv stubs log the modes the script sets, never inherited ones) and git ignores the system
+# and global config, refuses every protocol but file (no clone reaches the network, however git is
+# invoked), and never looks above $TMP for a repository. DENY_BIN, which sandbox puts on PATH, refuses
+# sudo, curl, wget, go, uv, and the language package managers and AUR helpers T5 forbids, and logs each
+# call to $TMP/refused.log; a test that needs one puts its stub ahead (a recording sudo that never runs
+# its arguments, a curl that copies a tiny local tarball, go and uv stubs that only log), and T21 fails
+# when any test reached a refusing stub. The tests that run install functions through their real code
+# (T12's deps cases, T17, T20's collection) set PATH to stub dirs and at most a dir of the few real tools
+# that code needs, so nothing else on the caller's PATH can run. Every command a recording sudo logs must
+# be on the allowlist (sudo_allowlist_problems): sudo -v, -n -v, and -k, each package manager's refresh
+# and install, and the tarball install's steps. So, apart from T4 under RUN_FULL=1 (the plugins, into
+# scratch dirs) and T33 under RUN_FEDORA=1, no test can install, upgrade, or download anything, and
+# load_script, run_script, run_script_args, and the main drivers (tests/lib/driver-*.sh, which share
+# tests/lib/driver-lib.sh) run the script only under a fake HOME, so NVIM_CONFIG_DIR never points at a
+# real config. The suite and driver-lib.sh share the helpers in tests/lib/common.sh. T20 reads the server
+# list with nvim --clean --headless -l tests/lib/system-servers.lua, with scratch XDG dirs and TMPDIR,
+# and T35 runs verify_config's headless nvim on a config it writes under a sandbox HOME, with a scratch
+# TMPDIR. Each test sets up what it needs itself, from the stubs and host facts the setup sections below
+# provide, so the tests do not depend on each other's order (T21, which reads what every test left, runs
+# last). RUN_FULL=1 adds T4, an end-to-end run on this machine (see T4), which also reads the real
+# ~/.config/nvim and runs the real sudo -k (it never prompts or elevates) to drop this terminal's cached
+# ticket. The only real package manager queries are read-only: pacman -Q (T4's run and T20 (d)), pacman
+# -Qlq (T20 (d)), and pacman -Si (T20 (b0)). REQUIRE_ALL=1 turns the skips of T3 and T26b's fake-root
+# cases (no way to fake root here) into failures.
+# RUN_FEDORA=1 adds T33 (see T33), which pulls the fedora:44 image into the user's podman storage (it
+# stays after the run) and installs packages only inside a throwaway container.
 # shellcheck source-path=SCRIPTDIR/..
 set -uo pipefail
 
@@ -88,11 +94,13 @@ expect_none() {
 # so an early exit (even with status 0) fails the test.
 done_ok() { [[ $1 -eq 0 && "$(tail -n1 <<<"$2")" == DONE ]]; }
 
-# Drops the variables that point git or the shell at real config or repos, or make a shell read a
-# startup file (BASH_ENV, ENV) or resolve cd elsewhere (CDPATH), and makes git ignore the system and
-# global config, refuse every protocol but file, and never look above $TMP for a repo
+# Drops the variables that point git or the shell at real config or repos, or make a shell read a startup
+# file (BASH_ENV, ENV) or resolve cd elsewhere (CDPATH), or could stand in for what the script sets
+# itself (GOTOOLCHAIN and UV_PYTHON_DOWNLOADS: T17's go and uv stubs record the modes the script sets, so
+# an inherited value must not satisfy T17), and makes git ignore the system and global config, refuse
+# every protocol but file, and never look above $TMP for a repo
 hermetic_env() {
-  unset "${!GIT_@}" ZDOTDIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME BASH_ENV ENV CDPATH
+  unset "${!GIT_@}" ZDOTDIR XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME BASH_ENV ENV CDPATH GOTOOLCHAIN UV_PYTHON_DOWNLOADS
   export GIT_CONFIG_NOSYSTEM=1 GIT_CONFIG_GLOBAL=/dev/null GIT_ALLOW_PROTOCOL=file GIT_CEILING_DIRECTORIES="$TMP"
 }
 
@@ -136,30 +144,72 @@ run_script() {
   "$@" "$SCRIPT"
 }
 
-# Copies the script under test to file $1 with the one line that starts with $2 replaced by $3; fails
-# the test unless exactly one line starts with $2
-copy_script_with_line() {
-  local copy="$1" prefix="$2" replacement="$3" line replaced=0
+# Runs the script under test with the given arguments (no wrapper). Fails the test instead when HOME is
+# not a sandbox home.
+run_script_args() {
+  require_sandbox_home "$TMP" run_script_args
+  "$SCRIPT" "$@"
+}
+
+# Copies the script under test to file $1 in one pass with, for each prefix and replacement pair after
+# it ($2 and $3, then $4 and $5, ...), the line that starts with that prefix replaced by that
+# replacement; a line that starts with more than one prefix takes the first pair's replacement. Fails
+# the test when the arguments after $1 are not one or more prefix and replacement pairs, or unless each
+# pair replaces exactly one line, so a script change that renames or repeats a replaced line cannot
+# silently leave a test running the original line.
+copy_script_with_lines() {
+  local copy="$1" line i match prefixes=() replacements=() counts=()
+  shift
+  if (($# == 0 || $# % 2 != 0)); then
+    echo "copy_script_with_lines: want prefix and replacement pairs after the copy's path, got $# arguments"
+    exit 1
+  fi
+  while (($# > 0)); do
+    prefixes+=("$1") replacements+=("$2") counts+=(0)
+    shift 2
+  done
   mkdir -p "${copy%/*}"
   while IFS= read -r line; do
-    if [[ "$line" == "$prefix"* ]]; then
-      printf '%s\n' "$replacement"
-      replaced=$((replaced + 1))
+    match=""
+    for i in "${!prefixes[@]}"; do
+      if [[ "$line" == "${prefixes[i]}"* ]]; then
+        match="$i"
+        break
+      fi
+    done
+    if [[ -n "$match" ]]; then
+      printf '%s\n' "${replacements[match]}"
+      counts[match]=$((counts[match] + 1))
     else
       printf '%s\n' "$line"
     fi
   done <"$SCRIPT" >"$copy"
-  if [[ $replaced -ne 1 ]]; then
-    echo "copy_script_with_line: nvim-install.sh has $replaced lines starting with '$prefix', want 1"
-    exit 1
-  fi
+  for i in "${!prefixes[@]}"; do
+    if [[ ${counts[i]} -ne 1 ]]; then
+      echo "copy_script_with_lines: prefix '${prefixes[i]}' replaced ${counts[i]} lines of nvim-install.sh, want 1"
+      exit 1
+    fi
+  done
 }
 
-# Copies the script under test to file $1 with the line that sets the readonly constant $2 replaced by
-# one that sets it to $3, then sources the copy; fails the test unless exactly one line was replaced
+# Copies the script under test to file $1 with, for each name and value pair after it ($2 and $3, then
+# $4 and $5, ...), the line that sets the readonly constant of that name replaced by one that sets it to
+# that value, then sources the copy, so a test can point the script's paths (its install and link dirs,
+# for example) at scratch ones. Fails the test when the arguments after $1 are not one or more name and
+# value pairs, or unless each constant's line was replaced exactly once.
 load_script_with() {
-  copy_script_with_line "$1" "readonly $2=" "$(printf 'readonly %s=%q' "$2" "$3")"
-  load_script "$1"
+  local copy="$1" pairs=()
+  shift
+  if (($# == 0 || $# % 2 != 0)); then
+    echo "load_script_with: want name and value pairs after the copy's path, got $# arguments"
+    exit 1
+  fi
+  while (($# > 0)); do
+    pairs+=("readonly $1=" "$(printf 'readonly %s=%q' "$1" "$2")")
+    shift 2
+  done
+  copy_script_with_lines "$copy" "${pairs[@]}"
+  load_script "$copy"
 }
 
 # Copies the script under test into directory $1 (created when missing) and sources the copy, so
@@ -174,6 +224,18 @@ load_script_copy() {
   fi
 }
 
+# Prints the value of the script's variable $1 (a constant such as GO_TOOL_LAZYGIT), read by sourcing
+# the script in a sandbox, so nothing runs; fails (status 1, no output) when the script sets no such
+# variable, and the caller reports it
+script_constant() {
+  (
+    sandbox "constant-$1" ""
+    load_script
+    [[ -v "$1" ]] || exit 1
+    printf '%s\n' "${!1}"
+  ) </dev/null
+}
+
 # Prints the number of the first line of file $2 that matches the extended regex $1, or nothing
 first_line() {
   grep -nE -m1 -- "$1" "$2" | cut -d: -f1
@@ -186,21 +248,26 @@ ere_escape() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
 # Prints a problem when the sudo log $1 is missing or unreadable, or has a line that is not one of the
 # only commands the script may run under sudo, as a recording sudo logs them (its arguments joined by
 # spaces): sudo -v, -n -v (the checks for a live ticket), and -k, each package manager's refresh and
-# install of plain package names, and the tarball install's exact steps, as as_root runs them, for the
-# install dir $2 (default /opt/nvim); nothing otherwise
+# install of plain package names (dnf's only with weak dependencies off), and the tarball install's
+# exact steps, as as_root runs them, for the install dir $2 and the link dir $3 (default /opt/nvim and
+# /usr/local/bin, the script's NVIM_INSTALL_DIR and NVIM_LINK_DIR; a test that points them at scratch
+# paths passes those); nothing otherwise. The defaults are literals on purpose, not read from the
+# script: the allowlist is a fence that does not depend on the script under test, so a change to the
+# script's dirs must change them here too.
 sudo_pkgs='( [A-Za-z0-9][A-Za-z0-9@._+-]*)+'
 sudo_allowlist_problems() {
-  local log="$1" dir outside allowlist
+  local log="$1" dir link_dir outside allowlist
   dir="$(ere_escape "${2:-/opt/nvim}")"
+  link_dir="$(ere_escape "${3:-/usr/local/bin}")"
   allowlist=(
     -e '-v' -e '-n -v' -e '-k'
     -e 'pacman -Syu' -e "pacman -S --noconfirm$sudo_pkgs"
     -e 'apt-get update -qq' -e "apt-get install -y$sudo_pkgs"
-    -e "dnf install -y$sudo_pkgs"
+    -e "dnf install -y --setopt=install_weak_deps=False$sudo_pkgs"
     -e 'apk update' -e "apk add$sudo_pkgs"
-    -e "rm -rf $dir" -e "mkdir -p $dir" -e "tar -C $dir --strip-components=1 -xzf /[^ ]+\\.tar\\.gz"
-    -e "chown -R 0:0 $dir" -e "chmod -R go-w $dir"
-    -e 'test -w /usr/local/bin' -e "ln -sf $dir/bin/nvim /usr/local/bin/nvim"
+    -e "rm -rf $dir" -e "mkdir -p -m 0700 $dir" -e "tar -C $dir --no-same-owner --strip-components=1 -xzf /[^ ]+\\.tar\\.gz"
+    -e "chown -R 0:0 $dir" -e "chmod -R go-w $dir" -e "chmod -R a\\+rX $dir"
+    -e "test -w $link_dir" -e "ln -sf $dir/bin/nvim $link_dir/nvim"
   )
   if [[ ! -f "$log" || ! -r "$log" ]]; then
     echo "[sudo log $log is missing or unreadable] "
@@ -243,6 +310,46 @@ order_problems() {
     fi
   done
   ((ok)) || echo "[order (first line of each): ${report% }] "
+}
+
+# Prints "[$1: missing <ere>] " for each extended regex after $2 that no line of the output $2 matches,
+# and "[$1: grep could not check <ere>] " for one that grep rejects
+missing_patterns() {
+  local label="$1" output="$2" pattern
+  shift 2
+  for pattern in "$@"; do
+    grep -qE -- "$pattern" <<<"$output"
+    case $? in
+      0) ;;
+      1) printf '[%s: missing %s] ' "$label" "$pattern" ;;
+      *) printf '[%s: grep could not check %s] ' "$label" "$pattern" ;;
+    esac
+  done
+}
+
+# Prints "[$1: shows <ere>] " for each extended regex after $2 that some line of the output $2 matches,
+# and "[$1: grep could not check <ere>] " for one that grep rejects
+shown_patterns() {
+  local label="$1" output="$2" pattern
+  shift 2
+  for pattern in "$@"; do
+    grep -qE -- "$pattern" <<<"$output"
+    case $? in
+      0) printf '[%s: shows %s] ' "$label" "$pattern" ;;
+      1) ;;
+      *) printf '[%s: grep could not check %s] ' "$label" "$pattern" ;;
+    esac
+  done
+}
+
+# Prints how PATH differs from $1, a PATH saved earlier: "unchanged", "install dir first" ($2/bin, the
+# bin dir of install dir $2, then $1), or "other: <PATH>" (T25, T26)
+path_change() {
+  case "$PATH" in
+    "$1") echo "unchanged" ;;
+    "$2/bin:$1") echo "install dir first" ;;
+    *) echo "other: $PATH" ;;
+  esac
 }
 
 # Prints its input with the credentials in URLs (anything between :// and @) replaced by ***
@@ -290,11 +397,18 @@ run_with_default_signals() {
 
 # Every stub the suite puts on PATH, as <dir>/<command>; the preflight below checks that each one wins
 STUBS=()
-# Copies the stub tests/lib/stubs/$3 into dir $1 (created when missing) as command $2, executable
-add_stub() {
+# Copies the stub tests/lib/stubs/$3 into dir $1 (created when missing) as command $2, executable, and
+# registers nothing: for a stub a test places itself after the preflight ran (an install dir's nvim, whose
+# dir only the script under test puts on PATH), where an entry in STUBS would never be checked.
+copy_stub() {
   mkdir -p "$1"
   cp "$LIB/stubs/$3" "$1/$2"
   chmod +x "$1/$2"
+}
+# Copies stub $3 into dir $1 as command $2, as copy_stub does, and adds it to STUBS, so the preflight
+# checks that it wins on PATH (for a stub the suite puts there).
+add_stub() {
+  copy_stub "$@"
   STUBS+=("$1/$2")
 }
 # Links command $2 in dir $1 (created when missing) to the file $3
@@ -360,6 +474,9 @@ T17_BIN="$TMP/bin-T17"
 add_stub "$T17_BIN" go t17-go
 add_stub "$T17_BIN" uv t17-uv
 
+# The Go tools install_user_tools installs, one GO_TOOL_<TOOL> constant each (T17 and T32 use it)
+GO_TOOLS="shfmt goimports golangci-lint lazygit lazydocker"
+
 # T19's go: it answers go env from T19_* variables
 T19_BIN="$TMP/bin-T19"
 add_stub "$T19_BIN" go t19-go
@@ -387,11 +504,42 @@ T25_BIN="$TMP/bin-T25"
 add_stub "$T25_BIN" curl t25-curl
 mkdir -p "$TMP/T25-src/nvim-linux/bin"
 printf '#!/bin/sh\n' >"$TMP/T25-src/nvim-linux/bin/nvim"
+# Executable as a release's nvim is: bash's command -v falls back to reporting a file that is not, and
+# T25b must not pass through that
+chmod +x "$TMP/T25-src/nvim-linux/bin/nvim"
 tar -C "$TMP/T25-src" -czf "$TMP/T25-nvim.tar.gz" nvim-linux
+# T25b's PATH dir, which holds no nvim, so a host's nvim never counts: the real tools the tarball step
+# (with its download stub), copy_stub, and verify_nvim need, and cat for the stub nvims
+T25B_TOOLS_BIN="$TMP/bin-T25b-tools"
+for tool in cat chmod cp cut du echo gzip head ln mkdir mktemp sed tar xargs; do
+  add_link "$T25B_TOOLS_BIN" "$tool" "$(type -P "$tool")"
+done
 
 # T26's nvim (T22 runs it too): it prints version $T26_VERSION
 T26_BIN="$TMP/bin-T26"
 add_stub "$T26_BIN" nvim t26-nvim
+# T26's PATH dir for the cases with no nvim on PATH: the real tools those cases need, head and sed
+# (get_nvim_version), cat (the install dir's nvim stub), and readlink and find (the install dir's
+# ownership check)
+T26_NO_NVIM_BIN="$TMP/bin-T26-no-nvim"
+for tool in head sed cat readlink find; do
+  add_link "$T26_NO_NVIM_BIN" "$tool" "$(type -P "$tool")"
+done
+
+# T36's rpm: it answers rpm -q and rpm -q --whatprovides, as Fedora's rpm does, for the packages in
+# $T36_INSTALLED
+T36_BIN="$TMP/bin-T36"
+add_stub "$T36_BIN" rpm t36-rpm
+
+# T38's PATH: the file list stub under each manager's list command name, which answers only the call
+# that lists the neovim package's files on that manager, the real sed pkg_installed_nvim drops apk's
+# package name prefix with, and the real grep it reads the list with
+T38_BIN="$TMP/bin-T38"
+for cmd in pacman rpm dpkg-query apk; do
+  add_stub "$T38_BIN" "$cmd" t38-pkg-files
+done
+add_link "$T38_BIN" sed "$(type -P sed)"
+add_link "$T38_BIN" grep "$(type -P grep)"
 
 # The main drivers (T9, T17, T22, T23, T30) are committed scripts in tests/lib, each run as its own
 # process inside a sandbox with the script under test as $1; they share tests/lib/driver-lib.sh, whose
@@ -448,6 +596,45 @@ elif [[ -z "$INHERITED_TRAPS" ]]; then
   INT_RC=130 TERM_RC=143 SIGNAL_NOTE=" (signal death not checked: python3 missing)"
 fi
 
+# The wrappers that report EUID 0 here without real root (T3, T26b), each a command line to split with
+# read -ra: fakeroot, and unshare -r when this kernel lets an unprivileged user map itself to root in a
+# user namespace. With none, those tests report it through report_no_fake_root.
+FAKE_ROOT_WRAPPERS=()
+if command -v fakeroot >/dev/null 2>&1; then
+  FAKE_ROOT_WRAPPERS+=(fakeroot)
+fi
+if command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
+  FAKE_ROOT_WRAPPERS+=("unshare -r")
+fi
+# Reports test $1, which needs a wrapper in FAKE_ROOT_WRAPPERS when there is none: a skip, or a failure
+# under REQUIRE_ALL=1
+report_no_fake_root() {
+  local no_wrapper="neither fakeroot nor unshare -r works here"
+  if [[ "${REQUIRE_ALL:-0}" == 1 ]]; then
+    result "$1" 1 "$no_wrapper, and REQUIRE_ALL=1 forbids skipping"
+  else
+    echo "SKIP $1 ($no_wrapper)"
+  fi
+}
+# Printed alone on a line by a case subshell that made a dir or file read-only and found this user can
+# still write it (as root can), so the case cannot check what it is about (exit_if_writable); the test
+# then reports the case as skipped (report_skip_if_writable)
+WRITABLE_ANYWAY_MARKER="WRITABLE ANYWAY"
+# Ends the calling case subshell, status 0, with WRITABLE_ANYWAY_MARKER as its last line of output,
+# when this user can write dir or file $1 whatever its mode
+exit_if_writable() {
+  if [[ -w "$1" ]]; then
+    echo "$WRITABLE_ANYWAY_MARKER"
+    exit 0
+  fi
+}
+# Prints the SKIP line for test case $1, giving reason $3, and succeeds when the case's output $2 says it
+# found its read-only dir or file writable (exit_if_writable); fails, printing nothing, otherwise
+report_skip_if_writable() {
+  grep -qxF "$WRITABLE_ANYWAY_MARKER" <<<"$2" || return 1
+  echo "SKIP $1 ($3)"
+}
+
 # ---------------------------------------------------------------------------
 # Tests
 # ---------------------------------------------------------------------------
@@ -464,12 +651,15 @@ else
   result T1-static $?
 fi
 
-# T2: the plan screen names the platform and, on pacman, the upfront system upgrade; "n" cancels
+# T2: the plan screen names the platform and, on pacman, the upfront system upgrade, with no tier notice
+# (pacman is first-class), and step 1 names the major.minor of the script's MIN_NVIM_VERSION; "n" cancels
 # cleanly (exit 0), and end of input (no terminal to answer from, as in a piped run) stops the run with
 # exit 1 and says why
 if [[ "$host_mgr" != pacman ]]; then
   echo "SKIP T2-plan-screen (the script detects '${host_mgr:-nothing}' here, not pacman)"
 else
+  t2_fail=""
+  t2_min_version="$(script_constant MIN_NVIM_VERSION)" || t2_fail+="[the script sets no MIN_NVIM_VERSION] "
   out="$( (
     sandbox T2 ""
     printf 'n\n' | run_script
@@ -480,30 +670,98 @@ else
     run_script
   ) </dev/null 2>&1)"
   eof_rc=$?
-  absent=""
-  for want in 'OS: +linux' 'Architecture: +(x86_64|arm64)' 'Package manager: +pacman' 'Support tier: +first-class' \
-    '0\. Upgrade the system first \(pacman -Syu' '1\. Install Neovim 0\.12\+' 'Cancelled\.'; do
-    grep -qE "$want" <<<"$out" || absent+="[$want] "
-  done
-  [[ $rc -eq 0 && -z "$absent" && $eof_rc -eq 1 ]] \
+  absent="$(missing_patterns plan "$out" 'OS: +linux' 'Architecture: +(x86_64|arm64)' 'Package manager: +pacman' \
+    'Support tier: +first-class' '0\. Upgrade the system first \(pacman -Syu' \
+    "1\\. Use the Neovim $(ere_escape "${t2_min_version%.*}")\\+ first on PATH" 'Cancelled\.')"
+  tier_notice="$(grep -m1 -E ' is (first-class|supported|best-effort): ' <<<"$out")"
+  [[ -z "$t2_fail" && $rc -eq 0 && -z "$absent" && -z "$tier_notice" && $eof_rc -eq 1 ]] \
     && grep -qF 'No answer (stdin is closed or not a terminal); run the script from a terminal' <<<"$eof_out" \
     && ! grep -qF 'Cancelled.' <<<"$eof_out" && ! grep -qE 'STUB .* BLOCKED' <<<"$out$eof_out"
-  result T2-plan-screen $? "rc=$rc eof_rc=$eof_rc absent=$absent; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
+  result T2-plan-screen $? "${t2_fail}rc=$rc eof_rc=$eof_rc absent=$absent tier_notice=$tier_notice; EOF run: $(tail -n2 <<<"$eof_out" | tr '\n' ' ')"
 fi
 
-# T3: root guard, under every wrapper that reports EUID 0 here: fakeroot, and unshare -r when this
-# kernel lets an unprivileged user map itself to root in a user namespace. With REQUIRE_ALL=1, having
-# neither fails instead of skipping.
-t3_wrappers=()
-if command -v fakeroot >/dev/null 2>&1; then
-  t3_wrappers+=(fakeroot)
-fi
-if command -v unshare >/dev/null 2>&1 && unshare -r true >/dev/null 2>&1; then
-  t3_wrappers+=("unshare -r")
-fi
-if [[ ${#t3_wrappers[@]} -gt 0 ]]; then
+# Runs confirm_proceed, sourced so any host can run it, for package manager $2 and mode $3, answering "n",
+# and prints its output (stdout and stderr) followed by NOT REACHED when it did not exit. OS, ARCH and
+# USER_SHELL are set by hand, as detection would set them.
+# $1 = case id, $2 = package manager, $3 = PACKAGES_ONLY (true or false)
+t2_plan() {
+  (
+    sandbox "T2-$1" ""
+    load_script
+    # shellcheck disable=SC2030,SC2034  # confirm_proceed, in the script sourced into this subshell, reads them
+    OS=linux ARCH=x86_64 USER_SHELL=bash PACKAGES_ONLY="$3"
+    set_pkg_manager "$2"
+    confirm_proceed <<<"n"
+    echo "NOT REACHED"
+  ) 2>&1
+}
+# T2b: the plan screen for dnf names the supported tier and its notice (which names no distro, since RHEL
+# and CentOS reach this tier too, and gives the tarball fallback for a repo Neovim that is missing or
+# older than the script's MIN_NVIM_VERSION), names in step 1 that constant's major.minor and, ahead of
+# dnf, the nvim first on PATH and the one in the script's NVIM_INSTALL_DIR (install_neovim tries both
+# first), lists the language servers in step 2, has no upfront upgrade and no best-effort text, shows the
+# shell t2_plan sets and Mode: full with the clone step, and "n" cancels with exit 0. The constant must
+# be X.Y.Z, since step 1 and the usage name its major.minor and the tests derive theirs the same way.
+t2_fail=""
+out="$(t2_plan dnf dnf false)"
+rc=$?
+t2_min_version="$(script_constant MIN_NVIM_VERSION)" || t2_fail+="[the script sets no MIN_NVIM_VERSION] "
+t2_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t2_fail+="[the script sets no NVIM_INSTALL_DIR] "
+[[ $t2_min_version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] \
+  || t2_fail+="[MIN_NVIM_VERSION '$t2_min_version' is not X.Y.Z, the form step 1 and usage take major.minor from] "
+t2_fail+="$(missing_patterns dnf "$out" 'Support tier: +supported' 'Shell: +bash$' 'Mode: +full$' \
+  'dnf is supported' \
+  "Neovim comes from the release tarball when the repo's is missing or older than $(ere_escape "$t2_min_version")" \
+  'lazygit and lazydocker come from go install at pinned versions in the full run' \
+  "1\\. Use the Neovim $(ere_escape "${t2_min_version%.*}")\\+ first on PATH or in $(ere_escape "$t2_install_dir"), or install it \\(prefer dnf, tarball fallback\\)$" \
+  '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' \
+  '3\. Clone config' 'Cancelled\.')"
+[[ $rc -eq 0 ]] || t2_fail+="[dnf: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+t2_fail+="$(shown_patterns dnf "$out" 'pacman -Syu' 'best-effort' 'manual steps\)' 'Fedora' 'NOT REACHED')"
+expect_none T2b-dnf-plan-screen "$t2_fail"
+
+# T2c: in packages-only mode the plan screen says so and ends with the packages (no clone step)
+t2_fail=""
+out="$(t2_plan dnf-packages-only dnf true)"
+rc=$?
+t2_fail+="$(missing_patterns packages-only "$out" 'Support tier: +supported' 'Mode: +packages only$' \
+  '2\. Install build tools' 'Cancelled\.')"
+[[ $rc -eq 0 ]] && ! grep -qE 'Clone config|NOT REACHED' <<<"$out" \
+  || t2_fail+="[packages-only: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+expect_none T2c-packages-only-plan-screen "$t2_fail"
+
+# T2d: the plan screen for each best-effort manager (apt-get, apk) leaves the language servers to manual
+# steps in step 2, shows no dnf text, and names the best-effort tier and its notice, which says the go
+# install and uv tool install fallbacks happen in the full run (packages-only stops before them)
+t2_fail=""
+for t2_mgr in apt-get apk; do
+  out="$(t2_plan "$t2_mgr-best-effort" "$t2_mgr" false)"
+  rc=$?
+  t2_fail+="$(missing_patterns "$t2_mgr" "$out" 'Support tier: +best-effort' 'Mode: +full$' \
+    "$t2_mgr"' is best-effort: tools missing from its repos are installed with go install \(pinned versions\) or uv tool install \(latest upstream\) in the full run when available, otherwise listed as manual steps at the end\.' \
+    '2\. Install build tools, clipboard, runtimes, formatters, linters, TUI tools \(language servers: manual steps\)$' \
+    'Cancelled\.')"
+  [[ $rc -eq 0 ]] || t2_fail+="[$t2_mgr: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  t2_fail+="$(shown_patterns "$t2_mgr" "$out" 'dnf' 'pacman -Syu' 'NOT REACHED')"
+done
+expect_none T2d-best-effort-plan-screen "$t2_fail"
+
+# T2e: the plan screen for pacman lists the language servers in step 2. It is sourced (t2_plan), so every
+# host runs it; T2 checks the real script's plan screen on pacman hosts only.
+t2_fail=""
+out="$(t2_plan pacman pacman false)"
+rc=$?
+t2_fail+="$(missing_patterns pacman "$out" \
+  '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' 'Cancelled\.')"
+[[ $rc -eq 0 ]] && ! grep -qF 'NOT REACHED' <<<"$out" \
+  || t2_fail+="[pacman: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+expect_none T2e-pacman-plan-step2 "$t2_fail"
+
+# T3: root guard, under every wrapper that reports EUID 0 here (FAKE_ROOT_WRAPPERS: fakeroot, and
+# unshare -r when the kernel allows it). With REQUIRE_ALL=1, having neither fails instead of skipping.
+if [[ ${#FAKE_ROOT_WRAPPERS[@]} -gt 0 ]]; then
   t3_fail=""
-  for wrapper in "${t3_wrappers[@]}"; do
+  for wrapper in "${FAKE_ROOT_WRAPPERS[@]}"; do
     read -ra wrapper_cmd <<<"$wrapper"
     out="$( (
       sandbox T3 ""
@@ -513,12 +771,10 @@ if [[ ${#t3_wrappers[@]} -gt 0 ]]; then
     [[ $rc -eq 1 ]] && grep -qF "Do not run this script as root" <<<"$out" \
       || t3_fail+="[$wrapper: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
   done
-  t3_ran="$(printf '%s, ' "${t3_wrappers[@]}")"
+  t3_ran="$(printf '%s, ' "${FAKE_ROOT_WRAPPERS[@]}")"
   expect_none "T3-root-guard (${t3_ran%, })" "$t3_fail"
-elif [[ "${REQUIRE_ALL:-0}" == 1 ]]; then
-  result T3-root-guard 1 "neither fakeroot nor unshare -r works here, and REQUIRE_ALL=1 forbids skipping"
 else
-  echo "SKIP T3-root-guard (neither fakeroot nor unshare -r works here)"
+  report_no_fake_root T3-root-guard
 fi
 
 # T4 (RUN_FULL=1, Arch only): runs the real script end to end on this machine. First the suite runs
@@ -682,6 +938,7 @@ out="$( (
     "dnf:pacman first-class"; do
     OSR_MGR="${tc%%:*}"
     os_release_pkg_mgr() { printf '%s\n' "$OSR_MGR"; }
+    # shellcheck disable=SC2030  # os-release detection, in the script sourced into this subshell, sets both
     PKG_MGR="" PKG_TIER=""
     PATH="$PKG_BIN" detect_pkg_manager
     [[ "$PKG_MGR $PKG_TIER" == "${tc#*:}" ]] \
@@ -692,13 +949,17 @@ out="$( (
 done_ok $? "$out" && ! grep -nE 'OS_RELEASE_FILE|NVIM_INSTALL_OS_RELEASE' "$SCRIPT"
 result T8-detection $? "$(tail -n3 <<<"$out")"
 
-# T8b: set_pkg_manager takes only the four supported managers; anything else stops the run, so no install
+# T8b: set_pkg_manager takes only the four supported managers and sets each one's tier (pacman
+# first-class, dnf supported, apt-get and apk best-effort); anything else stops the run, so no install
 # function runs with a manager its case statements do not know (pkg_install would do nothing and succeed)
 out="$( (
   sandbox T8b ""
   load_script
-  for mgr in pacman apt-get dnf apk; do
-    set_pkg_manager "$mgr"
+  for tc in pacman:first-class dnf:supported apt-get:best-effort apk:best-effort; do
+    set_pkg_manager "${tc%%:*}"
+    # shellcheck disable=SC2031  # set_pkg_manager, in the script sourced into this subshell, sets both
+    [[ "$PKG_MGR" == "${tc%%:*}" && "$PKG_TIER" == "${tc#*:}" ]] \
+      || { echo "${tc%%:*}: PKG_MGR=$PKG_MGR PKG_TIER=$PKG_TIER, want tier ${tc#*:}"; exit 1; }
   done
   run_errexit set_pkg_manager bogus
   echo "bogus rc=$RC"
@@ -907,8 +1168,9 @@ result T11b-no-script-dir-clones $? "$(tail -n3 <<<"$out" | tr '\n' ' ')"
 
 # T12: the first real install checks sudo once and runs pacman -Syu once, before any pacman -S;
 # installing Neovim goes through the same path, apt-get and apk refresh once (also across a whole
-# install_deps), nothing missing means no sudo, and a missing sudo binary stops the first install. A
-# whole install_deps runs on a PATH of the recording sudo, DENY_BIN, and TOOLS_BIN only.
+# install_deps), dnf never refreshes (its first install follows the ticket check directly) and installs
+# with weak dependencies off, nothing missing means no sudo, and a missing sudo binary stops the first
+# install. A whole install_deps runs on a PATH of the recording sudo, DENY_BIN, and TOOLS_BIN only.
 # $1 = case id, $2 = package manager, $3 = steps: pkgs, neovim, or deps with every package missing,
 # or installed-pkgs (pkgs with every package already installed)
 t12_case() {
@@ -930,23 +1192,33 @@ t12_case() {
     echo DONE
   ) </dev/null 2>&1
 }
-# Prints the problems with a sudo log: $1 = log, $2 = refresh command, $3 = install command prefix
+# Prints the problems with a sudo log: $1 = log, $2 = refresh command, or empty for a manager with no
+# upfront refresh (the first install then follows -v directly, and no manager's refresh appears), $3 =
+# install command prefix
 t12_check_log() {
   local log="$1" refresh="$2" install="$3" first_refresh first_install
-  first_refresh="$(first_line "^$refresh\$" "$log")"
   first_install="$(first_line "^$install" "$log")"
   [[ "$(head -n1 "$log")" == "-v" ]] || echo "[first sudo call is not -v]"
   [[ "$(grep -cxF -- "-v" "$log")" -eq 1 ]] || echo "[-v count $(grep -cxF -- "-v" "$log")]"
-  [[ "$(grep -cxF -- "$refresh" "$log")" -eq 1 ]] || echo "[$refresh count $(grep -cxF -- "$refresh" "$log")]"
-  [[ -n "$first_refresh" && -n "$first_install" && $first_refresh -lt $first_install ]] \
-    || echo "[$refresh (line ${first_refresh:-none}) not before $install (line ${first_install:-none})]"
+  if [[ -z "$refresh" ]]; then
+    [[ "$first_install" == 2 ]] || echo "[$install (line ${first_install:-none}) does not follow -v directly]"
+    ! grep -qxE 'pacman -Syu|apt-get update -qq|apk update' "$log" \
+      || echo "[a refresh ran: $(grep -xE 'pacman -Syu|apt-get update -qq|apk update' "$log" | tr '\n' ';')]"
+  else
+    first_refresh="$(first_line "^$refresh\$" "$log")"
+    [[ "$(grep -cxF -- "$refresh" "$log")" -eq 1 ]] || echo "[$refresh count $(grep -cxF -- "$refresh" "$log")]"
+    [[ -n "$first_refresh" && -n "$first_install" && $first_refresh -lt $first_install ]] \
+      || echo "[$refresh (line ${first_refresh:-none}) not before $install (line ${first_install:-none})]"
+  fi
   sudo_allowlist_problems "$log"
 }
 t12_fail=""
 for tc in "pacman-pkgs:pacman:pkgs:pacman -Syu:pacman -S --noconfirm" \
   "pacman-neovim:pacman:neovim:pacman -Syu:pacman -S --noconfirm neovim" \
   "apt-neovim:apt-get:neovim:apt-get update -qq:apt-get install -y neovim" \
-  "apt-deps:apt-get:deps:apt-get update -qq:apt-get install -y" "apk-deps:apk:deps:apk update:apk add"; do
+  "apt-deps:apt-get:deps:apt-get update -qq:apt-get install -y" "apk-deps:apk:deps:apk update:apk add" \
+  "dnf-neovim:dnf:neovim::dnf install -y --setopt=install_weak_deps=False neovim" \
+  "dnf-deps:dnf:deps::dnf install -y --setopt=install_weak_deps=False"; do
   IFS=: read -r id mgr steps refresh install <<<"$tc"
   out="$(t12_case "$id" "$mgr" "$steps")"
   rc=$?
@@ -1083,13 +1355,19 @@ for tc in "bash:export PATH=\"\$PATH:/nonexistent/bin\"" "fish:fish_add_path --a
   result "T15-path-hint-appends ${tc%%:*}" $? "$(head -n1 <<<"$out")"
 done
 
-# setup_path (tarball installs) prepends /opt/nvim/bin instead, so the tarball's nvim comes before an
-# older packaged one, and writes its line into the shell's config file once (fish: config.fish, with
-# --path; bash: .bashrc)
-for tc in "fish:.config/fish/config.fish:fish_add_path --path /opt/nvim/bin" \
-  "bash:.bashrc:export PATH=\"/opt/nvim/bin:\$PATH\""; do
+# setup_path (tarball installs) prepends NVIM_INSTALL_DIR/bin instead, so the tarball's nvim comes
+# before an older packaged one, and writes its line into the shell's config file once (fish:
+# config.fish, with --path; bash: .bashrc), right after its marker line, which the stop for the
+# script's own earlier tarball install (T26) points the user to. The test reads the dir from the
+# script, so the lines it expects follow the script's constant; a failed read fails both cases before
+# any comparison.
+t15_fail=""
+t15_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t15_fail="the script sets no NVIM_INSTALL_DIR"
+for tc in "fish:.config/fish/config.fish:fish_add_path --path $t15_install_dir/bin" \
+  "bash:.bashrc:export PATH=\"$t15_install_dir/bin:\$PATH\""; do
   IFS=: read -r t15_shell t15_rc t15_line <<<"$tc"
   out="$( (
+    [[ -z "$t15_fail" ]] || { echo "$t15_fail"; exit 1; }
     sandbox "T15-setup-path-$t15_shell" ""
     load_script
     # shellcheck disable=SC2030,SC2034  # setup_path, in the script sourced into this subshell, reads both
@@ -1102,6 +1380,9 @@ for tc in "fish:.config/fish/config.fish:fish_add_path --path /opt/nvim/bin" \
       count="$(grep -cxF -- "$t15_line" "$rc_file" || true)"
       [[ $count -eq 1 ]] || { echo "run $run: $count matching lines; $t15_rc: $(tr '\n' ';' <"$rc_file")"; exit 1; }
     done
+    # The stop for the script's own earlier tarball install tells the user the entry follows this marker
+    [[ "$(tail -n2 "$rc_file")" == "# Neovim (added by nvim-install.sh)"$'\n'"$t15_line" ]] \
+      || { echo "want the marker line, then the entry, at the end; $t15_rc: $(tr '\n' ';' <"$rc_file")"; exit 1; }
     echo DONE
   ) </dev/null 2>&1)"
   done_ok $? "$out"
@@ -1154,31 +1435,55 @@ for answer in n eof; do
 done
 expect_none T16-decline-move-continues "$t16_fail"
 
-# T17: main runs every package install first (install_deps), then forgets cached sudo credentials
-# once (sudo -k), then the go install and uv tool install user tools (install_user_tools), none of them
-# under sudo, and no sudo runs after the forget. A driver (tests/lib/driver-T17.sh) runs main with
-# install_deps and install_user_tools as they are and every other step stubbed. The forget runs also
-# when every package is already installed (all-installed), so no sudo -v ran: a ticket from before the
-# run may still be live. One event log records the sudo, go, and uv calls and the stubbed steps in
-# order; go and uv are stubs (T17_BIN) whose installs only log, so nothing real is installed. While main
-# runs, PATH is three stub dirs and nothing else (T17_BIN: go and uv; RECORD_BIN: sudo; DENY_BIN: curl
-# and wget, and refusals the others shadow), so no user tool name resolves and install_unless_on_path skips
-# none of them; the driver stubs the TypeScript check (T24 covers it), and nothing else on that code
-# path runs an external command. Run for every best-effort package manager.
-# $1 = package manager, $2 = missing (every package missing) or all-installed
+# The sandbox and log name of a T17 case: $1 = package manager, $2 = packages, $3 and $4 = the
+# GOTOOLCHAIN and UV_PYTHON_DOWNLOADS values the caller exports (optional)
+t17_case_name() {
+  printf 'T17-%s-%s%s%s\n' "$1" "$2" "${3:+-inherited-$3}" "${4:+-$4}"
+}
+
+# T17: main runs every package install first (install_deps), then forgets cached sudo credentials once
+# (sudo -k), then the go install and uv tool install user tools (install_user_tools), none of them under
+# sudo, and no sudo runs after the forget. A driver (tests/lib/driver-T17.sh) runs main with install_deps
+# and install_user_tools as they are and every other step stubbed. The forget runs also when every
+# package is already installed (all-installed), so no sudo -v ran: a ticket from before the run may still
+# be live. One event log records the sudo, go, and uv calls and the stubbed steps in order; go and uv are
+# stubs (T17_BIN) whose installs only log, so nothing real is installed, and after each call the go stub
+# also logs GOTOOLCHAIN and the uv stub UV_PYTHON_DOWNLOADS: every go call must run with
+# GOTOOLCHAIN=local and every uv call with UV_PYTHON_DOWNLOADS=never, even when the caller exports other
+# values (the inherited case exports GOTOOLCHAIN=auto and UV_PYTHON_DOWNLOADS=automatic), every go
+# install must name the pinned module of the script's GO_TOOL_<TOOL> constant, and setup_config (which
+# the driver stubs to log both values it sees) must see what the caller had, so neither setting outlives
+# install_go_tool or install_python_tool. While main runs, PATH is three stub dirs and nothing else
+# (T17_BIN: go and uv; RECORD_BIN: sudo; DENY_BIN: curl and wget, and refusals the others shadow), so no
+# user tool name resolves and install_unless_on_path skips none of them; the driver stubs the TypeScript
+# check (T24 covers it), and nothing else on that code path runs an external command. Run for every
+# non-pacman package manager: dnf installs only lazygit and lazydocker, with Go and no uv; apt-get and
+# apk install the whole list.
+# $1 = package manager, $2 = missing (every package missing) or all-installed, $3 and $4 = the
+# GOTOOLCHAIN and UV_PYTHON_DOWNLOADS values the caller exports (optional; unset when empty)
 t17_case() {
-  local mgr="$1" pkgs="$2"
+  local mgr="$1" pkgs="$2" inherited="${3:-}" inherited_python_downloads="${4:-}"
   (
-    recording_sandbox "T17-$mgr-$pkgs" "$T17_BIN"
+    recording_sandbox "$(t17_case_name "$mgr" "$pkgs" "$inherited" "$inherited_python_downloads")" "$T17_BIN"
+    [[ -z "$inherited" ]] || export GOTOOLCHAIN="$inherited"
+    [[ -z "$inherited_python_downloads" ]] || export UV_PYTHON_DOWNLOADS="$inherited_python_downloads"
     T17_MGR="$mgr" T17_PKGS="$pkgs" T17_PATH="$T17_BIN:$RECORD_BIN:$DENY_BIN"
     export T17_MGR T17_PKGS T17_PATH
     bash "$LIB/driver-T17.sh" "$SCRIPT"
     echo "driver rc=$?"
   ) </dev/null 2>&1
 }
-# Prints the problems with a T17 event log: $1 = log, $2 = the sudo -v calls expected
+# Prints the problems with a T17 event log: $1 = log, $2 = the sudo -v calls expected, $3 = the uv tools
+# expected (space-separated; when empty, no uv call of any kind), $4 = the Go tools expected
+# (space-separated; each one's module comes from the script's GO_TOOL_<TOOL> constant, with - read as _),
+# $5 and $6 = the GOTOOLCHAIN and UV_PYTHON_DOWNLOADS values the caller exported (optional; unset when
+# empty). Each tool is installed once and nothing else is, the module's path ends in the tool's name (or
+# its name and a /vN major version), every go call runs with GOTOOLCHAIN=local and every uv call with
+# UV_PYTHON_DOWNLOADS=never whatever the caller exported, and setup_config sees the caller's values
+# again.
 t17_check_events() {
-  local log="$1" want_v="$2" k_line first_tool tool
+  local log="$1" want_v="$2" uv_tools="$3" go_tools="$4" k_line first_tool tool var module go_calls uv_calls
+  local setup_config_lines want_toolchain="${5:-unset}" want_python_downloads="${6:-unset}"
   [[ "$(grep -cxF 'sudo -v' "$log")" -eq "$want_v" ]] || echo "[sudo -v count $(grep -cxF 'sudo -v' "$log"), want $want_v]"
   [[ "$(grep -cxF 'sudo -k' "$log")" -eq 1 ]] || echo "[sudo -k count $(grep -cxF 'sudo -k' "$log"), want 1]"
   k_line="$(first_line '^sudo -k$' "$log")"
@@ -1187,24 +1492,51 @@ t17_check_events() {
     || echo "[first sudo -k (line ${k_line:-none}) not before the first go or uv call (line ${first_tool:-none})]"
   no_sudo_after_final_forget "$log"
   ! grep -qE '^sudo (go|uv)( |$)' "$log" || echo "[go or uv ran under sudo]"
-  for tool in black yamllint ruff; do
+  for tool in $uv_tools; do
     [[ "$(grep -cxF "uv tool install $tool" "$log")" -eq 1 ]] || echo "[want one 'uv tool install $tool']"
   done
-  for tool in shfmt goimports golangci-lint lazygit lazydocker; do
-    [[ "$(grep -cE "^go install [^ ]*/$tool@latest\$" "$log")" -eq 1 ]] || echo "[want one 'go install .../$tool@latest']"
+  [[ "$(grep -c '^uv tool install ' "$log")" -eq "$(wc -w <<<"$uv_tools")" ]] \
+    || echo "[uv tool install count $(grep -c '^uv tool install ' "$log"), want $(wc -w <<<"$uv_tools")]"
+  if [[ -z "$uv_tools" ]] && grep -q '^uv ' "$log"; then
+    echo "[uv ran although no uv tool is expected: $(grep '^uv ' "$log" | tr '\n' ';')]"
+  fi
+  for tool in $go_tools; do
+    var="GO_TOOL_${tool^^}"
+    module="$(script_constant "${var//-/_}")" || { echo "[no constant ${var//-/_} in the script]"; continue; }
+    [[ "${module%@*}" =~ /"$tool"(/v[0-9]+)?$ ]] \
+      || echo "[${var//-/_} is $module, whose path does not end in /$tool or /$tool/vN]"
+    [[ "$(grep -cxF "go install $module" "$log")" -eq 1 ]] || echo "[want one 'go install $module']"
   done
+  [[ "$(grep -c '^go install ' "$log")" -eq "$(wc -w <<<"$go_tools")" ]] \
+    || echo "[go install count $(grep -c '^go install ' "$log"), want $(wc -w <<<"$go_tools")]"
+  go_calls="$(grep -c '^go ' "$log")"
+  [[ "$(grep -cxF 'go-env GOTOOLCHAIN=local' "$log")" -eq "$go_calls" && "$(grep -c '^go-env ' "$log")" -eq "$go_calls" ]] \
+    || echo "[GOTOOLCHAIN=local not recorded for every go call: $(grep '^go-env ' "$log" | sort | uniq -c | tr -s ' \n' ' ')]"
+  uv_calls="$(grep -c '^uv ' "$log")"
+  [[ "$(grep -cxF 'uv-env UV_PYTHON_DOWNLOADS=never' "$log")" -eq "$uv_calls" && "$(grep -c '^uv-env ' "$log")" -eq "$uv_calls" ]] \
+    || echo "[UV_PYTHON_DOWNLOADS=never not recorded for every uv call: $(grep '^uv-env ' "$log" | sort | uniq -c | tr -s ' \n' ' ')]"
+  setup_config_lines="$(grep '^setup_config' "$log" | tr '\n' ';')"
+  [[ "$setup_config_lines" == "setup_config GOTOOLCHAIN=$want_toolchain UV_PYTHON_DOWNLOADS=$want_python_downloads;" ]] \
+    || echo "[setup_config saw: ${setup_config_lines:-none}, want GOTOOLCHAIN=$want_toolchain UV_PYTHON_DOWNLOADS=$want_python_downloads]"
 }
+# Each case is packages:sudo -v calls expected:GOTOOLCHAIN and then UV_PYTHON_DOWNLOADS the caller
+# exports (empty for none)
 for mgr in apt-get dnf apk; do
-  for tc in missing:1 all-installed:0; do
-    pkgs="${tc%%:*}"
-    out="$(t17_case "$mgr" "$pkgs")"
-    events="$(event_log "T17-$mgr-$pkgs")"
+  case "$mgr" in
+    dnf) t17_uv="" t17_go="lazygit lazydocker" ;;
+    *) t17_uv="black yamllint ruff" t17_go="$GO_TOOLS" ;;
+  esac
+  for tc in missing:1:: all-installed:0:: missing:1:auto:automatic; do
+    IFS=: read -r pkgs want_v inherited inherited_python_downloads <<<"$tc"
+    case_name="$(t17_case_name "$mgr" "$pkgs" "$inherited" "$inherited_python_downloads")"
+    out="$(t17_case "$mgr" "$pkgs" "$inherited" "$inherited_python_downloads")"
+    events="$(event_log "$case_name")"
     problems=""
     grep -qxF "driver rc=0" <<<"$out" || problems+="[$(tail -n2 <<<"$out" | tr '\n' ' ')] "
-    problems+="$(t17_check_events "$events" "${tc#*:}" | tr '\n' ' ')"
-    problems+="$(sudo_allowlist_problems "$(sudo_log "T17-$mgr-$pkgs")")"
+    problems+="$(t17_check_events "$events" "$want_v" "$t17_uv" "$t17_go" "$inherited" "$inherited_python_downloads" | tr '\n' ' ')"
+    problems+="$(sudo_allowlist_problems "$(sudo_log "$case_name")")"
     [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$events")"
-    expect_none "T17-sudo-dropped $mgr $pkgs" "$problems"
+    expect_none "T17-sudo-dropped $mgr $pkgs${inherited:+ inherited-$inherited}${inherited_python_downloads:+-$inherited_python_downloads}" "$problems"
   done
 done
 
@@ -1261,10 +1593,7 @@ t18_case() {
     if [[ "$read_only" == yes ]]; then
       mkdir -p "$HOME/.config"
       chmod 555 "$HOME/.config"
-      if [[ -w "$HOME/.config" ]]; then
-        echo "WRITABLE ANYWAY"
-        exit 0
-      fi
+      exit_if_writable "$HOME/.config"
     fi
     load_script_copy "$HOME/plain"
     echo "NVIM_REPO=$NVIM_REPO"
@@ -1339,8 +1668,8 @@ for id in "${T18_CASES[@]}"; do
   # and remove it
   t18_dir="$(sandbox_home "T18-$id")/.config"
   [[ ! -d "$t18_dir" ]] || chmod 755 "$t18_dir"
-  if grep -qxF "WRITABLE ANYWAY" <<<"$out"; then
-    echo "SKIP T18-config-move-yes $id (this user can write to a mode 555 directory, as root can)"
+  if report_skip_if_writable "T18-config-move-yes $id" "$out" \
+    "this user can write to a mode 555 directory, as root can"; then
     continue
   fi
   problems="$(t18_check "$id" "$out" "$rc" | tr '\n' ' ')"
@@ -1388,78 +1717,140 @@ result T19-go-bin-dir $? "$(tail -n2 <<<"$out" | tr '\n' ' ')"
 # as no more of them than packages are missing (one package per server). Both pacman queries are
 # read-only and need no root. The server list comes from Neovim itself: tests/lib/system-servers.lua,
 # run with --clean (no config or plugins), points package.path at the repo's lua/ and requires the
-# module; the run gets scratch XDG dirs and TMPDIR, so it writes nothing outside $TMP. The script's
-# lists come from running it, not from parsing its source, on a PATH of DENY_BIN only, with each
-# installing function stubbed to print what it was given: install_language_servers for pacman
-# (install_pkgs stubbed) gives (b)'s packages, and for apt-get (warn_manual stubbed, and the TypeScript
-# check, which T24 covers) (a)'s binaries; install_deps (a Wayland display), install_clipboard again (an
-# X11 display only), and install_neovim (pkg_install stubbed to fail, and the tarball fallback stubbed)
-# give (c)'s packages. (a) compares in byte order, as Lua's table.sort sorts.
+# module; t20_inventory gives each run scratch XDG dirs and TMPDIR, so it writes nothing outside $TMP.
+# The script's lists come from running it, not from parsing its source. t20_collect runs one
+# collection for a package manager on a PATH of DENY_BIN only, in a copy of the script whose
+# NVIM_INSTALL_DIR is a scratch path with no nvim (so a host's /opt/nvim/bin/nvim never stands in for
+# the neovim package, T26), with each installing function and warn stubbed to print what it was given,
+# each line tagged by the function: install_pkgs and pkg_install (stubbed to fail, with the tarball
+# fallback stubbed) print SERVER_PKG during install_language_servers and PKG after it, warn_manual
+# always prints MANUAL, and warn always prints WARN, so manual steps and warnings never land in a
+# package list; the TypeScript check is stubbed too (T24 covers it). Its servers case runs
+# install_language_servers only, and its all case then runs install_deps (a Wayland display),
+# install_clipboard again (an X11 display only), and install_neovim. The pacman all case gives (b)'s
+# packages (SERVER_PKG) and (c)'s (PKG), and the apt-get servers case gives (a)'s binaries (MANUAL).
+# t20_readme_command_words prints the words of a command under Requirements in the README,
+# t20_list_diff prints the names only the script installs and the names only the README lists, and
+# t20_list_diff_problems drops (c)'s documented exceptions from those, one per side, and reports each
+# side that still has names. (a) compares in byte order, as Lua's table.sort sorts.
 t20_xdg="$TMP/T20-xdg"
 mkdir -p "$t20_xdg/config" "$t20_xdg/data" "$t20_xdg/state" "$t20_xdg/cache" "$t20_xdg/tmp"
-t20_servers="$( (
-  sandbox T20-servers ""
-  XDG_CONFIG_HOME="$t20_xdg/config" XDG_DATA_HOME="$t20_xdg/data" XDG_STATE_HOME="$t20_xdg/state" \
-    XDG_CACHE_HOME="$t20_xdg/cache" TMPDIR="$t20_xdg/tmp"
-  export XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR
-  nvim --clean --headless -l "$LIB/system-servers.lua"
-) </dev/null 2>"$TMP/T20-nvim.err")"
+# Prints system-servers.lua's lines for its arguments (none, or $1 = table and optional $2 = keys) and
+# returns nvim's status; each run gets its own sandbox and appends its stderr to $TMP/T20-nvim.err
+t20_inventory() {
+  (
+    sandbox "T20-inventory${1:+-$1}${2:+-$2}" ""
+    XDG_CONFIG_HOME="$t20_xdg/config" XDG_DATA_HOME="$t20_xdg/data" XDG_STATE_HOME="$t20_xdg/state" \
+      XDG_CACHE_HOME="$t20_xdg/cache" TMPDIR="$t20_xdg/tmp"
+    export XDG_CONFIG_HOME XDG_DATA_HOME XDG_STATE_HOME XDG_CACHE_HOME TMPDIR
+    nvim --clean --headless -l "$LIB/system-servers.lua" "$@"
+  ) </dev/null 2>>"$TMP/T20-nvim.err"
+}
+t20_servers="$(t20_inventory)"
 t20_nvim_rc=$?
 lsp_bins=()
 if [[ $t20_nvim_rc -eq 0 ]]; then
   mapfile -t lsp_bins < <(sed '/^$/d' <<<"$t20_servers")
 fi
-out="$( (
-  sandbox T20-collect ""
-  load_script
-  must_override install_pkgs
-  must_override warn_manual
-  must_override has_system_typescript
-  must_override pkg_install
-  must_override install_neovim_tarball
-  # Prints each argument after the first $1 + 1, as "$T20_TAG <argument>"
-  t20_print() {
-    local skip="$1" item
-    shift
-    shift "$skip"
-    for item in "$@"; do
-      printf '%s %s\n' "$T20_TAG" "$item"
-    done
-  }
-  install_pkgs() { t20_print 2 "$@"; }
-  warn_manual() { t20_print 0 "$@"; }
-  pkg_install() {
-    t20_print 0 "$@"
-    return 1
-  }
-  has_system_typescript() { return 0; }
-  install_neovim_tarball() { :; }
-  PATH="$DENY_BIN"
-  set_pkg_manager pacman
-  T20_TAG=SERVER_PKG install_language_servers
-  T20_TAG=PKG
-  WAYLAND_DISPLAY=wayland-0 install_deps
-  unset WAYLAND_DISPLAY
-  DISPLAY=:0 install_clipboard
-  install_neovim
-  set_pkg_manager apt-get
-  T20_TAG=MANUAL_BIN install_language_servers
-  echo DONE
-) </dev/null 2>&1)"
-rc=$?
-mapfile -t manual_bins < <(sed -n 's/^MANUAL_BIN //p' <<<"$out" | LC_ALL=C sort)
-mapfile -t pacman_pkgs < <(sed -n 's/^SERVER_PKG //p' <<<"$out")
-mapfile -t t20_all_pkgs < <(sed -n 's/^PKG //p' <<<"$out" | sort -u)
+# Prints each argument after the first $2 + 2 as "$1 <argument>", for the stubs in T20's collections
+t20_print_tagged() {
+  local tag="$1" skip="$2" item
+  shift 2
+  shift "$skip"
+  for item in "$@"; do
+    printf '%s %s\n' "$tag" "$item"
+  done
+}
+# Runs the collection case $2 (servers or all) for the package manager $1, in a sandbox and a copy of
+# the script of its own, and prints the tagged lines among the script's other output, then DONE; an
+# unknown case fails the collection (no DONE) instead of running another one
+t20_collect() {
+  local t20_manager="$1" t20_case="$2" t20_pkg_tag=SERVER_PKG
+  (
+    if [[ $t20_case != servers && $t20_case != all ]]; then
+      echo "t20_collect: unknown case '$t20_case' (expected servers or all)"
+      exit 1
+    fi
+    sandbox "T20-collect-$t20_manager-$t20_case" ""
+    load_script_with "$TMP/T20-collect-$t20_manager-$t20_case/script/nvim-install.sh" \
+      NVIM_INSTALL_DIR "$TMP/T20-collect-$t20_manager-$t20_case/opt-nvim"
+    must_override install_pkgs
+    must_override warn_manual
+    must_override warn
+    must_override has_system_typescript
+    must_override pkg_install
+    must_override install_neovim_tarball
+    install_pkgs() { t20_print_tagged "$t20_pkg_tag" 2 "$@"; }
+    warn_manual() { t20_print_tagged MANUAL 0 "$@"; }
+    warn() { t20_print_tagged WARN 0 "$1"; }
+    has_system_typescript() { return 0; }
+    pkg_install() {
+      t20_print_tagged "$t20_pkg_tag" 0 "$@"
+      return 1
+    }
+    install_neovim_tarball() { :; }
+    # shellcheck disable=SC2030  # the functions of the script sourced into this subshell run on it
+    PATH="$DENY_BIN"
+    set_pkg_manager "$t20_manager"
+    install_language_servers
+    if [[ $t20_case == all ]]; then
+      t20_pkg_tag=PKG
+      WAYLAND_DISPLAY=wayland-0 install_deps
+      unset WAYLAND_DISPLAY
+      DISPLAY=:0 install_clipboard
+      install_neovim
+    fi
+    echo DONE
+  ) </dev/null 2>&1
+}
+# Prints the words of the README's command $1 under Requirements, one per line, in order: what follows
+# "$1 " on the line that starts with it, and its continuation lines (each but the last ends in a
+# backslash). The command is matched as text, not as a pattern
+t20_readme_command_words() {
+  sed -n '/^## Requirements/,/^## Installation/p' "$ROOT/README.md" \
+    | awk -v prefix="$1 " 'index($0, prefix) == 1 { on = 1; $0 = substr($0, length(prefix) + 1) }
+        on { cont = sub(/\\$/, ""); printf "%s ", $0; if (!cont) exit }' \
+    | tr -s '[:space:]' '\n' | sed '/^$/d'
+}
+# Prints each name of the sorted list file $1 (the script's) that the sorted list file $2 (the
+# README's) lacks as "SCRIPT_ONLY <name>", and each name of $2 that $1 lacks as "README_ONLY <name>"
+t20_list_diff() {
+  comm -3 "$1" "$2" | awk '/^\t/ { print "README_ONLY " substr($0, 2); next } { print "SCRIPT_ONLY " $0 }'
+}
+# Prints, labelled $1, a problem for each side of t20_list_diff's lines on stdin that still has names
+# once $2 is dropped from the script's side and $3 (empty for none) from the README's, and nothing
+# when neither side does. It reads stdin in one pass, as the diff comes from process
+# substitutions that cannot be read twice. With grep -x an empty $3 drops only empty lines, and grep's
+# status when it keeps no names is never read, so it changes no result.
+t20_list_diff_problems() {
+  local t20_label="$1" t20_script_exception="$2" t20_readme_exception="$3"
+  local t20_diff t20_script_only t20_readme_only
+  t20_diff="$(cat)"
+  t20_script_only="$(sed -n 's/^SCRIPT_ONLY //p' <<<"$t20_diff" | grep -vxF -- "$t20_script_exception")"
+  t20_readme_only="$(sed -n 's/^README_ONLY //p' <<<"$t20_diff" | grep -vxF -- "$t20_readme_exception")"
+  [[ -z "$t20_script_only" ]] \
+    || printf '[%s the script installs, the README does not: %s] ' "$t20_label" "$(tr '\n' ' ' <<<"$t20_script_only")"
+  [[ -z "$t20_readme_only" ]] \
+    || printf '[%s the README lists, the script does not install: %s] ' "$t20_label" "$(tr '\n' ' ' <<<"$t20_readme_only")"
+}
+t20_pacman_out="$(t20_collect pacman all)"
+t20_pacman_rc=$?
+t20_apt_out="$(t20_collect apt-get servers)"
+t20_apt_rc=$?
+mapfile -t manual_bins < <(sed -n 's/^MANUAL //p' <<<"$t20_apt_out" | LC_ALL=C sort)
+mapfile -t pacman_pkgs < <(sed -n 's/^SERVER_PKG //p' <<<"$t20_pacman_out")
+mapfile -t t20_all_pkgs < <(sed -n 's/^PKG //p' <<<"$t20_pacman_out" | sort -u)
+t20_pacman_command="sudo pacman -S --needed"
 # The packages of the README's pacman command, one per line, sorted
-mapfile -t readme_pkgs < <(sed -n '/^## Requirements/,/^## Installation/p' "$ROOT/README.md" \
-  | awk '/^sudo pacman -S --needed / { on = 1; sub(/^sudo pacman -S --needed /, "") }
-      on { cont = sub(/\\$/, ""); printf "%s ", $0; if (!cont) exit }' \
-  | tr -s '[:space:]' '\n' | sed '/^$/d' | sort -u)
+mapfile -t readme_pkgs < <(t20_readme_command_words "$t20_pacman_command" | sort -u)
 problems=""
 [[ $t20_nvim_rc -eq 0 ]] \
   || problems+="[nvim could not read lua/lsp_gates/servers.lua: rc=$t20_nvim_rc $(tail -n2 "$TMP/T20-nvim.err" | tr '\n' ' ')] "
 [[ ${#lsp_bins[@]} -gt 0 ]] || problems+="[no system servers found in lua/lsp_gates/servers.lua] "
-done_ok $rc "$out" || problems+="[collecting the names failed: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done_ok $t20_pacman_rc "$t20_pacman_out" \
+  || problems+="[collecting the names failed: rc=$t20_pacman_rc $(tail -n2 <<<"$t20_pacman_out" | tr '\n' ' ')] "
+done_ok $t20_apt_rc "$t20_apt_out" \
+  || problems+="[collecting the apt-get names failed: rc=$t20_apt_rc $(tail -n2 <<<"$t20_apt_out" | tr '\n' ' ')] "
 [[ "${manual_bins[*]}" == "${lsp_bins[*]}" ]] \
   || problems+="[(a) warn_manual: ${manual_bins[*]}; system servers: ${lsp_bins[*]}] "
 [[ ${#pacman_pkgs[@]} -eq ${#lsp_bins[@]} ]] \
@@ -1469,14 +1860,10 @@ for pkg in "${pacman_pkgs[@]}" wl-clipboard xclip neovim; do
   [[ " ${t20_all_pkgs[*]} " == *" $pkg "* ]] || problems+="[(c) $pkg not among the collected names] "
 done
 if [[ ${#readme_pkgs[@]} -eq 0 ]]; then
-  problems+="[(c) no 'sudo pacman -S --needed' command under Requirements in README.md] "
+  problems+="[(c) no '$t20_pacman_command' command under Requirements in README.md] "
 else
-  t20_script_only="$(comm -23 <(printf '%s\n' "${t20_all_pkgs[@]}") <(printf '%s\n' "${readme_pkgs[@]}") \
-    | grep -vxF xclip)"
-  t20_readme_only="$(comm -13 <(printf '%s\n' "${t20_all_pkgs[@]}") <(printf '%s\n' "${readme_pkgs[@]}") \
-    | grep -vxF ttf-jetbrains-mono-nerd)"
-  [[ -z "$t20_script_only" ]] || problems+="[(c) the script installs, the README does not: $(tr '\n' ' ' <<<"$t20_script_only")] "
-  [[ -z "$t20_readme_only" ]] || problems+="[(c) the README lists, the script does not install: $(tr '\n' ' ' <<<"$t20_readme_only")] "
+  problems+="$(t20_list_diff <(printf '%s\n' "${t20_all_pkgs[@]}") <(printf '%s\n' "${readme_pkgs[@]}") \
+    | t20_list_diff_problems "(c)" xclip ttf-jetbrains-mono-nerd)"
 fi
 expect_none T20-server-list-sync "$problems"
 if [[ "$host_mgr" != pacman ]] || ! command -v pacman >/dev/null 2>&1; then
@@ -1515,47 +1902,184 @@ else
   fi
 fi
 
+# T20 (e), the same for dnf: the Fedora language-server packages are one for bash-language-server and one
+# per fallback (python-lsp-server); the warning that lists the servers Fedora cannot run names every
+# system server but bash-language-server's and the replaced ones before its ";", and each fallback as the
+# stand-in for the server it replaces after it; and the README's dnf command under Requirements starts
+# with the option that turns weak dependencies off (the script's dnf installs do the same) and names
+# exactly the packages the script installs on dnf, except xclip. The names come from t20_collect's all
+# case for dnf, as for pacman: SERVER_PKG for the language-server packages, PKG for the rest of the
+# run's, and WARN for the warning (the MANUAL lines, the tools Fedora does not package, stay out of
+# every list). The README's words come from t20_readme_command_words, t20_list_diff compares its
+# packages with the script's, and t20_list_diff_problems drops xclip from the script's side (nothing
+# from the README's) and reports each side that still has names. The server names come from
+# t20_inventory: `system keys` (the names) and `fallbacks` (name, replaced server, command).
+mapfile -t t20_system_keys < <(t20_inventory system keys | sed '/^$/d')
+mapfile -t t20_fallbacks < <(t20_inventory fallbacks | sed '/^$/d')
+t20_dnf_out="$(t20_collect dnf all)"
+t20_dnf_rc=$?
+mapfile -t dnf_server_pkgs < <(sed -n 's/^SERVER_PKG //p' <<<"$t20_dnf_out")
+mapfile -t dnf_all_pkgs < <(sed -n 's/^PKG //p' <<<"$t20_dnf_out" | sort -u)
+# install_language_servers runs twice (once directly, once inside install_deps), so the warning is
+# collected once per distinct text
+mapfile -t dnf_off_warn < <(sed -n 's/^WARN \(Fedora packages no .*\)$/\1/p' <<<"$t20_dnf_out" | sort -u)
+t20_weak_deps_option="--setopt=install_weak_deps=False"
+t20_dnf_command="sudo dnf install"
+# The words of the README's dnf command, one per line, in order
+mapfile -t readme_dnf_words < <(t20_readme_command_words "$t20_dnf_command")
+# Its packages: the words but that option, sorted
+mapfile -t readme_dnf_pkgs < <(printf '%s\n' "${readme_dnf_words[@]}" | grep -vxF -- "$t20_weak_deps_option" \
+  | sed '/^$/d' | sort -u)
+problems=""
+done_ok $t20_dnf_rc "$t20_dnf_out" \
+  || problems+="[collecting the dnf names failed: rc=$t20_dnf_rc $(tail -n2 <<<"$t20_dnf_out" | tr '\n' ' ')] "
+[[ ${#t20_system_keys[@]} -gt 0 && ${#t20_fallbacks[@]} -gt 0 ]] \
+  || problems+="[system-servers.lua gave ${#t20_system_keys[@]} system keys and ${#t20_fallbacks[@]} fallbacks: $(grep -m1 E5113 "$TMP/T20-nvim.err" || tail -n1 "$TMP/T20-nvim.err")] "
+[[ "${dnf_server_pkgs[*]}" == "nodejs-bash-language-server python3-lsp-server" ]] \
+  || problems+="[(e) dnf language-server packages: ${dnf_server_pkgs[*]}] "
+if [[ ${#dnf_off_warn[@]} -ne 1 ]]; then
+  problems+="[(e) ${#dnf_off_warn[@]} 'Fedora packages no' warnings, want 1] "
+else
+  t20_warning="${dnf_off_warn[0]}"
+  t20_stay_off="${t20_warning%%;*}"
+  t20_stand_ins="${t20_warning#*;}"
+  [[ "$t20_warning" == *\;* ]] \
+    || problems+="[(e) the warning has no ';' between the servers that stay off and the stand-ins: $t20_warning] "
+  t20_replaced=" "
+  for entry in "${t20_fallbacks[@]}"; do
+    read -r _ replaces _ <<<"$entry"
+    t20_replaced+="$replaces "
+  done
+  for key in "${t20_system_keys[@]}"; do
+    if [[ "$key" == bashls || "$t20_replaced" == *" $key "* ]]; then
+      ! grep -qwF "$key" <<<"$t20_stay_off" \
+        || problems+="[(e) the warning names $key, which has a Fedora package or a stand-in, as off: $t20_stay_off] "
+    else
+      grep -qwF "$key" <<<"$t20_stay_off" || problems+="[(e) the warning does not name $key as off: $t20_stay_off] "
+    fi
+  done
+  for entry in "${t20_fallbacks[@]}"; do
+    read -r name replaces _ <<<"$entry"
+    grep -qF "($name) stands in for $replaces" <<<"$t20_stand_ins" \
+      || problems+="[(e) the warning does not name $name as the stand-in for $replaces: $t20_stand_ins] "
+  done
+fi
+for pkg in "${dnf_server_pkgs[@]}" wl-clipboard xclip neovim; do
+  [[ " ${dnf_all_pkgs[*]} " == *" $pkg "* ]] || problems+="[(e) $pkg not among the collected dnf names] "
+done
+if [[ ${#readme_dnf_words[@]} -eq 0 ]]; then
+  problems+="[(e) no '$t20_dnf_command' command under Requirements in README.md] "
+else
+  [[ "${readme_dnf_words[0]}" == "$t20_weak_deps_option" ]] \
+    || problems+="[(e) the README's dnf command does not turn weak dependencies off] "
+  problems+="$(t20_list_diff <(printf '%s\n' "${dnf_all_pkgs[@]}") <(printf '%s\n' "${readme_dnf_pkgs[@]}") \
+    | t20_list_diff_problems "(e) dnf" xclip "")"
+fi
+expect_none "T20-server-list-sync (e) dnf" "$problems"
+
+
+# The nvim versions T26's stubs print where a case needs one on a given side of the script's
+# MIN_NVIM_VERSION: the minimum itself (new enough, as a version equal to it is), one at least as new,
+# and three older ones, all different so a case can tell whose version an output shows (an old nvim on
+# PATH, an old one in the install dir, and the old one a package install leaves). For a stub only the
+# install dir holds (T25, T25b), a version at least as new that no real nvim has, so only that stub
+# passes verify_nvim. T22's main run and the T25 and T26 cases take them by name. A bump of the minimum
+# that leaves one on the wrong side, or old ones that are no longer all different, fails
+# T26-fixture-versions, which names it, beside the cases that use it.
+t26_fixture_problems=""
+T26_MIN_VERSION="$(script_constant MIN_NVIM_VERSION)" \
+  || t26_fixture_problems+="[the script sets no MIN_NVIM_VERSION] "
+T26_NEW_VERSION=0.12.6
+T26_OLD_PATH_VERSION=0.11.4
+T26_OLD_INSTALL_DIR_VERSION=0.11.6
+T26_OLD_PACKAGE_VERSION=0.11.5
+T26_INSTALL_DIR_ONLY_VERSION=0.98.7
+t26_fixture_problems+="$( (
+  sandbox T26-fixture-versions ""
+  load_script
+  problems=""
+  t26_old_names=(T26_OLD_PATH_VERSION T26_OLD_INSTALL_DIR_VERSION T26_OLD_PACKAGE_VERSION)
+  for name in T26_NEW_VERSION T26_INSTALL_DIR_ONLY_VERSION; do
+    version_gte "${!name}" "$MIN_NVIM_VERSION" \
+      || problems+="[$name ${!name} is older than MIN_NVIM_VERSION $MIN_NVIM_VERSION] "
+  done
+  for name in "${t26_old_names[@]}"; do
+    ! version_gte "${!name}" "$MIN_NVIM_VERSION" \
+      || problems+="[$name ${!name} is not older than MIN_NVIM_VERSION $MIN_NVIM_VERSION] "
+  done
+  t26_old_versions="$(for name in "${t26_old_names[@]}"; do printf '%s\n' "${!name}"; done)"
+  [[ "$(sort -u <<<"$t26_old_versions" | wc -l)" -eq "${#t26_old_names[@]}" ]] \
+    || problems+="[the old versions are not all different: $(tr '\n' ' ' <<<"$t26_old_versions")] "
+  printf '%s' "$problems"
+) </dev/null 2>&1)"
+expect_none T26-fixture-versions "$t26_fixture_problems"
 
 # T22: main's single privilege boundary: install_neovim and install_deps, the steps that run root
-# commands, come first; then main forgets cached sudo credentials; then install_user_tools (go and uv
-# builds), setup_config, which clones the config, setup_path, verify_install, which launches Neovim
-# for the first time, and print_summary, and no sudo runs after the forget. A driver
-# (tests/lib/driver-T22.sh) runs main with install_neovim taking a ticket through ensure_sudo_ticket (so
-# moved after the forget, it stops the run), install_deps and the steps before it stubbed to log their
-# names, and setup_path, verify_install, and print_summary logging their names and then running for
-# real, with T26's stub nvim (version 0.12.0) first on PATH, so a root command in them reaches the
-# recording sudo, which logs to the same event log; the real forget_sudo_credentials and cleanup run
-# against it. Cases: main-order, where install_neovim takes a ticket; T22b, the same where sudo is not
+# commands, come first; then main forgets cached sudo credentials; then put_install_dir_first_on_path
+# (only after the forget, so no root command and no lookup of sudo ever searches NVIM_INSTALL_DIR/bin),
+# install_user_tools (go and uv builds), setup_config, which clones the config, setup_path,
+# verify_nvim, verify_config, which launches Neovim for the first time, and print_summary, and no sudo
+# runs after the forget. In packages-only mode the forget is followed by put_install_dir_first_on_path,
+# verify_nvim, and print_summary only, and the summary says so. A driver (tests/lib/driver-T22.sh) runs
+# main with install_neovim taking a ticket through ensure_sudo_ticket (so moved after the forget, it
+# stops the run), install_deps and the steps before it stubbed to log their names, and
+# put_install_dir_first_on_path, setup_path, verify_nvim, verify_config, and print_summary logging their
+# names and then running for real, with T26's stub nvim (T26_MIN_VERSION) first on PATH, so a root
+# command in them reaches the recording sudo, which logs to the same event log; the real
+# forget_sudo_credentials and cleanup run against it, and main gets the words of T22_ARGS as its
+# arguments. Cases: main-order, where install_neovim takes a ticket; T22b, the same where sudo is not
 # setuid (sudo -k and sudo -n -v both fail, so no ticket can be live), which still goes on to the end
-# and exits 0, under the errexit main runs with; T22c, where no step takes a ticket, as on a re-run
-# with nothing to install, but one from before the run may be live, so main still forgets it; and
-# T22d, the same, but sudo -k fails while sudo -n -v shows that ticket is still live, so the run stops
-# with exit 1 before install_user_tools, with sudo's message and the advice to wait for the ticket to
-# expire. Test name, whether install_neovim takes a ticket (1 or 0), the sudo arguments the recording
-# sudo fails on (';'-separated), and the exit status main must end with
-for tc in "T22-main-order:1::0" "T22b-forget-tolerates-failure:1:-k;-n -v:0" \
-  "T22c-forget-preexisting-ticket:0::0" "T22d-forget-refuses-live-ticket:0:-k:1"; do
-  IFS=: read -r t22_name t22_ticket t22_fail_on t22_want_rc <<<"$tc"
+# and exits 0, under the errexit main runs with; T22c, where no step takes a ticket, as on a re-run with
+# nothing to install, but one from before the run may be live, so main still forgets it; T22d, the
+# same, but sudo -k fails while sudo -n -v shows that ticket is still live, so the run stops with exit 1
+# before put_install_dir_first_on_path, with sudo's message and the advice to wait for the ticket to
+# expire; and T22e, main-order with --packages-only. A case whose exit status and arguments together
+# match none of these fails until it gets its own checks. Test name, whether install_neovim takes a
+# ticket (1 or 0), the sudo arguments the recording sudo fails on (';'-separated), the exit status main
+# must end with, and main's arguments
+for tc in "T22-main-order:1::0:" "T22b-forget-tolerates-failure:1:-k;-n -v:0:" \
+  "T22c-forget-preexisting-ticket:0::0:" "T22d-forget-refuses-live-ticket:0:-k:1:" \
+  "T22e-packages-only:1::0:--packages-only"; do
+  IFS=: read -r t22_name t22_ticket t22_fail_on t22_want_rc t22_args <<<"$tc"
   t22_events="$(event_log "$t22_name")"
   t22_log="$(sudo_log "$t22_name")"
   out="$( (
     recording_sandbox "$t22_name" "$T26_BIN" "$t22_fail_on"
-    T22_TICKET="$t22_ticket" T26_VERSION=0.12.0
-    export T22_TICKET T26_VERSION
+    T22_TICKET="$t22_ticket" T26_VERSION="$T26_MIN_VERSION" T22_ARGS="$t22_args"
+    export T22_TICKET T26_VERSION T22_ARGS
     bash "$LIB/driver-T22.sh" "$SCRIPT"
     echo "driver rc=$?"
   ) </dev/null 2>&1)"
   problems=""
   grep -qxF "driver rc=$t22_want_rc" <<<"$out" || problems+="[want exit $t22_want_rc: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
-  if [[ "$t22_want_rc" == 0 ]]; then
-    problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" install_user_tools \
-      setup_config setup_path verify_install print_summary)"
-  else
-    problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k")"
-    grep -qF "sudo -k failed (STUB SUDO: failing -k)" <<<"$out" && grep -qF "timestamp_timeout" <<<"$out" \
-      || problems+="[no live-ticket error with sudo's message and the advice to wait] "
-    ! grep -qxE 'install_user_tools|setup_config' "$t22_events" || problems+="[main went on after the forget failed] "
-  fi
+  case "$t22_want_rc:$t22_args" in
+    0:)
+      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" put_install_dir_first_on_path \
+        install_user_tools setup_config setup_path verify_nvim verify_config print_summary)"
+      grep -qF 'Neovim Bootstrap Complete' <<<"$out" \
+        && ! grep -qE 'Packages Installed|not cloned \(packages-only\)|without --packages-only' <<<"$out" \
+        || problems+="[no full-run summary, or it is the packages-only one] "
+      ;;
+    0:--packages-only)
+      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k" put_install_dir_first_on_path \
+        verify_nvim print_summary)"
+      ! grep -qxE 'install_user_tools|setup_config|setup_path|verify_config' "$t22_events" \
+        || problems+="[a full-run step ran in packages-only mode] "
+      grep -qF 'Neovim Packages Installed' <<<"$out" && grep -qF 'not cloned (packages-only)' <<<"$out" \
+        && grep -qF 'Run this script again without --packages-only' <<<"$out" \
+        || problems+="[no packages-only summary] "
+      ;;
+    1:)
+      problems+="$(order_problems "$t22_events" install_neovim install_deps "sudo -k")"
+      grep -qF "sudo -k failed (STUB SUDO: failing -k)" <<<"$out" && grep -qF "timestamp_timeout" <<<"$out" \
+        || problems+="[no live-ticket error with sudo's message and the advice to wait] "
+      ! grep -qxE 'put_install_dir_first_on_path|install_user_tools|setup_config' "$t22_events" \
+        || problems+="[main went on after the forget failed] "
+      ;;
+    *)
+      problems+="[no checks for exit $t22_want_rc with arguments '$t22_args'] "
+      ;;
+  esac
   problems+="$(no_sudo_after_final_forget "$t22_events")"
   [[ "$(grep -cxF -- -v "$t22_log")" -eq "$t22_ticket" ]] \
     || problems+="[sudo -v count $(grep -cxF -- -v "$t22_log"), want $t22_ticket] "
@@ -1563,6 +2087,302 @@ for tc in "T22-main-order:1::0" "T22b-forget-tolerates-failure:1:-k;-n -v:0" \
   [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$t22_events")"
   expect_none "$t22_name" "$problems"
 done
+
+# T22f: print_summary says what the mode skipped, and why NVIM_INSTALL_DIR/bin goes on PATH. A sourced
+# case per mode and install method, with T26's stub nvim (version 0.12.3) first on PATH and
+# NEED_PATH_SETUP true, as after a tarball install (tarball) or a reuse (reused) of an install dir's nvim
+# that PATH did not reach first: packages-only shows the title, the config line, the PATH note with that
+# cause, then both outcomes of the full run (it adds the entry, or prints the line to add when it cannot)
+# and nothing after them (setup_path did not run, so nothing was added yet), and the closing line that
+# asks for the full run, and neither of the full run's PATH lines; the full run, where the real
+# setup_path adds the entry to an existing .bashrc as main runs it first (T22j covers its other
+# outcomes), shows its own title, its PATH line with that cause and nothing after it, and the Mason
+# line, and none of the packages-only texts (the bare word is not checked: the config path in the output
+# sits under the suite's temp dir, whose name could contain it). Both show the stub's version, and
+# neither shows PATH updated or the other method's cause. The test reads the install dir from the
+# script, so the texts it expects follow the script's constant.
+t22f_fail=""
+t22f_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22f_fail+="[the script sets no NVIM_INSTALL_DIR] "
+t22f_bin_dir_ere="$(ere_escape "$t22f_install_dir/bin")"
+t22f_cause_tarball="the tarball's nvim was not first on PATH"
+t22f_cause_reused='the reused nvim was not first on PATH'
+# Not the script's MIN_NVIM_VERSION, so a Version line that printed the minimum would fail
+t22f_version=0.12.3
+t22f_version_ere="$(ere_escape "$t22f_version")"
+for mode in true false; do
+  for method in tarball reused; do
+    out="$( (
+      sandbox "T22f-$mode-$method" "$T26_BIN"
+      T26_VERSION="$t22f_version"
+      export T26_VERSION
+      load_script
+      # shellcheck disable=SC2030  # print_summary, in the script sourced into this subshell, reads them
+      PACKAGES_ONLY="$mode" NEED_PATH_SETUP=true NVIM_INSTALL_METHOD="$method"
+      if [[ "$mode" == false ]]; then
+        USER_SHELL=bash
+        : >"$HOME/.bashrc"
+        setup_path >/dev/null
+      fi
+      print_summary
+      echo DONE
+    ) </dev/null 2>&1)"
+    rc=$?
+    if [[ "$method" == tarball ]]; then
+      t22f_cause="$t22f_cause_tarball" t22f_other_cause="$t22f_cause_reused"
+    else
+      t22f_cause="$t22f_cause_reused" t22f_other_cause="$t22f_cause_tarball"
+    fi
+    if [[ "$mode" == true ]]; then
+      t22f_wanted=('Neovim Packages Installed' 'Config: +not cloned \(packages-only\)'
+        "PATH: +$t22f_cause; the full run adds $t22f_bin_dir_ere to your shell config, or prints the line to add when it cannot\$"
+        'Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config\.')
+      t22f_unwanted=('Bootstrap Complete' 'PATH updated' 'Mason installs' 'is in your shell config'
+        "put $t22f_bin_dir_ere first on PATH" "$t22f_other_cause")
+    else
+      t22f_wanted=('Neovim Bootstrap Complete'
+        "PATH: +$t22f_cause; $t22f_bin_dir_ere is in your shell config\$"
+        'Open a file in nvim once so Mason installs its language servers\.')
+      t22f_unwanted=('Packages Installed' 'not cloned \(packages-only\)' 'without --packages-only'
+        'the full run adds' 'PATH updated' "$t22f_other_cause")
+    fi
+    done_ok $rc "$out" || t22f_fail+="[packages_only=$mode $method: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+    t22f_fail+="$(missing_patterns "packages_only=$mode $method" "$out" "${t22f_wanted[@]}" \
+      "Version: +$t22f_version_ere\$")"
+    t22f_fail+="$(shown_patterns "packages_only=$mode $method" "$out" "${t22f_unwanted[@]}")"
+  done
+done
+expect_none T22f-summary-modes "$t22f_fail"
+
+# T22l: the packages-only summary's closing hint names the user tools only where the full run installs
+# some: on pacman, whose repos package every tool (install_user_tools does nothing there), it names only
+# the config clone; on dnf, apt-get and apk, both. Each case sets its manager with set_pkg_manager, as
+# detect_pkg_manager would, and runs print_summary in packages-only mode, so the hint line must be there
+# once, with nothing after it.
+t22l_fail=""
+t22l_hint_start='==> Run this script again without --packages-only where Neovim will run, to'
+for mgr in pacman dnf apt-get apk; do
+  case "$mgr" in
+    pacman) t22l_steps="clone the config" ;;
+    dnf | apt-get | apk) t22l_steps="install the user tools and clone the config" ;;
+    *)
+      t22l_fail+="[$mgr: unknown case] "
+      continue
+      ;;
+  esac
+  out="$( (
+    sandbox "T22l-$mgr" "$T26_BIN"
+    T26_VERSION=0.12.3
+    export T26_VERSION
+    load_script
+    set_pkg_manager "$mgr"
+    # shellcheck disable=SC2030  # print_summary, in the script sourced into this subshell, reads them
+    PACKAGES_ONLY=true NEED_PATH_SETUP=false NVIM_INSTALL_METHOD="$mgr"
+    print_summary
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" || t22l_fail+="[$mgr: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  [[ "$(grep -cxF -- "$t22l_hint_start $t22l_steps." <<<"$out")" -eq 1 ]] \
+    || t22l_fail+="[$mgr: want one '$t22l_hint_start $t22l_steps.', got: $(grep -F -- "$t22l_hint_start" <<<"$out")] "
+done
+expect_none T22l-packages-only-hint-per-manager "$t22l_fail"
+
+# T22j: a full run's summary says whether the shell config has the NVIM_INSTALL_DIR/bin entry, which only
+# setup_path knows, so each case runs the real setup_path, then the real print_summary, with T26's stub
+# nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, and the reused method, and checks
+# setup_path's own output too. Cases: name, USER_SHELL, outcome, and the rc file under HOME with its text
+# (no text: the file does not exist; no file either: the shell has none). An rc file without the entry,
+# and posix's missing .profile, which setup_path creates, get the entry appended (added): setup_path must
+# say it added it to that file, and the file must still start with the text it had; an rc file that has
+# it already (already) must be left as it was, and setup_path must say the entry is already in that file.
+# Either way the rc file must hold the entry line, and setup_path must not ask the user to add it. zsh's
+# missing .zshenv and an unknown shell, set directly because detect_shell never gives one, leave the line
+# for the user to add (hand-step): setup_path must print the warning that says why, as warn prints it
+# (the summary's warning list repeats it, indented further), the line that asks the user to add the
+# entry, and the entry, indented as setup_path prints it. No case may say PATH updated, which is false
+# when the entry was already there, or "<dir> first,": a later PATH change in the shell config can undo
+# that, and the hand step's "first on PATH" is an instruction, which the check leaves alone. The test
+# reads the install dir from the script, so the texts it expects follow the script's constant.
+t22j_fail=""
+t22j_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22j_fail+="[the script sets no NVIM_INSTALL_DIR] "
+t22j_bin_dir_ere="$(ere_escape "$t22j_install_dir/bin")"
+t22j_entry="export PATH=\"$t22j_install_dir/bin:\$PATH\""
+t22j_ask_ere="$(ere_escape 'Add this to your shell config manually')"
+t22j_cause='the reused nvim was not first on PATH'
+for tc in "bash-without-entry:bash:added:.bashrc:# existing" \
+  "bash-with-entry:bash:already:.bashrc:$t22j_entry" \
+  "posix-no-profile:posix:added:.profile:" "zsh-no-zshenv:zsh:hand-step:.zshenv:" \
+  "unknown-shell:ksh:hand-step::"; do
+  IFS=: read -r t22j_case t22j_shell t22j_outcome t22j_rc t22j_rc_text <<<"$tc"
+  out="$( (
+    sandbox "T22j-$t22j_case" "$T26_BIN"
+    T26_VERSION=0.12.0
+    export T26_VERSION
+    load_script
+    NEED_PATH_SETUP=true NVIM_INSTALL_METHOD=reused USER_SHELL="$t22j_shell"
+    [[ -z "$t22j_rc_text" ]] || printf '%s\n' "$t22j_rc_text" >"$HOME/$t22j_rc"
+    setup_path
+    print_summary
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  t22j_rc_path="$(sandbox_home "T22j-$t22j_case")/$t22j_rc"
+  if [[ "$t22j_outcome" == hand-step ]]; then
+    if [[ -n "$t22j_rc" ]]; then
+      t22j_reason="$t22j_rc_path does not exist."
+    else
+      t22j_reason="Could not determine rc file for shell: $t22j_shell"
+    fi
+    t22j_wanted=("PATH: +$t22j_cause; put $t22j_bin_dir_ere first on PATH in your shell config"
+      "^  ! $(ere_escape "$t22j_reason")\$" "^==> $t22j_ask_ere:\$" "^  $(ere_escape "$t22j_entry")\$")
+    t22j_unwanted=('is in your shell config')
+  else
+    if [[ "$t22j_outcome" == added ]]; then
+      t22j_setup_text="Added PATH entry to"
+      [[ -z "$t22j_rc_text" || "$(head -n1 -- "$t22j_rc_path")" == "$t22j_rc_text" ]] \
+        || t22j_fail+="[$t22j_case: $t22j_rc lost the text it had] "
+    else
+      t22j_setup_text="PATH entry already in"
+      [[ "$(cat -- "$t22j_rc_path")" == "$t22j_rc_text" ]] \
+        || t22j_fail+="[$t22j_case: $t22j_rc changed, though it had the entry] "
+    fi
+    grep -qxF -- "$t22j_entry" "$t22j_rc_path" || t22j_fail+="[$t22j_case: $t22j_rc has no entry line] "
+    t22j_wanted=("PATH: +$t22j_cause; $t22j_bin_dir_ere is in your shell config"
+      "^ ok $t22j_setup_text $(ere_escape "$t22j_rc_path")\$")
+    t22j_unwanted=("put $t22j_bin_dir_ere first on PATH" "$t22j_ask_ere")
+  fi
+  done_ok $rc "$out" || t22j_fail+="[$t22j_case: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  t22j_fail+="$(missing_patterns "$t22j_case" "$out" "${t22j_wanted[@]}")"
+  t22j_fail+="$(shown_patterns "$t22j_case" "$out" "${t22j_unwanted[@]}" 'PATH updated' "$t22j_bin_dir_ere first,")"
+done
+expect_none T22j-summary-path-entry "$t22j_fail"
+
+# T22k: a shell config setup_path cannot write leaves the user the manual step, as its other dead ends
+# do, and the run goes on to the checks and the summary instead of stopping at the write under main's
+# errexit. With T26's stub nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, the reused method,
+# and bash's .bashrc holding one line and made read-only, setup_path and then print_summary (main's
+# order) run under errexit: they must exit 0 and reach DONE; the output must show bash's error naming
+# the file ("<file>: ", which no message of setup_path's has), so the case is the failed write, then
+# setup_path's warning naming the file, as warn prints it, the line that asks the user to add the entry,
+# and the entry, indented as setup_path prints it; the summary must give the manual PATH line with the
+# reused cause and never "is in your shell config"; and .bashrc must still hold only its one line. A
+# user who can write the file whatever its mode (root, or a filesystem that ignores modes) skips the
+# test, which could check nothing there. The test reads the install dir from the script, so the texts
+# it expects follow the script's constant.
+t22k_id=T22k-summary-after-failed-write
+t22k_rc_text='# existing'
+out="$( (
+  sandbox "$t22k_id" "$T26_BIN"
+  T26_VERSION=0.12.0
+  export T26_VERSION
+  load_script
+  NEED_PATH_SETUP=true NVIM_INSTALL_METHOD=reused USER_SHELL=bash
+  printf '%s\n' "$t22k_rc_text" >"$HOME/.bashrc"
+  chmod 0444 "$HOME/.bashrc"
+  exit_if_writable "$HOME/.bashrc"
+  # shellcheck disable=SC2329  # run_errexit calls it
+  path_then_summary() {
+    setup_path
+    print_summary
+  }
+  run_errexit path_then_summary
+  echo "inner rc=$RC"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+if ! report_skip_if_writable "$t22k_id" "$out" \
+  "this user can write a mode 0444 .bashrc, as root can, or the filesystem ignores modes"; then
+  t22k_fail=""
+  t22k_install_dir="$(script_constant NVIM_INSTALL_DIR)" || t22k_fail+="[the script sets no NVIM_INSTALL_DIR] "
+  t22k_bin_dir_ere="$(ere_escape "$t22k_install_dir/bin")"
+  t22k_entry="export PATH=\"$t22k_install_dir/bin:\$PATH\""
+  t22k_cause='the reused nvim was not first on PATH'
+  t22k_rc_file="$(sandbox_home "$t22k_id")/.bashrc"
+  done_ok $rc "$out" || t22k_fail+="[rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  grep -qxF "inner rc=0" <<<"$out" \
+    || t22k_fail+="[setup_path then print_summary did not exit 0 with .bashrc read-only: $(grep '^inner rc=' <<<"$out")] "
+  grep -qF "$t22k_rc_file: " <<<"$out" || t22k_fail+="[no failed write to .bashrc in the output] "
+  t22k_fail+="$(missing_patterns setup_path "$out" \
+    "^  ! $(ere_escape "Could not write the PATH entry to $t22k_rc_file.")\$" \
+    "^==> $(ere_escape 'Add this to your shell config manually'):\$" "^  $(ere_escape "$t22k_entry")\$")"
+  t22k_fail+="$(missing_patterns summary "$out" \
+    "PATH: +$t22k_cause; put $t22k_bin_dir_ere first on PATH in your shell config")"
+  t22k_fail+="$(shown_patterns summary "$out" 'is in your shell config')"
+  [[ -f "$t22k_rc_file" && "$(<"$t22k_rc_file")" == "$t22k_rc_text" ]] \
+    || t22k_fail+="[.bashrc no longer holds only '$t22k_rc_text'] "
+  expect_none "$t22k_id" "$t22k_fail"
+fi
+
+# T22h: NEED_PATH_SETUP comes only with the reused or tarball method, so print_summary, given it with
+# any other method (existing here), has no cause to name: it stops with exit 1 and an error naming the
+# method, in both modes, instead of printing an empty cause
+t22h_fail=""
+for mode in true false; do
+  out="$( (
+    sandbox "T22h-$mode" "$T26_BIN"
+    T26_VERSION=0.12.0
+    export T26_VERSION
+    load_script
+    # shellcheck disable=SC2030  # print_summary, in the script sourced into this subshell, reads them
+    PACKAGES_ONLY="$mode" NEED_PATH_SETUP=true NVIM_INSTALL_METHOD=existing
+    run_errexit print_summary
+    echo "inner rc=$RC"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" \
+    && grep -qxF "  x print_summary: NEED_PATH_SETUP is true for install method 'existing' (expected reused or tarball)" <<<"$out" \
+    || t22h_fail+="[packages_only=$mode: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  ! grep -qF 'PATH: ' <<<"$out" || t22h_fail+="[packages_only=$mode: printed a PATH line] "
+done
+expect_none T22h-summary-path-cause-invariant "$t22h_fail"
+
+# T22g: verify_nvim, with nvim missing from PATH (an empty dir; it uses only builtins), exits 1 with one
+# error line, "nvim not found on PATH after installation.", in both modes and whatever NEED_PATH_SETUP
+# says: an install that leaves its nvim only in NVIM_INSTALL_DIR/bin puts that dir first on this run's
+# PATH (T25, T26), so a missing nvim here has no cause that state could name. Cases: PACKAGES_ONLY,
+# NEED_PATH_SETUP
+t22g_fail=""
+for tc in "true:true" "false:true" "true:false" "false:false"; do
+  IFS=: read -r t22g_mode t22g_need <<<"$tc"
+  out="$( (
+    sandbox "T22g-$t22g_mode-$t22g_need" ""
+    load_script
+    # shellcheck disable=SC2030  # local on purpose: each case's state, which verify_nvim must not depend on
+    PACKAGES_ONLY="$t22g_mode" NEED_PATH_SETUP="$t22g_need"
+    PATH="$EMPTY_BIN" run_errexit verify_nvim
+    echo "inner rc=$RC"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" \
+    && grep -qxF '  x nvim not found on PATH after installation.' <<<"$out" \
+    || t22g_fail+="[$tc: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  t22g_errors="$(grep -c '^  x ' <<<"$out")"
+  [[ "$t22g_errors" -eq 1 ]] || t22g_fail+="[$tc: $t22g_errors error lines, want 1: $(grep '^  x ' <<<"$out" | tr '\n' ';')] "
+done
+expect_none T22g-verify-nvim-not-found "$t22g_fail"
+
+# T22i: verify_nvim, with an nvim on PATH that fails --version (T26's stub, with version broken), exits
+# 1 with one error line that names that nvim and the command that shows why, instead of ending the run
+# with no message
+out="$( (
+  sandbox T22i-verify-nvim-unusable "$T26_BIN"
+  load_script
+  T26_VERSION=broken
+  export T26_VERSION
+  run_errexit verify_nvim
+  echo "inner rc=$RC"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+t22i_fail=""
+done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" || t22i_fail+="[want exit 1: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+grep -qxF "  x Neovim at $T26_BIN/nvim failed to report its version; run '$T26_BIN/nvim --version' to see why." <<<"$out" \
+  || t22i_fail+="[no error naming the nvim on PATH] "
+t22i_errors="$(grep -c '^  x ' <<<"$out")"
+[[ "$t22i_errors" -eq 1 ]] || t22i_fail+="[$t22i_errors error lines, want 1: $(grep '^  x ' <<<"$out" | tr '\n' ';')] "
+expect_none T22i-verify-nvim-unusable "$t22i_fail"
 
 # T23: a run that stops on an error after the script took a sudo ticket still drops it. A driver
 # (tests/lib/driver-T23.sh) runs main, so main's own EXIT trap is the one under test, with install_deps
@@ -1625,23 +2445,47 @@ for tc in "no-tsserver:$EMPTY_BIN:missing:hint" "shim:$TMP/bin-T24-shim:missing:
 done
 
 
-# T25: the tarball fallback, run on a copy of the script whose NVIM_INSTALL_DIR is a scratch path, with
+# T25: the tarball fallback, run on a copy of the script whose NVIM_INSTALL_DIR and NVIM_LINK_DIR are
+# scratch paths (the link dir is t25_link_dir's, so no case depends on the host's link dir), with
 # T25_BIN's curl (it logs "curl -o <file> <url>" to the event log and copies a tiny local tar.gz to that
 # file) and the recording sudo, which never runs what it is given (nothing is removed, created,
-# extracted, or changed for real). Cases: fresh, no existing dir: the ticket, then mkdir, tar of the
-# downloaded file, chown -R 0:0 and chmod -R go-w of the dir (tar run as root keeps the owners the
-# archive records, and the dir's bin may go first on PATH), the /usr/local/bin check (only when this
-# user cannot write there), and the symlink, all through as_root, each root command after the first
-# preceded by the ticket check (sudo -n -v); keep, an existing dir and answer n: exit 1 with "Cannot
-# install without removing" and no root command; replace, answer y: the same as fresh with rm -rf of
-# the dir first; no-symlink: the /usr/local/bin check fails, so the same as fresh without the symlink,
-# and NEED_PATH_SETUP is set, so setup_path adds the dir to PATH (skipped for a user who can write
-# /usr/local/bin, where the check never runs).
-# $1 = case id (fresh, keep, replace, or no-symlink)
+# extracted, linked, or changed for real). The link dir exists in every case, and in all but
+# writable-link-dir this user cannot write it (mode a-w, standing in for a link dir only root can
+# write), so the script checks it as root. Cases: fresh, no existing dir: the ticket, then a mkdir that
+# makes the dir 0700 (no other account reaches the entries while they carry the archive's modes), tar of
+# the downloaded file with --no-same-owner (tar run as root would otherwise give each entry the owner the
+# archive records until the chown), chown -R 0:0 and chmod -R go-w of the dir (the dir's bin may go first
+# on PATH), chmod -R a+rX of the dir (the mkdir made it 0700, and a dir the archive does not list gets
+# the umask's mode, which sudo never lowers), the link dir check (test -w), and the symlink, all through
+# as_root, each root command after the first preceded by the ticket check (sudo -n -v); keep, an existing
+# dir and answer n: exit 1 with "Cannot install without removing" and no root command; replace, answer y:
+# the same as fresh with rm -rf of the dir first; dangling-link, the install dir a link to nothing, which
+# is not a dir, and answer y: the same as replace (rm -rf removes the link, not what it names); no-symlink: the link dir check fails, so the same as
+# fresh without the symlink, with a warning that names the link dir, and the real
+# install_dir_nvim_is_first_on_path finds no install dir nvim on PATH, so NEED_PATH_SETUP is set;
+# writable-link-dir: this user can write the link dir, so the same as fresh without the link dir check.
+# Before the download, the step asks first_unsafe_path_dir about the dir that holds the install dir.
+# The case dirs are this user's, so the real check (T26b tests it) would refuse every case: each case
+# overrides it to log the dir it is asked about to the event log, which must be the log's first line,
+# and to succeed, except in two cases that end with exit 1, no download, and no root command:
+# parent-not-root-only, where it names a dir that fails, which the message names, and
+# parent-check-fails, where it could not finish, which the message says.
+# A user who can write even a mode a-w dir (root) skips fresh, replace, dangling-link, and no-symlink,
+# where the script would make no link dir check. The install method is tarball, and the install leaves
+# PATH as it was: only put_install_dir_first_on_path, which main runs after the privileged phase and each
+# case runs next, changes it. In no-symlink it puts the dir's bin first, where verify_nvim then finds its
+# nvim (T26's install dir stub, standing in for the one the recording sudo never extracted); the cases
+# that link leave PATH as it was. Those override install_dir_nvim_is_first_on_path to succeed, as a real
+# link would: nothing was really linked here, and T25b runs the real check on real files.
+# The scratch link dir (the script's NVIM_LINK_DIR) of T25 case $1
+t25_link_dir() { printf '%s\n' "$TMP/T25-$1/link-dir"; }
+# Runs T25 case $1 (fresh, keep, replace, dangling-link, no-symlink, writable-link-dir,
+# parent-not-root-only, or parent-check-fails)
 t25_case() {
-  local id="$1" fail_on=""
+  local id="$1" fail_on="" link_dir
+  link_dir="$(t25_link_dir "$id")"
   if [[ "$id" == no-symlink ]]; then
-    fail_on="test -w /usr/local/bin"
+    fail_on="test -w $link_dir"
   fi
   (
     recording_sandbox "T25-$id" "$T25_BIN" "$fail_on"
@@ -1649,66 +2493,143 @@ t25_case() {
     export TMPDIR
     mkdir -p "$TMPDIR"
     dir="$TMP/T25-$id/opt-nvim"
-    if [[ "$id" == keep || "$id" == replace ]]; then
-      mkdir -p "$dir"
+    case "$id" in
+      keep | replace) mkdir -p "$dir" ;;
+      dangling-link)
+        mkdir -p "${dir%/*}"
+        ln -s "$TMP/T25-$id/gone" "$dir"
+        ;;
+    esac
+    # Nothing is ever created in the link dir (the recording sudo never runs ln), so the suite's cleanup
+    # removes it even when it stays read-only
+    mkdir -p "$link_dir"
+    if [[ "$id" == writable-link-dir ]]; then
+      # Writable by its owner whatever the umask left, as this case needs
+      chmod u+w "$link_dir"
+    else
+      chmod a-w "$link_dir"
+      # keep and the parent cases exit before the link step, so they run even for a user who can write
+      # the dir
+      if [[ "$id" != keep && "$id" != parent-* ]]; then
+        exit_if_writable "$link_dir"
+      fi
     fi
-    load_script_with "$TMP/T25-$id/script/nvim-install.sh" NVIM_INSTALL_DIR "$dir"
-    [[ "$NVIM_INSTALL_DIR" == "$dir" ]] || { echo "NVIM_INSTALL_DIR=$NVIM_INSTALL_DIR"; exit 1; }
+    load_script_with "$TMP/T25-$id/script/nvim-install.sh" \
+      NVIM_INSTALL_DIR "$dir" NVIM_LINK_DIR "$link_dir"
+    [[ "$NVIM_INSTALL_DIR" == "$dir" && "$NVIM_LINK_DIR" == "$link_dir" ]] \
+      || { echo "NVIM_INSTALL_DIR=$NVIM_INSTALL_DIR NVIM_LINK_DIR=$NVIM_LINK_DIR"; exit 1; }
+    if [[ "$id" != no-symlink ]]; then
+      must_override install_dir_nvim_is_first_on_path
+      # shellcheck disable=SC2329  # install_neovim_tarball calls it
+      install_dir_nvim_is_first_on_path() { return 0; }
+    fi
+    must_override first_unsafe_path_dir
+    # shellcheck disable=SC2329  # install_neovim_tarball calls it
+    first_unsafe_path_dir() {
+      echo "ROOT_ONLY_CHECK $1" >>"$EVENT_LOG"
+      case "$id" in
+        parent-not-root-only)
+          printf '%s\n' "$TMP/T25-$id/writable"
+          return 1
+          ;;
+        parent-check-fails) return 2 ;;
+      esac
+    }
     detect_os
     detect_arch
+    # shellcheck disable=SC2031  # detect_arch, in the script sourced into this subshell, sets it
     echo "ARCH=$ARCH"
     # shellcheck disable=SC2329  # run_errexit calls it
     tarball_and_report() {
+      # shellcheck disable=SC2031  # this subshell's PATH, before install_neovim_tarball runs
+      local path_before="$PATH"
       install_neovim_tarball
       # shellcheck disable=SC2031  # install_neovim_tarball, in the script sourced into this subshell, sets it
       echo "NEED_PATH_SETUP=$NEED_PATH_SETUP"
+      # shellcheck disable=SC2031  # install_neovim_tarball, in the script sourced into this subshell, sets it
+      echo "METHOD=$NVIM_INSTALL_METHOD"
+      echo "PATH after the tarball: $(path_change "$path_before" "$dir")"
+      # As main runs it, after the privileged phase (closed by the flag alone: the real
+      # forget_sudo_credentials runs sudo -k)
+      PRIVILEGE_CLOSED=true
+      put_install_dir_first_on_path
+      echo "PATH after the step: $(path_change "$path_before" "$dir")"
+      if [[ "$id" == no-symlink ]]; then
+        copy_stub "$dir/bin" nvim t26-install-dir-nvim
+        # A version no real nvim later on PATH has, so only the install dir's stub passes the check
+        T26_INSTALL_DIR_VERSION="$T26_INSTALL_DIR_ONLY_VERSION"
+        export T26_INSTALL_DIR_VERSION
+        echo "NVIM_FOUND=$(type -P nvim)"
+        verify_nvim
+      fi
     }
     case "$id" in
       keep) run_errexit tarball_and_report <<<n ;;
-      replace) run_errexit tarball_and_report <<<y ;;
+      replace | dangling-link) run_errexit tarball_and_report <<<y ;;
       *) run_errexit tarball_and_report </dev/null ;;
     esac
     echo "tarball rc=$RC"
     echo DONE
   ) </dev/null 2>&1
 }
-# Prints the sudo log T25 case $1 must leave, given the install dir $2 and the downloaded file $3: the
-# root commands, -v before the first and -n -v before each later one
+# Prints the sudo log T25 case $1 must leave, given the install dir $2 and the downloaded file $3, with
+# the case's link dir from t25_link_dir $1: the root commands, -v before the first and -n -v before
+# each later one
 t25_want_log() {
-  local cmds=() cmd check=-v
+  local cmds=() cmd check=-v link_dir
+  link_dir="$(t25_link_dir "$1")"
   case "$1" in
-    keep) return ;;
-    replace) cmds+=("rm -rf $2") ;;
+    keep | parent-*) return ;;
+    replace | dangling-link) cmds+=("rm -rf $2") ;;
   esac
-  cmds+=("mkdir -p $2" "tar -C $2 --strip-components=1 -xzf $3" "chown -R 0:0 $2" "chmod -R go-w $2")
-  if [[ ! -w /usr/local/bin ]]; then
-    cmds+=("test -w /usr/local/bin")
+  cmds+=("mkdir -p -m 0700 $2" "tar -C $2 --no-same-owner --strip-components=1 -xzf $3" "chown -R 0:0 $2" "chmod -R go-w $2"
+    "chmod -R a+rX $2")
+  if [[ "$1" != writable-link-dir ]]; then
+    cmds+=("test -w $link_dir")
   fi
   if [[ "$1" != no-symlink ]]; then
-    cmds+=("ln -sf $2/bin/nvim /usr/local/bin/nvim")
+    cmds+=("ln -sf $2/bin/nvim $link_dir/nvim")
   fi
   for cmd in "${cmds[@]}"; do
     printf '%s\n' "$check" "$cmd"
     check="-n -v"
   done
 }
-for id in fresh keep replace no-symlink; do
-  if [[ "$id" == no-symlink && -w /usr/local/bin ]]; then
-    echo "SKIP T25-tarball no-symlink (this user can write /usr/local/bin, so the symlink needs no root check)"
-    continue
-  fi
+for id in fresh keep replace dangling-link no-symlink writable-link-dir parent-not-root-only parent-check-fails; do
   out="$(t25_case "$id")"
   rc=$?
+  if report_skip_if_writable "T25-tarball $id" "$out" \
+    "this user can write the mode a-w link dir, as root can, so no root check runs"; then
+    continue
+  fi
   t25_dir="$TMP/T25-$id/opt-nvim"
+  t25_link_dir_path="$(t25_link_dir "$id")"
   t25_log="$(sudo_log "T25-$id")"
-  t25_curl="$(grep '^curl ' "$(event_log "T25-$id")" 2>/dev/null)"
+  t25_events="$(event_log "T25-$id")"
+  t25_curl="$(grep '^curl ' "$t25_events" 2>/dev/null)"
   t25_file="$(sed -n 's/^curl -o \([^ ]*\) .*/\1/p' <<<"$t25_curl")"
   t25_arch="$(sed -n 's/^ARCH=//p' <<<"$out")"
   problems=""
   done_ok $rc "$out" || problems+="[rc=$rc] "
-  [[ "$t25_curl" == "curl -o $TMP/T25-$id-tmp/"*" https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$t25_arch.tar.gz" ]] \
-    || problems+="[download: '$t25_curl'] "
-  if [[ "$id" == keep ]]; then
+  t25_first_event="$(head -n1 "$t25_events" 2>/dev/null)"
+  [[ "$t25_first_event" == "ROOT_ONLY_CHECK ${t25_dir%/*}" ]] \
+    || problems+="[want the dir that holds the install dir checked first, got: '$t25_first_event'] "
+  if [[ "$id" != parent-* \
+    && "$t25_curl" != "curl -o $TMP/T25-$id-tmp/"*" https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$t25_arch.tar.gz" ]]; then
+    problems+="[download: '$t25_curl'] "
+  fi
+  if [[ "$id" == parent-* ]]; then
+    grep -qxF "tarball rc=1" <<<"$out" || problems+="[want exit 1] "
+    if [[ "$id" == parent-not-root-only ]]; then
+      t25_refusal="Not installing Neovim in $t25_dir: $TMP/T25-$id/writable, on the way to ${t25_dir%/*}, is not owned by root or is writable by group or others"
+    else
+      t25_refusal="Not installing Neovim in $t25_dir: could not check the directories on the way to ${t25_dir%/*}"
+    fi
+    grep -qF "$t25_refusal" <<<"$out" || problems+="[want the message '$t25_refusal'] "
+    [[ -z "$t25_curl" ]] || problems+="[downloaded: '$t25_curl'] "
+    t25_root="$(grep -vxF -- -v "$t25_log")"
+    [[ -z "$t25_root" ]] || problems+="[root commands ran: $(tr '\n' ';' <<<"$t25_root")] "
+  elif [[ "$id" == keep ]]; then
     grep -qxF "tarball rc=1" <<<"$out" || problems+="[want exit 1] "
     grep -qF "Cannot install without removing" <<<"$out" || problems+="[no 'Cannot install without removing' message] "
     t25_root="$(grep -vxF -- -v "$t25_log")"
@@ -1717,54 +2638,486 @@ for id in fresh keep replace no-symlink; do
     grep -qxF "tarball rc=0" <<<"$out" || problems+="[want exit 0] "
     [[ "$(<"$t25_log")" == "$(t25_want_log "$id" "$t25_dir" "$t25_file")" ]] \
       || problems+="[want sudo log: $(t25_want_log "$id" "$t25_dir" "$t25_file" | tr '\n' ';')] "
+    grep -qxF "METHOD=tarball" <<<"$out" || problems+="[want install method tarball] "
+    grep -qxF "PATH after the tarball: unchanged" <<<"$out" || problems+="[install_neovim_tarball changed PATH] "
     if [[ "$id" == no-symlink ]]; then
       grep -qxF "NEED_PATH_SETUP=true" <<<"$out" || problems+="[NEED_PATH_SETUP not set] "
+      grep -qF "Could not link nvim into $t25_link_dir_path: root cannot write it" <<<"$out" \
+        || problems+="[no warning that the link could not be made] "
+      grep -qxF "PATH after the step: install dir first" <<<"$out" \
+        || problems+="[put_install_dir_first_on_path did not put the install dir's bin first] "
+      grep -qxF "NVIM_FOUND=$t25_dir/bin/nvim" <<<"$out" || problems+="[nvim on PATH is not the install dir's] "
+      grep -qF "Neovim $T26_INSTALL_DIR_ONLY_VERSION on PATH" <<<"$out" \
+        || problems+="[verify_nvim did not pass on the install dir's nvim] "
     else
       grep -qxF "NEED_PATH_SETUP=false" <<<"$out" || problems+="[NEED_PATH_SETUP set although the symlink was made] "
+      ! grep -qF "Could not link nvim" <<<"$out" || problems+="[warned about a link that was made] "
+      grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[PATH changed although the symlink was made] "
     fi
   fi
-  problems+="$(sudo_allowlist_problems "$t25_log" "$t25_dir")"
+  problems+="$(sudo_allowlist_problems "$t25_log" "$t25_dir" "$t25_link_dir_path")"
   [[ -z "$problems" ]] || problems+="sudo log: $(tr '\n' ';' <"$t25_log"); $(tail -n3 <<<"$out" | tr '\n' ' ')"
   expect_none "T25-tarball $id" "$problems"
 done
 
-# T26: install_neovim keeps a new enough nvim; otherwise it installs the neovim package and checks the
-# version again: new enough is done, still too old falls back to the tarball, and so does a failed
-# package install. nvim is a stub (T26_BIN), first on PATH, that prints version $T26_VERSION;
-# pkg_install (which prints its arguments, then fails or sets the version the package left) and
-# install_neovim_tarball (which prints TARBALL) are overridden.
-# $1 = case id, $2 = nvim's version, $3 = the version after the package install, or fail
-t26_case() {
+# T25b: after the tarball step NEED_PATH_SETUP says whether PATH reaches the install dir's nvim first, so
+# a run with another nvim ahead of the link dir, or with the link dir off PATH, ends on the nvim it
+# installed. Unlike T25, nothing here is only recorded: each case runs the real step and the real
+# install_dir_nvim_is_first_on_path on real files, on a copy of the script whose NVIM_INSTALL_DIR and
+# NVIM_LINK_DIR are scratch paths. T25_BIN's curl gives the tarball, and as_root is overridden to run
+# what it is given (the recording sudo would leave no link to find), leaving out chown, which a normal
+# user cannot run on the tree, and chmod, which changes nothing PATH sees. first_unsafe_path_dir is
+# overridden to succeed, as in T25: the scratch dirs are this user's. After the step T26's install
+# dir stub takes the place of the extracted nvim, as in T25's no-symlink, to give it a version. The nvim
+# ahead of the link dir is T26_BIN's stub, wrapped to leave a mark, since the check must not run it: it
+# can be a broken one. Each case's PATH holds only stub dirs and T25B_TOOLS_BIN, so a host's nvim never
+# counts.
+# Runs T25b case $1: $2 = the version of the nvim in a dir ahead of the link dir, broken, or none; $3 =
+# whether the link dir is on PATH (yes or no)
+t25b_case() {
+  local id="$1" ahead_version="$2" link_dir_on_path="$3"
   (
-    sandbox "T26-$1" "$T26_BIN"
-    load_script
-    set_pkg_manager pacman
-    T26_VERSION="$2" T26_AFTER="$3"
-    export T26_VERSION
-    must_override pkg_install
-    must_override install_neovim_tarball
-    pkg_install() {
-      echo "PKG_INSTALL $*"
-      if [[ "$T26_AFTER" == fail ]]; then
-        return 1
-      fi
-      T26_VERSION="$T26_AFTER"
+    sandbox "T25b-$id" "$T25_BIN"
+    EVENT_LOG="$(event_log "T25b-$id")" TMPDIR="$TMP/T25b-$id-tmp"
+    export EVENT_LOG TMPDIR
+    mkdir -p "$TMPDIR"
+    dir="$TMP/T25b-$id/opt-nvim" link_dir="$TMP/T25b-$id/link-dir"
+    ahead_dir="$TMP/T25b-$id/ahead" ahead_ran="$TMP/T25b-$id/ahead-nvim-ran"
+    mkdir -p "$link_dir"
+    load_script_with "$TMP/T25b-$id/script/nvim-install.sh" \
+      NVIM_INSTALL_DIR "$dir" NVIM_LINK_DIR "$link_dir"
+    [[ "$NVIM_INSTALL_DIR" == "$dir" && "$NVIM_LINK_DIR" == "$link_dir" ]] \
+      || { echo "NVIM_INSTALL_DIR=$NVIM_INSTALL_DIR NVIM_LINK_DIR=$NVIM_LINK_DIR"; exit 1; }
+    detect_os
+    detect_arch
+    must_override as_root
+    # shellcheck disable=SC2329  # install_neovim_tarball calls it
+    as_root() {
+      case "$1" in
+        chown | chmod) return 0 ;;
+        *) "$@" ;;
+      esac
     }
-    install_neovim_tarball() { echo TARBALL; }
-    install_neovim
-    echo "METHOD=$NVIM_INSTALL_METHOD"
+    must_override first_unsafe_path_dir
+    # shellcheck disable=SC2329  # install_neovim_tarball calls it
+    first_unsafe_path_dir() { return 0; }
+    PATH="$T25_BIN:$T25B_TOOLS_BIN:$DENY_BIN"
+    if [[ "$link_dir_on_path" == yes ]]; then
+      PATH="$link_dir:$PATH"
+    fi
+    if [[ "$ahead_version" != none ]]; then
+      mkdir -p "$ahead_dir"
+      printf '#!/bin/sh\n: >"%s"\nexec "%s" "$@"\n' "$ahead_ran" "$T26_BIN/nvim" >"$ahead_dir/nvim"
+      chmod +x "$ahead_dir/nvim"
+      T26_VERSION="$ahead_version"
+      export T26_VERSION
+      PATH="$ahead_dir:$PATH"
+    fi
+    # shellcheck disable=SC2329  # run_errexit calls it
+    tarball_and_report() {
+      # shellcheck disable=SC2031  # this subshell's PATH, before install_neovim_tarball runs
+      local path_before="$PATH"
+      install_neovim_tarball
+      # shellcheck disable=SC2031  # install_neovim_tarball, in the script sourced into this subshell, sets it
+      echo "NEED_PATH_SETUP=$NEED_PATH_SETUP"
+      if [[ -e "$ahead_ran" ]]; then
+        echo "AHEAD_NVIM_RAN=yes"
+      fi
+      copy_stub "$dir/bin" nvim t26-install-dir-nvim
+      # A version the nvim ahead of the link dir never has, so only the install dir's stub passes verify_nvim
+      T26_INSTALL_DIR_VERSION="$T26_INSTALL_DIR_ONLY_VERSION"
+      export T26_INSTALL_DIR_VERSION
+      # As main runs it, after the privileged phase (closed by the flag alone: the real
+      # forget_sudo_credentials runs sudo -k)
+      PRIVILEGE_CLOSED=true
+      put_install_dir_first_on_path
+      echo "PATH after the step: $(path_change "$path_before" "$dir")"
+      echo "NVIM_FOUND=$(type -P nvim)"
+      verify_nvim
+    }
+    run_errexit tarball_and_report </dev/null
+    echo "tarball rc=$RC"
     echo DONE
   ) </dev/null 2>&1
 }
-# Case id, version before, version after (or fail), whether pkg_install neovim runs, whether the
-# tarball runs, and the install method when it does not
-for tc in "current:0.12.0:-:no:no:existing" "old-package-new:0.11.4:0.12.6:yes:no:pacman" \
-  "old-package-old:0.11.4:0.11.5:yes:yes:" "package-fails:0.11.4:fail:yes:yes:"; do
-  IFS=: read -r id before after want_pkg want_tarball want_method <<<"$tc"
-  out="$(t26_case "$id" "$before" "$after")"
+# Case id, the version of the nvim ahead of the link dir (or broken, or none), whether the link dir is
+# on PATH, NEED_PATH_SETUP afterwards, and PATH after put_install_dir_first_on_path (unchanged: nvim is
+# reached through the link, or install-dir: the install dir's bin first, then PATH as it was)
+for tc in "broken-nvim-ahead:broken:yes:true:install-dir" \
+  "old-nvim-ahead:0.11.4:yes:true:install-dir" \
+  "link-dir-first:none:yes:false:unchanged" \
+  "no-nvim-link-dir-off-path:none:no:true:install-dir"; do
+  IFS=: read -r id ahead_version link_dir_on_path want_path_setup want_path <<<"$tc"
+  out="$(t25b_case "$id" "$ahead_version" "$link_dir_on_path")"
   rc=$?
   problems=""
   done_ok $rc "$out" || problems+="[rc=$rc] "
+  ! grep -qF 'command not found' <<<"$out" || problems+="[a command was not found] "
+  grep -qxF "tarball rc=0" <<<"$out" || problems+="[want exit 0] "
+  grep -qxF "NEED_PATH_SETUP=$want_path_setup" <<<"$out" || problems+="[want NEED_PATH_SETUP=$want_path_setup] "
+  ! grep -qxF "AHEAD_NVIM_RAN=yes" <<<"$out" || problems+="[the tarball step ran the nvim ahead of the link dir] "
+  if [[ "$want_path" == install-dir ]]; then
+    grep -qxF "PATH after the step: install dir first" <<<"$out" \
+      || problems+="[want the install dir's bin first on PATH after put_install_dir_first_on_path] "
+    grep -qxF "NVIM_FOUND=$TMP/T25b-$id/opt-nvim/bin/nvim" <<<"$out" || problems+="[nvim on PATH is not the install dir's] "
+  else
+    grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[want PATH unchanged after put_install_dir_first_on_path] "
+    grep -qxF "NVIM_FOUND=$TMP/T25b-$id/link-dir/nvim" <<<"$out" || problems+="[nvim on PATH is not the link] "
+  fi
+  grep -qF "Neovim $T26_INSTALL_DIR_ONLY_VERSION on PATH" <<<"$out" \
+    || problems+="[verify_nvim did not pass on the install dir's nvim] "
+  [[ -z "$problems" ]] || problems+="; $(tail -n5 <<<"$out" | tr '\n' ' ')"
+  expect_none "T25b-tarball-path-first $id" "$problems"
+done
+
+# T26: install_neovim keeps a new enough nvim; otherwise it installs the neovim package and judges the
+# nvim the package lists (pkg_installed_nvim), not the first nvim on PATH, which can be another file.
+# New enough, with PATH reaching that file first (by any path to it), is done. New enough, with another
+# nvim first on PATH, or none, ends the run (exit 1) before the tarball, with errors that name the
+# package's nvim and its version and the nvim PATH reaches first, or say that PATH reaches none; when
+# that other nvim is in NVIM_LINK_DIR, they only say to remove it, since putting the package's dir ahead
+# of NVIM_LINK_DIR would demote every local override there. When the nvim PATH reaches first is the
+# install dir's (an earlier tarball install, too old to reuse, as after a MIN_NVIM_VERSION bump),
+# through the install dir's bin or a link in NVIM_LINK_DIR (that dir by any path to it), the errors say
+# it is the script's own earlier tarball install and give the steps that undo it: the sudo rm of the
+# link in NVIM_LINK_DIR if that link (to the install dir's nvim, and no other) is there, even when PATH
+# reaches the bin first; the removal of the shell config line that puts the install dir's bin on PATH,
+# named as path_line writes it for the user's shell, with setup_path's marker line above it; and a new
+# shell. A link elsewhere into the install dir (one the user made), or another nvim in NVIM_LINK_DIR, is
+# not the script's own path to it: the errors are the ones for another nvim, which name that file. A
+# package nvim that is too old or unusable, or a package that lists none, falls back to the tarball,
+# with a warning that names the package's real version or its own binary, or says the package lists none
+# or its list could not be read; so does a failed package install. A PATH nvim that fails --version (an
+# AppImage on a host without FUSE, or a broken version manager shim) is unusable: install_neovim warns,
+# naming it, and goes on as it does past one that is too old, instead of ending the run. When PATH has
+# no nvim, or only one that is older than MIN_NVIM_VERSION or unusable, a new enough nvim in
+# NVIM_INSTALL_DIR/bin is reused, when only root can write that tree: an earlier tarball install can
+# leave its nvim only there (the /usr/local/bin link failed, or neither it nor setup_path's shell config
+# entry is in effect for this run). Then nothing is installed, the install method is reused, and
+# NEED_PATH_SETUP is set. An older nvim there, a broken one (it fails --version), a tree that is not
+# root-owned (with a warning that says so), or none leaves the flow as it was, and a new enough nvim on
+# PATH wins over the install dir. install_neovim never changes PATH: each case then runs
+# put_install_dir_first_on_path, as main does after the privileged phase, which puts the dir's bin first
+# on PATH after a reuse and leaves PATH as it was otherwise, and setup_path's shell config entry (not
+# run here) does the same in new shells. Whenever install_neovim returns without the tarball (here it is
+# overridden, and installs nothing), verify_nvim then passes in the same process; a case where
+# install_neovim ends the run stops before that. Each case runs a copy of the script whose
+# NVIM_INSTALL_DIR and NVIM_LINK_DIR are scratch dirs, so a host's /opt/nvim and /usr/local/bin never
+# count. The cases that need a root-owned tree override is_root_owned_tree to succeed, so the flow cases
+# run on every host, with or without a fake-root wrapper; T26b checks the real function, on root-owned
+# trees under one. The not-root-owned case runs the real check on the sandbox tree, which the user owns,
+# and the install dir's nvim must not run there: the ownership check comes before its version is read.
+# The PATH nvim is a stub (T26_BIN), first on PATH, that prints version $T26_VERSION (or, when that is
+# broken, fails --version), or PATH has none (T26_NO_NVIM_BIN, then DENY_BIN), or PATH reaches the
+# install dir's nvim, or another nvim in a scratch dir, ahead of it; the install dir's nvim is a stub
+# that prints version $T26_INSTALL_DIR_VERSION and creates the file $T26_INSTALL_DIR_RAN whenever it
+# runs, or, in the cases where t26_load's $3 places it on PATH or puts another nvim beside it, a copy of
+# the PATH nvim's stub. pkg_install (which prints its arguments, then fails, or sets the PATH nvim's
+# version when that is the package's nvim), pkg_installed_nvim (which names the package's nvim, or
+# fails: see t26_load), and install_neovim_tarball (which prints TARBALL) are overridden. When
+# install_neovim ends the run, the case's last line says so, with the install method it left. No case
+# may hit a missing command.
+#
+# The path the package's file list names in T26 case $1, whose package nvim is $2 (t26_load's $5): a dir
+# of its own for apart-*, a link to T26_BIN for linked-*, and the PATH nvim otherwise
+t26_package_nvim() {
+  case "$2" in
+    apart-*) printf '%s\n' "$TMP/T26-$1/package-bin/nvim" ;;
+    linked-*) printf '%s\n' "$TMP/T26-$1/linked-bin/nvim" ;;
+    *) printf '%s\n' "$T26_BIN/nvim" ;;
+  esac
+}
+# The scratch link dir (the script's NVIM_LINK_DIR) of T26 case $1
+t26_link_dir() { printf '%s\n' "$TMP/T26-$1/link-dir"; }
+# The scratch dir of T26 case $1 where a user-link-first case puts its own link to the install dir's nvim
+t26_user_link_dir() { printf '%s\n' "$TMP/T26-$1/user-bin"; }
+# The scratch dir of T26 case $1 that a link-via-dir-link case puts on PATH: a link to the scratch link dir
+t26_link_dir_alias() { printf '%s\n' "$TMP/T26-$1/link-dir-alias"; }
+# Sets up T26 case $1 in the calling subshell: a sandbox, and a sourced copy of the script whose
+# NVIM_INSTALL_DIR is $t26_install_dir (set here, with $t26_ran_marker) and whose NVIM_LINK_DIR is
+# t26_link_dir's, with the PATH nvim, the install dir's nvim, its ownership check, and the overrides as
+# $2 to $5 say. $2 = the PATH nvim's version, none, or broken; $3 = the install dir nvim's version,
+# none, or broken, or one of the values below, with which the install dir's nvim is a copy of the PATH
+# nvim's stub (so at $2's version, which must not be none) and what PATH reaches first is: link-first,
+# a link to it in the scratch link dir; bin-first, the install dir's bin; bin-then-link, the install
+# dir's bin, with the scratch link dir and its link to that nvim next; user-link-first, a link to it in
+# a scratch dir of the user's (t26_user_link_dir); other-in-link-dir, a copy of the PATH nvim's stub of
+# its own (not the install dir's nvim) in the scratch link dir; bin-then-other-link, the install dir's
+# bin, with the scratch link dir next, whose nvim is a link to T26_BIN's (another nvim, not the install
+# dir's); link-via-dir-link, the scratch link dir's link to the install dir's nvim, reached through
+# t26_link_dir_alias, a link to the scratch link dir, so the dir PATH names is not spelled as
+# NVIM_LINK_DIR; $4 = root
+# (is_root_owned_tree overridden to succeed), user (the real check), or "-" (no install dir nvim, so no
+# check runs); $5 = the package's nvim after the install: a version or broken (it is the PATH nvim,
+# whose version the install sets to that), linked-<version> (the same file, listed through a link to its
+# dir), apart-<version> or apart-broken (a file of its own, off PATH, at that version, and the install
+# leaves the PATH nvim as it was), unlisted (the install succeeds and leaves the PATH nvim as it was, and
+# the package lists no nvim), or fail (the install fails). An apart nvim is a copy of the install dir's
+# stub, so it reads T26_INSTALL_DIR_VERSION, and $3 must not be a version or broken with it.
+t26_load() {
+  local link_dir install_dir_stub_reads_version=false nvim_link_dir="" first_dirs=""
+  sandbox "T26-$1" "$T26_BIN"
+  t26_install_dir="$TMP/T26-$1/opt-nvim" t26_ran_marker="$TMP/T26-$1/install-dir-nvim-ran"
+  link_dir="$(t26_link_dir "$1")"
+  load_script_with "$TMP/T26-$1/script/nvim-install.sh" NVIM_INSTALL_DIR "$t26_install_dir" \
+    NVIM_LINK_DIR "$link_dir"
+  set_pkg_manager pacman
+  if [[ "$4" == root ]]; then
+    must_override is_root_owned_tree
+    # shellcheck disable=SC2329  # install_neovim calls it
+    is_root_owned_tree() { return 0; }
+  fi
+  case "$3" in
+    none) ;;
+    link-first | bin-first | bin-then-link | user-link-first | other-in-link-dir | bin-then-other-link \
+      | link-via-dir-link)
+      copy_stub "$t26_install_dir/bin" nvim t26-nvim
+      ;;
+    *)
+      copy_stub "$t26_install_dir/bin" nvim t26-install-dir-nvim
+      T26_INSTALL_DIR_VERSION="$3" T26_INSTALL_DIR_RAN="$t26_ran_marker"
+      export T26_INSTALL_DIR_VERSION T26_INSTALL_DIR_RAN
+      install_dir_stub_reads_version=true
+      ;;
+  esac
+  t26_listed_nvim="$(t26_package_nvim "$1" "$5")"
+  case "$5" in
+    apart-*)
+      if [[ "$install_dir_stub_reads_version" == true ]]; then
+        echo "t26_load: an apart package nvim and an install dir nvim would share T26_INSTALL_DIR_VERSION"
+        exit 1
+      fi
+      copy_stub "${t26_listed_nvim%/*}" nvim t26-install-dir-nvim
+      T26_INSTALL_DIR_VERSION="${5#apart-}"
+      export T26_INSTALL_DIR_VERSION
+      ;;
+    linked-*)
+      ln -s "$T26_BIN" "${t26_listed_nvim%/*}"
+      ;;
+  esac
+  if [[ "$2" == none ]]; then
+    PATH="$T26_NO_NVIM_BIN:$DENY_BIN"
+  fi
+  # Where the case links the install dir's nvim (nowhere when empty), and the dirs it puts first on PATH
+  case "$3" in
+    link-first)
+      nvim_link_dir="$link_dir"
+      first_dirs="$link_dir"
+      ;;
+    bin-first) first_dirs="$t26_install_dir/bin" ;;
+    bin-then-link)
+      nvim_link_dir="$link_dir"
+      first_dirs="$t26_install_dir/bin:$link_dir"
+      ;;
+    user-link-first)
+      nvim_link_dir="$(t26_user_link_dir "$1")"
+      first_dirs="$nvim_link_dir"
+      ;;
+    other-in-link-dir)
+      copy_stub "$link_dir" nvim t26-nvim
+      first_dirs="$link_dir"
+      ;;
+    bin-then-other-link)
+      mkdir -p "$link_dir"
+      ln -s "$T26_BIN/nvim" "$link_dir/nvim"
+      first_dirs="$t26_install_dir/bin:$link_dir"
+      ;;
+    link-via-dir-link)
+      nvim_link_dir="$link_dir"
+      first_dirs="$(t26_link_dir_alias "$1")"
+      ln -s "$link_dir" "$first_dirs"
+      ;;
+  esac
+  if [[ -n "$nvim_link_dir" ]]; then
+    mkdir -p "$nvim_link_dir"
+    ln -s "$t26_install_dir/bin/nvim" "$nvim_link_dir/nvim"
+  fi
+  if [[ -n "$first_dirs" ]]; then
+    PATH="$first_dirs:$PATH"
+  fi
+  T26_VERSION="$2" T26_AFTER="$5"
+  export T26_VERSION
+  # As detect_shell sets it on a bash host, before install_neovim runs
+  # shellcheck disable=SC2034  # install_neovim, in the script sourced into this subshell, reads it
+  USER_SHELL=bash
+  must_override pkg_install
+  must_override pkg_installed_nvim
+  must_override install_neovim_tarball
+  pkg_install() {
+    echo "PKG_INSTALL $*"
+    case "$T26_AFTER" in
+      fail) return 1 ;;
+      apart-* | unlisted) ;;
+      *) T26_VERSION="${T26_AFTER#linked-}" ;;
+    esac
+  }
+  # shellcheck disable=SC2329  # install_neovim calls it
+  pkg_installed_nvim() {
+    if [[ "$T26_AFTER" == unlisted ]]; then
+      return 1
+    fi
+    printf '%s\n' "$t26_listed_nvim"
+  }
+  install_neovim_tarball() { echo TARBALL; }
+}
+# Runs install_neovim, put_install_dir_first_on_path, and verify_nvim, in main's order, for T26 case $1
+# ($2 to $5 as t26_load takes them)
+t26_case() {
+  (
+    t26_load "$@"
+    t26_path_before="$PATH"
+    # When install_neovim ends the run, this prints the case's last line, with the install method it
+    # left; nothing after install_neovim runs then, as in main
+    # shellcheck disable=SC2031  # install_neovim, in the script sourced into this subshell, sets it
+    trap 'echo "INSTALL_NEOVIM_EXIT rc=$? METHOD=$NVIM_INSTALL_METHOD"' EXIT
+    install_neovim
+    trap - EXIT
+    # shellcheck disable=SC2031  # install_neovim, in the script sourced into this subshell, sets it
+    echo "METHOD=$NVIM_INSTALL_METHOD"
+    # shellcheck disable=SC2031  # install_neovim, in the script sourced into this subshell, sets it
+    echo "NEED_PATH_SETUP=$NEED_PATH_SETUP"
+    echo "PATH after install_neovim: $(path_change "$t26_path_before" "$t26_install_dir")"
+    if [[ -e "$t26_ran_marker" ]]; then
+      echo "INSTALL_DIR_NVIM_RAN=yes"
+    else
+      echo "INSTALL_DIR_NVIM_RAN=no"
+    fi
+    # As main runs it, after the privileged phase (closed by the flag alone: the real
+    # forget_sudo_credentials runs sudo -k)
+    PRIVILEGE_CLOSED=true
+    put_install_dir_first_on_path
+    echo "PATH after the step: $(path_change "$t26_path_before" "$t26_install_dir")"
+    run_errexit verify_nvim
+    echo "VERIFY rc=$RC"
+    echo DONE
+  ) </dev/null 2>&1
+}
+# Case id, the PATH nvim's version (or none, or broken), the install dir nvim's version (or none, or
+# broken, or where PATH reaches it: t26_load's $3), the install dir's ownership check (root, user, or
+# "-"), the package's nvim after the install (t26_load's $5; fail where the install never runs, so a
+# stray pkg_install falls through to the tarball, which those rows do not expect), whether pkg_install
+# neovim runs, whether the tarball runs, the install method when it does not (or "-"), or stop when
+# install_neovim ends the run, NEED_PATH_SETUP afterwards, and PATH after put_install_dir_first_on_path
+# (unchanged, or install-dir: the install dir's bin first, then PATH as it was); both are "-" for a stop,
+# after which nothing runs. A broken PATH nvim must come with its warning line, a broken package nvim
+# with one that names its own path, a package nvim that is too old with one that names its own version,
+# and a package that lists no nvim with one that says so; any other case with none of them. A stop must
+# come with its error lines (t26_stop_errors), and no other.
+t26_not_reused="Not reusing the nvim in"
+t26_not_reused_why="something in it, or a directory on the way to it, is not owned by root, is writable by group or others, or is a broken link; installing Neovim instead"
+t26_path_unusable="  ! Neovim at $T26_BIN/nvim failed to report its version; treating it as unusable."
+t26_package_unusable_start="  ! Package manager installed Neovim, but "
+t26_package_old_pattern="  ! Package manager installed Neovim [0-9]"
+t26_unlisted="  ! The neovim package from pacman lists no nvim binary, or its file list could not be read. Falling back to GitHub release."
+# The error lines T26 case $1 must end with when install_neovim stops it: $2 = its PATH nvim ($2 of
+# t26_load), $3 = its install dir nvim ($3 of t26_load), $4 = the package's nvim, at version $5. When PATH
+# reaches the install dir's nvim first through the script's own paths (link-first, bin-first,
+# bin-then-link, bin-then-other-link, or link-via-dir-link), they name it as the script's earlier tarball
+# install and give the steps that undo that install, with the sudo rm of the link whenever the scratch
+# link dir holds a link to the install dir's nvim, and the bash form of the shell config line (t26_load
+# sets USER_SHELL to bash); otherwise they name the nvim PATH reaches first (the user's link, the other
+# nvim in the link dir, or T26_BIN's) and say to remove it, or reorder PATH when it is not in the link
+# dir, or, with no PATH nvim, say that PATH reaches none.
+t26_stop_errors() {
+  local id="$1" path_nvim="$2" install_dir_nvim="$3" listed="$4" version="$5"
+  local install_dir="$TMP/T26-$id/opt-nvim" link_dir first_nvim
+  link_dir="$(t26_link_dir "$id")"
+  case "$install_dir_nvim" in
+    link-first | other-in-link-dir) first_nvim="$link_dir/nvim" ;;
+    bin-first | bin-then-link | bin-then-other-link) first_nvim="$install_dir/bin/nvim" ;;
+    user-link-first) first_nvim="$(t26_user_link_dir "$id")/nvim" ;;
+    link-via-dir-link) first_nvim="$(t26_link_dir_alias "$id")/nvim" ;;
+    *) first_nvim="$T26_BIN/nvim" ;;
+  esac
+  if [[ "$path_nvim" == none ]]; then
+    echo "  x Neovim $version from pacman is at $listed, but PATH reaches no nvim."
+    echo "  x Add ${listed%/*} to PATH, then run this script again."
+    return
+  fi
+  case "$install_dir_nvim" in
+    link-first | bin-first | bin-then-link | bin-then-other-link | link-via-dir-link)
+      echo "  x Neovim $version from pacman is at $listed, but PATH reaches $first_nvim first, and that nvim is this script's earlier tarball install in $install_dir."
+      case "$install_dir_nvim" in
+        link-first | bin-then-link | link-via-dir-link) echo "  x Remove its link in $link_dir: sudo rm $link_dir/nvim" ;;
+      esac
+      echo "  x Remove the $install_dir/bin entry from your shell config, if it has one: the line 'export PATH=\"$install_dir/bin:\$PATH\"', which follows the line '# Neovim (added by nvim-install.sh)' where this script added it."
+      echo "  x Then open a new shell and run this script again."
+      ;;
+    other-in-link-dir)
+      echo "  x Neovim $version from pacman is at $listed, but PATH reaches $first_nvim first."
+      echo "  x Remove $first_nvim, then run this script again."
+      ;;
+    *)
+      echo "  x Neovim $version from pacman is at $listed, but PATH reaches $first_nvim first."
+      echo "  x Remove $first_nvim, or put ${listed%/*} ahead of ${first_nvim%/*} on PATH, then run this script again."
+      ;;
+  esac
+}
+for tc in "current:$T26_MIN_VERSION:none:-:fail:no:no:existing:false:unchanged" \
+  "old-package-new:$T26_OLD_PATH_VERSION:none:-:$T26_NEW_VERSION:yes:no:pacman:false:unchanged" \
+  "old-package-old:$T26_OLD_PATH_VERSION:none:-:$T26_OLD_PACKAGE_VERSION:yes:yes:-:false:unchanged" \
+  "package-fails:$T26_OLD_PATH_VERSION:none:-:fail:yes:yes:-:false:unchanged" \
+  "no-nvim:none:none:-:fail:yes:yes:-:false:unchanged" \
+  "install-dir-only:none:$T26_NEW_VERSION:root:fail:no:no:reused:true:install-dir" \
+  "old-path-install-dir-new:$T26_OLD_PATH_VERSION:$T26_NEW_VERSION:root:fail:no:no:reused:true:install-dir" \
+  "old-path-install-dir-old:$T26_OLD_PATH_VERSION:$T26_OLD_INSTALL_DIR_VERSION:root:$T26_OLD_PACKAGE_VERSION:yes:yes:-:false:unchanged" \
+  "install-dir-broken:none:broken:root:fail:yes:yes:-:false:unchanged" \
+  "install-dir-not-root-owned:none:$T26_NEW_VERSION:user:fail:yes:yes:-:false:unchanged" \
+  "new-path-install-dir-new:$T26_MIN_VERSION:$T26_NEW_VERSION:root:fail:no:no:existing:false:unchanged" \
+  "broken-path-package-new:broken:none:-:$T26_NEW_VERSION:yes:no:pacman:false:unchanged" \
+  "broken-path-install-dir-new:broken:$T26_NEW_VERSION:root:fail:no:no:reused:true:install-dir" \
+  "old-path-package-broken:$T26_OLD_PATH_VERSION:none:-:broken:yes:yes:-:false:unchanged" \
+  "old-path-package-apart:$T26_OLD_PATH_VERSION:none:-:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "broken-path-package-apart:broken:none:-:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "no-nvim-package-apart:none:none:-:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-path-package-apart-old:$T26_OLD_PATH_VERSION:none:-:apart-$T26_OLD_PACKAGE_VERSION:yes:yes:-:false:unchanged" \
+  "old-path-package-apart-broken:$T26_OLD_PATH_VERSION:none:-:apart-broken:yes:yes:-:false:unchanged" \
+  "old-path-package-linked:$T26_OLD_PATH_VERSION:none:-:linked-$T26_NEW_VERSION:yes:no:pacman:false:unchanged" \
+  "old-path-package-unlisted:$T26_OLD_PATH_VERSION:none:-:unlisted:yes:yes:-:false:unchanged" \
+  "old-install-dir-link-first-package-apart:$T26_OLD_INSTALL_DIR_VERSION:link-first:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-bin-first-package-apart:$T26_OLD_INSTALL_DIR_VERSION:bin-first:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-bin-then-link-package-apart:$T26_OLD_INSTALL_DIR_VERSION:bin-then-link:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-user-link-first-package-apart:$T26_OLD_INSTALL_DIR_VERSION:user-link-first:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-other-in-link-dir-package-apart:$T26_OLD_INSTALL_DIR_VERSION:other-in-link-dir:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-bin-then-other-link-package-apart:$T26_OLD_INSTALL_DIR_VERSION:bin-then-other-link:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-" \
+  "old-install-dir-link-via-dir-link-package-apart:$T26_OLD_INSTALL_DIR_VERSION:link-via-dir-link:root:apart-$T26_NEW_VERSION:yes:no:stop:-:-"; do
+  IFS=: read -r id before install_dir tree after want_pkg want_tarball want_method want_path_setup want_path <<<"$tc"
+  out="$(t26_case "$id" "$before" "$install_dir" "$tree" "$after")"
+  rc=$?
+  problems=""
+  t26_listed="$(t26_package_nvim "$id" "$after")"
+  t26_listed_version="${after#apart-}"
+  t26_listed_version="${t26_listed_version#linked-}"
+  ! grep -qF 'command not found' <<<"$out" || problems+="[a command was not found] "
+  if [[ "$tree" == user ]]; then
+    grep -qF "$t26_not_reused $TMP/T26-$id/opt-nvim: $t26_not_reused_why" <<<"$out" \
+      || problems+="[no warning that the install dir is not reused] "
+    grep -qxF "INSTALL_DIR_NVIM_RAN=no" <<<"$out" || problems+="[the install dir's nvim ran before the ownership check] "
+  else
+    ! grep -qF "$t26_not_reused" <<<"$out" || problems+="[warned that the install dir is not reused] "
+  fi
+  if [[ "$before" == broken ]]; then
+    grep -qxF "$t26_path_unusable" <<<"$out" || problems+="[no warning that the PATH nvim is unusable] "
+  else
+    ! grep -qxF "$t26_path_unusable" <<<"$out" || problems+="[warned that the PATH nvim is unusable] "
+  fi
+  if [[ "$t26_listed_version" == broken ]]; then
+    grep -qxF "${t26_package_unusable_start}$t26_listed failed to report its version." <<<"$out" \
+      || problems+="[no warning that the package's nvim, $t26_listed, is unusable] "
+  else
+    ! grep -qF "$t26_package_unusable_start" <<<"$out" || problems+="[warned that the package's nvim is unusable] "
+  fi
+  if [[ "$want_tarball" == yes && "$t26_listed_version" == [0-9]* ]]; then
+    grep -qF "  ! Package manager installed Neovim $t26_listed_version, but " <<<"$out" \
+      || problems+="[no warning that names the package's version, $t26_listed_version, as too old] "
+  else
+    ! grep -q "^$t26_package_old_pattern" <<<"$out" || problems+="[warned that the package's nvim is too old] "
+  fi
+  if [[ "$after" == unlisted ]]; then
+    grep -qxF "$t26_unlisted" <<<"$out" || problems+="[no warning that the package lists no nvim] "
+  else
+    ! grep -qxF "$t26_unlisted" <<<"$out" || problems+="[warned that the package lists no nvim] "
+  fi
   if [[ "$want_pkg" == yes ]]; then
     [[ "$(grep -c '^PKG_INSTALL' <<<"$out")" -eq 1 ]] && grep -qxF "PKG_INSTALL neovim" <<<"$out" \
       || problems+="[want one pkg_install neovim] "
@@ -1775,11 +3128,517 @@ for tc in "current:0.12.0:-:no:no:existing" "old-package-new:0.11.4:0.12.6:yes:n
     grep -qxF TARBALL <<<"$out" || problems+="[no tarball fallback] "
   else
     ! grep -qxF TARBALL <<<"$out" || problems+="[tarball fallback ran] "
-    grep -qxF "METHOD=$want_method" <<<"$out" || problems+="[want install method $want_method] "
   fi
-  [[ -z "$problems" ]] || problems+="; $(tail -n4 <<<"$out" | tr '\n' ' ')"
+  if [[ "$want_method" == stop ]]; then
+    [[ $rc -eq 1 && "$(tail -n1 <<<"$out")" == "INSTALL_NEOVIM_EXIT rc=1 METHOD=" ]] \
+      || problems+="[want install_neovim to end the run with exit 1 and no install method: rc=$rc] "
+    t26_want_errors="$(t26_stop_errors "$id" "$before" "$install_dir" "$t26_listed" "$t26_listed_version")"
+    [[ "$(grep '^  x ' <<<"$out")" == "$t26_want_errors" ]] \
+      || problems+="[want the errors: $t26_want_errors] "
+  else
+    done_ok $rc "$out" || problems+="[rc=$rc] "
+    if [[ "$want_tarball" == no ]]; then
+      grep -qxF "METHOD=$want_method" <<<"$out" || problems+="[want install method $want_method] "
+      grep -qxF "VERIFY rc=0" <<<"$out" || problems+="[verify_nvim failed after install_neovim] "
+    fi
+    grep -qxF "NEED_PATH_SETUP=$want_path_setup" <<<"$out" || problems+="[want NEED_PATH_SETUP=$want_path_setup] "
+    grep -qxF "PATH after install_neovim: unchanged" <<<"$out" || problems+="[install_neovim changed PATH] "
+    if [[ "$want_path" == install-dir ]]; then
+      grep -qxF "PATH after the step: install dir first" <<<"$out" \
+        || problems+="[want the install dir's bin first on PATH after put_install_dir_first_on_path] "
+    else
+      grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[want PATH unchanged after put_install_dir_first_on_path] "
+    fi
+  fi
+  [[ -z "$problems" ]] || problems+="; $(tail -n7 <<<"$out" | tr '\n' ' ')"
   expect_none "T26-install-neovim $id" "$problems"
 done
+
+# T26e: the stop for the script's own earlier tarball install names the shell config line as path_line
+# writes it for the user's shell, so a user who added it by hand (setup_path's manual step prints it
+# without the marker) can find it: for fish, the fish_add_path line, not the export T26's bash cases
+# get. The setup is T26's bin-first case (t26_load), with USER_SHELL fish, as detect_shell sets it.
+t26e_dir="$TMP/T26-own-install-fish/opt-nvim"
+out="$( (
+  t26_load own-install-fish "$T26_OLD_INSTALL_DIR_VERSION" bin-first root "apart-$T26_NEW_VERSION"
+  # shellcheck disable=SC2034  # install_neovim, in the script sourced into this subshell, reads it
+  USER_SHELL=fish
+  install_neovim
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+[[ $rc -eq 1 ]] \
+  && grep -qxF "  x Remove the $t26e_dir/bin entry from your shell config, if it has one: the line 'fish_add_path --path $t26e_dir/bin', which follows the line '# Neovim (added by nvim-install.sh)' where this script added it." <<<"$out"
+result T26e-own-install-entry-in-shell-form $? "rc=$rc; $(grep '^  x ' <<<"$out" | tr '\n' ' ')"
+
+# T26c: a packages-only run that reuses NVIM_INSTALL_DIR ends as main ends it in that mode
+# (install_neovim, then, past the privileged phase, put_install_dir_first_on_path, verify_nvim, and
+# print_summary, under errexit), as on Fedora 43 when an earlier run left the tarball there and dnf's
+# older nvim comes first on PATH: it exits 0, names reused as the install method, and its PATH line
+# gives that cause, not the tarball's. The setup is T26's (t26_load).
+out="$( (
+  t26_load packages-only-reuse "$T26_OLD_PATH_VERSION" "$T26_NEW_VERSION" root fail
+  PACKAGES_ONLY=true
+  # shellcheck disable=SC2329  # run_errexit calls it
+  packages_only_end() {
+    install_neovim
+    # As main runs it, after the privileged phase (closed by the flag alone: the real
+    # forget_sudo_credentials runs sudo -k)
+    PRIVILEGE_CLOSED=true
+    put_install_dir_first_on_path
+    verify_nvim
+    print_summary
+  }
+  run_errexit packages_only_end
+  echo "end rc=$RC"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+problems=""
+done_ok $rc "$out" && grep -qxF "end rc=0" <<<"$out" || problems+="[want exit 0: rc=$rc $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+grep -qF "Neovim $T26_NEW_VERSION on PATH" <<<"$out" || problems+="[verify_nvim did not find the install dir's nvim] "
+grep -qE 'Install method: +reused$' <<<"$out" || problems+="[want install method reused] "
+grep -qE "PATH: +the reused nvim was not first on PATH; the full run adds $(ere_escape "$TMP")/T26-packages-only-reuse/opt-nvim/bin to your shell config" <<<"$out" \
+  || problems+="[no PATH line naming the reuse] "
+! grep -qF "the tarball's nvim" <<<"$out" || problems+="[names the tarball's cause] "
+! grep -qE '^PKG_INSTALL|^TARBALL$' <<<"$out" || problems+="[installed Neovim] "
+expect_none T26c-packages-only-reuse "$problems"
+
+# T26d: put_install_dir_first_on_path, on a copy of the script whose NVIM_INSTALL_DIR is a scratch
+# path. With the privileged phase closed, as main runs it (PRIVILEGE_CLOSED set as
+# forget_sudo_credentials sets it; the real one runs sudo -k): with NEED_PATH_SETUP false it leaves PATH
+# as it was; with it true it puts NVIM_INSTALL_DIR/bin first and exports PATH, so the commands this run
+# starts (Neovim, and the plugin builds it runs) see it too: a child's environment has the new PATH even
+# when PATH was not exported before. With the phase still open (a reorder of main, or a new caller),
+# whether NEED_PATH_SETUP is true or false, it stops the run with exit 1 and an error naming the cause,
+# and PATH is as it was when the run exits, which an EXIT trap reads, as main's cleanup (whose sudo -k
+# searches PATH) runs then
+t26d_fail=""
+for t26d_need in false true; do
+  out="$( (
+    sandbox "T26d-$t26d_need" ""
+    t26d_dir="$TMP/T26d-$t26d_need/opt-nvim"
+    load_script_with "$TMP/T26d-$t26d_need/script/nvim-install.sh" NVIM_INSTALL_DIR "$t26d_dir"
+    t26d_before="$PATH"
+    export -n PATH
+    NEED_PATH_SETUP="$t26d_need"
+    # As main runs it, after the privileged phase
+    PRIVILEGE_CLOSED=true
+    put_install_dir_first_on_path
+    echo "PATH after the step: $(path_change "$t26d_before" "$t26d_dir")"
+    if [[ "$(env | sed -n 's/^PATH=//p')" == "$PATH" ]]; then
+      echo "CHILD_PATH=same"
+    else
+      echo "CHILD_PATH=differs"
+    fi
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  if [[ "$t26d_need" == true ]]; then
+    t26d_want="install dir first"
+  else
+    t26d_want="unchanged"
+  fi
+  done_ok $rc "$out" && grep -qxF "PATH after the step: $t26d_want" <<<"$out" \
+    || t26d_fail+="[NEED_PATH_SETUP=$t26d_need: want PATH $t26d_want; $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  if [[ "$t26d_need" == true ]]; then
+    grep -qxF "CHILD_PATH=same" <<<"$out" || t26d_fail+="[PATH not exported to child processes] "
+  fi
+done
+t26d_open_error="  x put_install_dir_first_on_path: called before forget_sudo_credentials closed the privileged phase"
+for t26d_need in false true; do
+  out="$( (
+    sandbox "T26d-open-$t26d_need" ""
+    t26d_dir="$TMP/T26d-open-$t26d_need/opt-nvim"
+    load_script_with "$TMP/T26d-open-$t26d_need/script/nvim-install.sh" NVIM_INSTALL_DIR "$t26d_dir"
+    t26d_before="$PATH"
+    NEED_PATH_SETUP="$t26d_need"
+    PRIVILEGE_CLOSED=false
+    # shellcheck disable=SC2329  # run_errexit calls it
+    step_with_phase_open() {
+      trap 'echo "PATH at exit: $(path_change "$t26d_before" "$t26d_dir")"' EXIT
+      put_install_dir_first_on_path
+      echo "NOT REACHED"
+    }
+    run_errexit step_with_phase_open
+    echo "inner rc=$RC"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" && grep -qxF "inner rc=1" <<<"$out" \
+    || t26d_fail+="[phase open, NEED_PATH_SETUP=$t26d_need: want exit 1; $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  grep -qxF "$t26d_open_error" <<<"$out" || t26d_fail+="[phase open, NEED_PATH_SETUP=$t26d_need: no error naming the cause] "
+  grep -qxF "PATH at exit: unchanged" <<<"$out" || t26d_fail+="[phase open, NEED_PATH_SETUP=$t26d_need: PATH changed] "
+  ! grep -qxF "NOT REACHED" <<<"$out" || t26d_fail+="[phase open, NEED_PATH_SETUP=$t26d_need: the step returned] "
+done
+expect_none T26d-install-dir-path-step "$t26d_fail"
+
+# T26b: is_root_owned_tree, which install_neovim asks before it reuses NVIM_INSTALL_DIR, and the checks
+# under it: first_unsafe_path_dir, which it asks about the path to the tree, and are_root_only_dirs,
+# which that asks about each dir it looks a name up in. Without a wrapper, is_root_owned_tree fails on a
+# tree the user owns, on a symlink to one (the check resolves it, as the nvim lookup and PATH do, instead
+# of skipping it as a symlink), on a missing tree in a dir that exists (readlink resolves it and find
+# fails on it, and find's error, with nothing printed, must not pass for a clean tree), and on a path
+# whose parent dir is missing too, which readlink cannot resolve. Those tree cases replace
+# are_root_only_dirs with one that succeeds and prints nothing, so each tests the tree itself. The real
+# are_root_only_dirs prints a dir the user owns and fails with status 1, and fails with status 2,
+# printing nothing, on a missing dir (find's error) and with no dir at all, even from /, which find
+# would check instead.
+# Under each wrapper in FAKE_ROOT_WRAPPERS, a bash that sources the script makes a tree root-owned with
+# no group or other write, as the tarball install leaves it (a chown that fakeroot fakes, or that
+# unshare -r's mapping already makes true), with a symlink to a file inside it. Under a wrapper, each
+# tree case but writable-parent replaces are_root_only_dirs with one that prints each dir it is asked
+# about (PARENT_DIR <dir>, to stderr, since is_root_owned_tree discards what first_unsafe_path_dir
+# prints) and succeeds, so the case tests the tree itself. The check passes on that clean tree, on one
+# with a link to a root-owned dir outside it, and on a link to the tree, where the dirs it asks about are
+# those on the way: each dir down to the dir that holds the link, and the tree with each dir above it.
+# It fails once one file is group writable or one dir is other writable, on a link to a root-owned dir
+# outside the tree that others can write (find follows it there), on a broken link, on a link loop, and,
+# with the real are_root_only_dirs, on the clean tree once the dir that holds it is other writable. That
+# case opens a bit on a dir of its own because what the real dirs above $TMP show depends on the
+# wrapper: fakeroot reports every file it has not faked as root's, and unshare -r shows the real root's
+# files as the overflow uid. The parents cases run the real are_root_only_dirs on three dirs the test
+# makes root-owned: it passes on them, and fails once one is group writable, or world writable with the
+# sticky bit. Without a wrapper, those cases skip, or fail under REQUIRE_ALL=1 (report_no_fake_root).
+t26b_fail=""
+for id in user-owned symlinked missing unresolvable; do
+  out="$( (
+    sandbox "T26b-$id" ""
+    load_script
+    must_override are_root_only_dirs
+    # shellcheck disable=SC2329  # is_root_owned_tree calls it
+    are_root_only_dirs() { return 0; }
+    t26b_tree="$TMP/T26b-$id/tree"
+    case "$id" in
+      user-owned)
+        mkdir -p "$t26b_tree/bin"
+        printf '#!/bin/sh\n' >"$t26b_tree/bin/nvim"
+        ;;
+      symlinked)
+        mkdir -p "$TMP/T26b-$id/target/bin"
+        printf '#!/bin/sh\n' >"$TMP/T26b-$id/target/bin/nvim"
+        ln -s target "$t26b_tree"
+        ;;
+      missing) mkdir -p "${t26b_tree%/*}" ;;
+    esac
+    if is_root_owned_tree "$t26b_tree"; then
+      echo "found root-owned"
+    else
+      echo "found not root-owned"
+    fi
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" && grep -qxF "found not root-owned" <<<"$out" && ! grep -qF 'command not found' <<<"$out" \
+    || t26b_fail+="[$id: want not root-owned, got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T26b-root-owned-tree "$t26b_fail"
+t26b_fail=""
+for id in user-owned-dir missing-dir no-dir; do
+  t26b_case="$TMP/T26b-$id"
+  out="$( (
+    sandbox "T26b-$id" ""
+    load_script
+    t26b_dirs=()
+    case "$id" in
+      user-owned-dir)
+        mkdir -p "$t26b_case/dir"
+        t26b_dirs=("$t26b_case/dir")
+        ;;
+      missing-dir) t26b_dirs=("$t26b_case/gone") ;;
+      no-dir) cd / || exit 1 ;;
+    esac
+    # The sourced script's errexit would end the subshell on a failing assignment
+    t26b_status=0
+    t26b_offender="$(are_root_only_dirs "${t26b_dirs[@]}")" || t26b_status=$?
+    echo "status=$t26b_status offender=$t26b_offender"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  case "$id" in
+    user-owned-dir) want="status=1 offender=$t26b_case/dir" ;;
+    *) want="status=2 offender=" ;;
+  esac
+  done_ok $rc "$out" && grep -qxF "$want" <<<"$out" && ! grep -qF 'command not found' <<<"$out" \
+    || t26b_fail+="[$id: want '$want', got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T26b-root-only-dirs "$t26b_fail"
+# Run by bash under a fake-root wrapper, with the script under test as $1, tests/lib/common.sh as $2, the
+# case dir as $3, and the case as $4. A parents case makes $3/chain and the dirs a and a/b in it
+# root-owned with no group or other write, opens the bits the case names on $3/chain/a, and prints what
+# are_root_only_dirs finds for the three. A tree case makes $3/tree (and $3/shared, which a link in the
+# tree may name) root-owned with no group or other write, opens the write bit the case names (on $3
+# itself for writable-parent), and prints what is_root_owned_tree finds for the tree, or for
+# $3/links/nvim, a link to it. The sourced script's errexit stops it, with no DONE, when a step fails.
+# shellcheck disable=SC2016  # expanded by the bash that runs it, not here
+t26b_fake_root_check='source "$1"
+source "$2"
+make_root_only() {
+  chown -R 0:0 "$1"
+  chmod -R go-w "$1"
+}
+case "$4" in
+  parents-*)
+    make_root_only "$3/chain"
+    case "$4" in
+      parents-group-writable) chmod g+w "$3/chain/a" ;;
+      parents-sticky) chmod 1777 "$3/chain/a" ;;
+    esac
+    if are_root_only_dirs "$3/chain/a/b" "$3/chain/a" "$3/chain"; then
+      echo "found root-owned"
+    else
+      echo "found not root-owned"
+    fi
+    echo DONE
+    exit
+    ;;
+esac
+make_root_only "$3/tree"
+checked="$3/tree"
+case "$4" in
+  group-writable-file) chmod g+w "$3/tree/bin/nvim" ;;
+  other-writable-dir) chmod o+w "$3/tree/share" ;;
+  linked-root-owned-dir) make_root_only "$3/shared" ;;
+  linked-writable-dir)
+    make_root_only "$3/shared"
+    chmod 0777 "$3/shared"
+    ;;
+  linked-tree) checked="$3/links/nvim" ;;
+  writable-parent) chmod o+w "$3" ;;
+esac
+if [[ "$4" != writable-parent ]]; then
+  must_override are_root_only_dirs
+  are_root_only_dirs() { printf "PARENT_DIR %s\n" "$@" >&2; }
+fi
+if is_root_owned_tree "$checked"; then
+  echo "found root-owned"
+else
+  echo "found not root-owned"
+fi
+echo DONE'
+# Prints PARENT_DIR <dir> for each dir above $1 (whose dir must exist), resolved, up to /, sorted
+t26b_parent_dirs() {
+  local dir
+  dir="$(readlink -f -- "$1")" || return 1
+  while [[ "$dir" != / ]]; do
+    dir="$(dirname -- "$dir")"
+    printf 'PARENT_DIR %s\n' "$dir"
+  done | sort
+}
+# Prints PARENT_DIR <dir> once for each dir of $@ (whose dirs must exist), resolved, and each dir above
+# them, sorted
+t26b_dirs_down_to() {
+  local dir
+  for dir in "$@"; do
+    printf 'PARENT_DIR %s\n' "$(readlink -f -- "$dir")"
+    t26b_parent_dirs "$dir"
+  done | sort -u
+}
+if [[ ${#FAKE_ROOT_WRAPPERS[@]} -gt 0 ]]; then
+  t26b_fail=""
+  for wrapper in "${FAKE_ROOT_WRAPPERS[@]}"; do
+    read -ra wrapper_cmd <<<"$wrapper"
+    for id in clean linked-root-owned-dir linked-tree group-writable-file other-writable-dir linked-writable-dir \
+      dangling-link link-loop writable-parent parents-clean parents-group-writable parents-sticky; do
+      case "$id" in
+        clean | linked-root-owned-dir | linked-tree | parents-clean) want="root-owned" ;;
+        *) want="not root-owned" ;;
+      esac
+      t26b_case="$TMP/T26b-${wrapper_cmd[0]}-$id"
+      out="$( (
+        sandbox "T26b-${wrapper_cmd[0]}-$id" ""
+        require_sandbox_home "$TMP" T26b
+        t26b_tree="$t26b_case/tree"
+        mkdir -p "$t26b_tree/bin" "$t26b_tree/share"
+        printf '#!/bin/sh\n' >"$t26b_tree/bin/nvim"
+        printf 'runtime\n' >"$t26b_tree/share/runtime.txt"
+        ln -s nvim "$t26b_tree/bin/vi"
+        case "$id" in
+          parents-*) mkdir -p "$t26b_case/chain/a/b" ;;
+          linked-root-owned-dir | linked-writable-dir)
+            mkdir -p "$t26b_case/shared"
+            printf 'lib\n' >"$t26b_case/shared/lib.txt"
+            ln -s ../shared "$t26b_tree/lib"
+            ;;
+          dangling-link) ln -s missing "$t26b_tree/share/old" ;;
+          link-loop) ln -s .. "$t26b_tree/share/loop" ;;
+          linked-tree)
+            mkdir -p "$t26b_case/links"
+            ln -s ../tree "$t26b_case/links/nvim"
+            ;;
+        esac
+        "${wrapper_cmd[@]}" bash -c "$t26b_fake_root_check" bash "$SCRIPT" "$LIB/common.sh" "$t26b_case" "$id"
+      ) </dev/null 2>&1)"
+      done_ok $? "$out" && grep -qxF "found $want" <<<"$out" && ! grep -qF 'command not found' <<<"$out" \
+        || t26b_fail+="[$wrapper $id: want $want, got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+      if [[ "$id" == linked-tree ]] \
+        && [[ "$(grep '^PARENT_DIR ' <<<"$out" | sort -u)" != "$(t26b_dirs_down_to "$t26b_case/links" "$t26b_case/tree")" ]]; then
+        t26b_fail+="[$wrapper $id: want the dirs on the way to the link's target, got: $(grep '^PARENT_DIR ' <<<"$out" | sort -u | tr '\n' ' ')] "
+      fi
+    done
+  done
+  t26b_ran="$(printf '%s, ' "${FAKE_ROOT_WRAPPERS[@]}")"
+  expect_none "T26b-root-owned-tree-fake-root (${t26b_ran%, })" "$t26b_fail"
+else
+  report_no_fake_root T26b-root-owned-tree-fake-root
+fi
+# first_unsafe_path_dir, which the tarball install asks about the dir that will hold NVIM_INSTALL_DIR.
+# With are_root_only_dirs replaced by one that prints each dir it is asked about (PARENT_DIR <dir>, to
+# stderr) and succeeds, the walk succeeds, printing nothing, and asks about each dir it looks a name up
+# in, and the path itself: for a dir, that dir and each dir above it; for a link in the middle of the
+# path, the dir that holds it (middle-link, a link in a dir of its own whose target goes up through ..),
+# as well as the dirs on the way to its target; for an absolute target, the dirs from / down to it; for
+# a missing dir, the dirs down to the one that would hold it, and none past it. The walk fails with
+# status 2, printing nothing, on a relative path (asking about nothing), and, having asked about the
+# dirs down to the one it stopped in, on a link to nothing (broken-link, whose missing target lies in a
+# dir of its own that the walk must not reach), on a link loop (past the link limit), and on a file on
+# the way. Where are_root_only_dirs fails on the dir that holds the middle link (offender-in-middle),
+# the walk prints that dir, fails with status 1, and asks about nothing after it; with the real
+# are_root_only_dirs (user-owned), it prints a dir on the way and fails with status 1.
+t26b_fail=""
+for id in existing middle-link absolute-link missing broken-link link-loop file-on-the-way relative \
+  offender-in-middle user-owned; do
+  t26b_case="$TMP/T26b-walk-$id"
+  out="$( (
+    sandbox "T26b-walk-$id" ""
+    load_script
+    case "$id" in
+      user-owned) ;;
+      offender-in-middle)
+        must_override are_root_only_dirs
+        # shellcheck disable=SC2329  # first_unsafe_path_dir calls it
+        are_root_only_dirs() {
+          printf 'PARENT_DIR %s\n' "$@" >&2
+          [[ "$1" != "$t26b_case/middle" ]] || { printf '%s\n' "$1"; return 1; }
+        }
+        ;;
+      *)
+        must_override are_root_only_dirs
+        # shellcheck disable=SC2329  # first_unsafe_path_dir calls it
+        are_root_only_dirs() { printf 'PARENT_DIR %s\n' "$@" >&2; }
+        ;;
+    esac
+    mkdir -p "$t26b_case/target" "$t26b_case/middle" "$t26b_case/real/opt" "$t26b_case/other"
+    ln -s ../real/opt "$t26b_case/middle/opt"
+    ln -s middle/opt "$t26b_case/opt-link"
+    t26b_checked="$t26b_case/target"
+    case "$id" in
+      middle-link | offender-in-middle) t26b_checked="$t26b_case/opt-link" ;;
+      absolute-link)
+        ln -s "$t26b_case/target" "$t26b_case/absolute"
+        t26b_checked="$t26b_case/absolute"
+        ;;
+      missing) t26b_checked="$t26b_case/gone/deeper" ;;
+      broken-link)
+        ln -s other/gone "$t26b_case/broken"
+        t26b_checked="$t26b_case/broken"
+        ;;
+      link-loop)
+        ln -s loop-b "$t26b_case/loop-a"
+        ln -s loop-a "$t26b_case/loop-b"
+        t26b_checked="$t26b_case/loop-a"
+        ;;
+      file-on-the-way)
+        : >"$t26b_case/file"
+        t26b_checked="$t26b_case/file/below"
+        ;;
+      relative)
+        cd "$t26b_case" || exit 1
+        t26b_checked=target
+        ;;
+    esac
+    # The sourced script's errexit would end the subshell on a failing assignment
+    t26b_status=0
+    t26b_offender="$(first_unsafe_path_dir "$t26b_checked")" || t26b_status=$?
+    echo "status=$t26b_status"
+    echo "offender=$t26b_offender"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  t26b_want_offender=""
+  t26b_want_dirs=""
+  case "$id" in
+    existing | absolute-link)
+      t26b_want_status=0
+      t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case/target")"
+      ;;
+    middle-link)
+      t26b_want_status=0
+      t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case/middle" "$t26b_case/real/opt")"
+      ;;
+    missing)
+      t26b_want_status=0
+      t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case")"
+      ;;
+    link-loop | file-on-the-way)
+      t26b_want_status=2
+      t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case")"
+      ;;
+    broken-link)
+      t26b_want_status=2
+      t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case")"
+      ;;
+    offender-in-middle)
+      t26b_want_status=1
+      t26b_want_offender="$t26b_case/middle"
+      t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case/middle")"
+      ;;
+    user-owned) t26b_want_status=1 ;;
+    *) t26b_want_status=2 ;;
+  esac
+  problems=""
+  done_ok $rc "$out" || problems+="[rc=$rc] "
+  ! grep -qF 'command not found' <<<"$out" || problems+="[a command was not found] "
+  grep -qxF "status=$t26b_want_status" <<<"$out" \
+    || problems+="[want status $t26b_want_status, got: $(grep '^status=' <<<"$out")] "
+  t26b_offender="$(sed -n 's/^offender=//p' <<<"$out")"
+  if [[ "$id" == user-owned ]]; then
+    [[ -n "$t26b_offender" && "$t26b_case/target" == "$t26b_offender"* ]] \
+      || problems+="[want a dir on the way printed, got: '$t26b_offender'] "
+  else
+    [[ "$t26b_offender" == "$t26b_want_offender" ]] \
+      || problems+="[want printed: '$t26b_want_offender', got: '$t26b_offender'] "
+    [[ "$(grep '^PARENT_DIR ' <<<"$out" | sort -u)" == "$t26b_want_dirs" ]] \
+      || problems+="[want the dirs: $(tr '\n' ' ' <<<"$t26b_want_dirs"), got: $(grep '^PARENT_DIR ' <<<"$out" | sort -u | tr '\n' ' ')] "
+  fi
+  [[ -z "$problems" ]] || t26b_fail+="[$id: $problems] "
+done
+expect_none T26b-path-walk "$t26b_fail"
+# The walk on a path through a dir the user cannot search (mode 000) that holds a link: lstat fails
+# there as if the name were missing, so the walk must fail with status 2, printing nothing, having asked
+# about the dirs down to that dir and none past it (are_root_only_dirs replaced as above). A user who
+# can still search and write it (root) skips the case. The dir gets its mode back on exit, so the
+# suite's cleanup can remove it.
+t26b_case="$TMP/T26b-walk-unsearchable"
+out="$( (
+  sandbox T26b-walk-unsearchable ""
+  load_script
+  must_override are_root_only_dirs
+  # shellcheck disable=SC2329  # first_unsafe_path_dir calls it
+  are_root_only_dirs() { printf 'PARENT_DIR %s\n' "$@" >&2; }
+  mkdir -p "$t26b_case/locked" "$t26b_case/target"
+  ln -s ../target "$t26b_case/locked/inner"
+  trap 'chmod 0700 "$t26b_case/locked"' EXIT
+  chmod 000 "$t26b_case/locked"
+  exit_if_writable "$t26b_case/locked"
+  # The sourced script's errexit would end the subshell on a failing assignment
+  t26b_status=0
+  t26b_offender="$(first_unsafe_path_dir "$t26b_case/locked/inner")" || t26b_status=$?
+  echo "status=$t26b_status"
+  echo "offender=$t26b_offender"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+if ! report_skip_if_writable T26b-path-walk-unsearchable "$out" \
+  "this user can search and write the mode 000 dir, as root can"; then
+  problems=""
+  done_ok $rc "$out" || problems+="[rc=$rc] "
+  grep -qxF "status=2" <<<"$out" || problems+="[want status 2, got: $(grep '^status=' <<<"$out")] "
+  grep -qxF "offender=" <<<"$out" || problems+="[want nothing printed, got: $(grep '^offender=' <<<"$out")] "
+  t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case/locked")"
+  [[ "$(grep '^PARENT_DIR ' <<<"$out" | sort -u)" == "$t26b_want_dirs" ]] \
+    || problems+="[want the dirs: $(tr '\n' ' ' <<<"$t26b_want_dirs"), got: $(grep '^PARENT_DIR ' <<<"$out" | sort -u | tr '\n' ' ')] "
+  expect_none T26b-path-walk-unsearchable "$problems"
+fi
 
 # T27: main runs whenever the script is executed rather than sourced: from a string, as
 # bash -c "$(curl ...)" runs it, and from standard input, as curl ... | bash does (here bash -s with
@@ -1806,7 +3665,7 @@ done
 t27_dir="$(sandbox_home T27-script-dir)/work/rel"
 out="$( (
   sandbox T27-script-dir ""
-  copy_script_with_line "$t27_dir/nvim-install.sh" 'if ! (return 0 2>/dev/null); then' \
+  copy_script_with_lines "$t27_dir/nvim-install.sh" 'if ! (return 0 2>/dev/null); then' \
     "printf 'SCRIPT_DIR=[%s]\\n' \"\$SCRIPT_DIR\"; if false; then"
   mkdir -p "$HOME/decoy/rel"
   printf 'bash-c %s\n' "$(bash -c "$(cat "$t27_dir/nvim-install.sh")" bash)"
@@ -1917,6 +3776,535 @@ grep -qxF "rc=1" <<<"$out" || problems+="[want exit 1: $(tail -n2 <<<"$out" | tr
 problems+="$(sudo_allowlist_problems "$t30_log")"
 [[ -z "$problems" ]] || problems+="events: $(tr '\n' ';' <"$t30_events")"
 expect_none "T30-ticket-windows order" "$problems"
+
+# T31: the script takes at most one argument, and it is --help, -h, or --packages-only. Anything else (an
+# unknown argument, the empty one, or a second argument beside --packages-only or --help) prints the error,
+# which shows each argument as given (quoted, so an empty one shows as '' and a space inside one stays
+# visible), and usage to stderr, and exits 1 before anything runs (nothing on stdout, and the recording
+# sudo logs nothing). --help and -h alone print usage to stdout and exit 0, naming the minimum Neovim
+# (the major.minor of the script's MIN_NVIM_VERSION), the mode flag, the Fedora tier row, what Mason
+# installs and when (the first time nvim opens a file, a phrase the usage keeps on one line), and the
+# pylsp stand-in.
+
+# Prints a problem unless the script, run with the arguments after $2 in a recording sandbox named $1,
+# exits 1 with nothing on stdout, no sudo call, and on stderr the usage and the error message $2 (as
+# fixed text); the problem shows the first line of stderr, which is the error message
+t31_rejection_problems() {
+  local id="$1" want_message="$2" err out rc
+  shift 2
+  err="$TMP/$id.err"
+  out="$( (
+    recording_sandbox "$id"
+    run_script_args "$@" 2>"$err"
+  ) </dev/null)"
+  rc=$?
+  [[ $rc -eq 1 && -z "$out" && ! -s "$(sudo_log "$id")" ]] \
+    && grep -qF -- "$want_message" "$err" && grep -qF 'Usage: nvim-install.sh' "$err" \
+    || echo "[$id: rc=$rc stdout=$(tr '\n' ' ' <<<"$out") stderr=$(head -n1 "$err")] "
+}
+t31_fail=""
+for args in "--bogus" "--packages-only extra" "--help extra"; do
+  read -ra t31_argv <<<"$args"
+  t31_want="unknown argument: $args"
+  if [[ ${#t31_argv[@]} -gt 1 ]]; then
+    t31_want="too many arguments: $args"
+  fi
+  t31_fail+="$(t31_rejection_problems "T31-${args// /_}" "$t31_want" "${t31_argv[@]}")"
+done
+# The cases the word-splitting loop cannot express: an empty argument, and one with a space inside
+t31_fail+="$(t31_rejection_problems T31-empty "unknown argument: ''" "")"
+t31_fail+="$(t31_rejection_problems T31-quoted 'too many arguments: a\ b c' "a b" c)"
+t31_min_version="$(script_constant MIN_NVIM_VERSION)" || t31_fail+="[the script sets no MIN_NVIM_VERSION] "
+for flag in --help -h; do
+  t31_err="$TMP/T31$flag.err"
+  out="$( (
+    sandbox "T31$flag" ""
+    run_script_args "$flag" 2>"$t31_err"
+  ) </dev/null)"
+  rc=$?
+  absent="$(missing_patterns help "$out" 'Usage: nvim-install.sh' \
+    "^Bootstrap script for Neovim $(ere_escape "${t31_min_version%.*}")\\+ with" \
+    '--packages-only' '^  Fedora +\(dnf\) +supported$' \
+    'Mason installs the native language' 'the first time nvim opens a file;' \
+    'On Fedora, python-lsp-server stands in for pyright\.')"
+  [[ $rc -eq 0 && -z "$absent" && ! -s "$t31_err" ]] \
+    || t31_fail+="[$flag: rc=$rc absent=$absent stderr=$(tr '\n' ' ' <"$t31_err")] "
+done
+expect_none T31-arguments "$t31_fail"
+
+# T32: every go install is pinned: the script has no @latest, and each GO_TOOL_* constant is
+# module/path@vX.Y.Z, the form go install resolves to one exact module version, which Go's checksum
+# database then verifies; the script has as many GO_TOOL_* constants as GO_TOOLS has tools, and T17
+# checks that each tool's own is the one it installs
+t32_fail=""
+t32_latest="$(grep -n '@latest' "$SCRIPT")"
+t32_consts="$(grep -E '^readonly GO_TOOL_[A-Z_]+=' "$SCRIPT")"
+t32_unpinned="$(grep -vE '^readonly GO_TOOL_[A-Z_]+="[a-z0-9./-]+@v[0-9]+\.[0-9]+\.[0-9]+"$' <<<"$t32_consts")"
+[[ -z "$t32_latest" ]] || t32_fail+="[@latest: $(tr '\n' ' ' <<<"$t32_latest")] "
+[[ "$(grep -c . <<<"$t32_consts")" -eq "$(wc -w <<<"$GO_TOOLS")" ]] \
+  || t32_fail+="[GO_TOOL_* constants: $(grep -c . <<<"$t32_consts"), want $(wc -w <<<"$GO_TOOLS")] "
+[[ -z "$t32_unpinned" ]] || t32_fail+="[unpinned: $(tr '\n' ' ' <<<"$t32_unpinned")] "
+expect_none T32-go-tools-pinned "$t32_fail"
+
+# T32b: the manual hints in install_go_tool (go missing, go env fails) carry GOTOOLCHAIN=local, so
+# following one never triggers the toolchain download the script avoids. PATH has no go (EMPTY_BIN) or
+# only T19's go stub, which answers GOBIN and so fails only when T19_GO_FAILS is set; nothing is
+# installed.
+t32b_fail=""
+for id in go-missing go-env-fails; do
+  case "$id" in
+    go-missing) t32b_bin="$EMPTY_BIN" t32b_go_fails="" t32b_hint="install Go, then run:" ;;
+    go-env-fails) t32b_bin="$T19_BIN" t32b_go_fails=1 t32b_hint="could not resolve Go's bin dir; run:" ;;
+  esac
+  out="$( (
+    sandbox "T32b-$id" ""
+    load_script
+    PATH="$t32b_bin" T19_GOBIN=/x/bin T19_GO_FAILS="$t32b_go_fails" \
+      install_go_tool lazygit "$GO_TOOL_LAZYGIT" >/dev/null
+    want="lazygit: $t32b_hint GOTOOLCHAIN=local go install $GO_TOOL_LAZYGIT"
+    [[ ${#WARNINGS[@]} -eq 1 && "${WARNINGS[0]}" == "$want" ]] \
+      || { echo "${#WARNINGS[@]} warnings: ${WARNINGS[*]}; want one: $want"; exit 1; }
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" || t32b_fail+="[$id hint: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T32b-go-hints-local "$t32b_fail"
+
+# T32c: the manual hints in install_python_tool (uv missing, uv tool dir fails) carry
+# UV_PYTHON_DOWNLOADS=never, so following one never triggers the Python download the script avoids. PATH
+# has no uv (EMPTY_BIN) or only T17's uv stub, which answers uv tool dir --bin and fails it when
+# T17_UV_DIR_FAILS is set; nothing is installed.
+t32c_fail=""
+for id in uv-missing uv-dir-fails; do
+  case "$id" in
+    uv-missing) t32c_bin="$EMPTY_BIN" t32c_dir_fails="" t32c_hint="install uv, then run:" ;;
+    uv-dir-fails) t32c_bin="$T17_BIN" t32c_dir_fails=1 t32c_hint="could not resolve uv's tool bin dir; run:" ;;
+    *)
+      t32c_fail+="[$id: unknown case] "
+      continue
+      ;;
+  esac
+  out="$( (
+    recording_sandbox "T32c-$id"
+    load_script
+    PATH="$t32c_bin" T17_UV_DIR_FAILS="$t32c_dir_fails" install_python_tool black >/dev/null
+    want="black: $t32c_hint UV_PYTHON_DOWNLOADS=never uv tool install black"
+    [[ ${#WARNINGS[@]} -eq 1 && "${WARNINGS[0]}" == "$want" ]] \
+      || { echo "${#WARNINGS[@]} warnings: ${WARNINGS[*]}; want one: $want"; exit 1; }
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" || t32c_fail+="[$id hint: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T32c-uv-hints-no-python-downloads "$t32c_fail"
+
+# T33 (RUN_FEDORA=1): the dnf path end to end in a fedora:44 container (tests/lib/fedora-container.sh:
+# a --packages-only run, then a full run, then its checks that the full run installed no package again
+# (Fedora 44's nodejs is a Provides of nodejs22), nvim came from dnf, the two servers are on PATH, weak
+# dependencies stayed off (no npm), the two Go tools were built, and the full run's config check
+# passed, meaning its first headless launch gave no error message). That covers errors raised
+# while init.lua, lazy's setup (installs and builds), and the start plugins run, and errors those queue
+# with vim.schedule, but not timers, plugins lazy loads later, or VimEnter. It pulls the image and
+# installs packages inside the container, so it needs podman and network; without the variable or
+# podman it is skipped. It passes only when the driver exits 0 and its output has the closing line. The
+# driver runs without BASH_ENV, ENV, and CDPATH like the rest of the suite, but keeps the other
+# variables hermetic_env drops (GIT_*, ZDOTDIR, XDG_CONFIG_HOME, XDG_DATA_HOME, XDG_STATE_HOME,
+# XDG_CACHE_HOME, GOTOOLCHAIN, UV_PYTHON_DOWNLOADS): podman reads its storage from XDG_DATA_HOME and its
+# containers.conf and storage.conf from XDG_CONFIG_HOME (containers.conf(5), containers-storage.conf(5)),
+# so the run uses the user's podman setup. T33 keeps only the last lines of the output; to see all of it,
+# run bash tests/lib/fedora-container.sh "$PWD" from the repository root.
+if [[ "${RUN_FEDORA:-0}" != 1 ]]; then
+  echo "SKIP T33-fedora-container (set RUN_FEDORA=1 to run the dnf path in a fedora:44 container; needs podman and network)"
+elif ! command -v podman >/dev/null 2>&1; then
+  echo "SKIP T33-fedora-container (RUN_FEDORA=1, but podman is not installed)"
+else
+  out="$(env -u BASH_ENV -u ENV -u CDPATH bash "$LIB/fedora-container.sh" "$ROOT" 2>&1)"
+  rc=$?
+  t33_note=""
+  if [[ $rc -eq 0 ]] && ! grep -qxF "### all steps passed" <<<"$out"; then
+    rc=1
+    t33_note=" (no closing line)"
+  fi
+  result T33-fedora-container $rc "last step: $(grep -E '^### ' <<<"$out" | tail -n1); $(tail -n3 <<<"$out" | tr '\n' ' ')$t33_note"
+fi
+
+# T34: the driver library's lists are current. run_main_stubbed stops a driver, before anything runs,
+# when DRIVER_RUNS_REAL or DRIVER_STUBBED names a function main does not call (a step removed or renamed
+# in main would otherwise leave its entry behind unnoticed), and the message names the list and the
+# entry. Each case runs T23's driver against a copy of tests/lib whose library has one stale name
+# appended to a list.
+t34_fail=""
+for list in DRIVER_RUNS_REAL DRIVER_STUBBED; do
+  t34_id="T34-stale-$list"
+  t34_lib="$TMP/lib-$t34_id"
+  mkdir -p "$t34_lib"
+  cp "$LIB/common.sh" "$LIB/driver-lib.sh" "$LIB/driver-T23.sh" "$t34_lib/"
+  printf '%s+=(retired_step)\n' "$list" >>"$t34_lib/driver-lib.sh"
+  out="$( (
+    recording_sandbox "$t34_id"
+    bash "$t34_lib/driver-T23.sh" "$SCRIPT"
+    echo "driver rc=$?"
+  ) </dev/null 2>&1)"
+  grep -qxF "driver rc=1" <<<"$out" && grep -qF "$list lists retired_step" <<<"$out" \
+    && [[ ! -s "$(event_log "$t34_id")" && ! -s "$(sudo_log "$t34_id")" ]] \
+    || t34_fail+="[$list: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T34-driver-lists-current "$t34_fail"
+
+# T35: verify_config warns when the config errors at startup, which Neovim's exit status does not show
+# (it exits 0), shows the error, and keeps the launch's messages in a log; it does not warn when the
+# config only prints. Each case runs the script's verify_config with the real nvim, on a sandbox HOME
+# whose ~/.config/nvim/init.lua is the case's: one with only a comment (clean), one that prints with
+# print and with vim.notify at INFO (messages: headless Neovim writes both to stderr, so a check that
+# judged by stderr would fail it), one that calls error() (error), one that calls error() from a
+# vim.schedule callback (deferred: lazy.nvim reports a plugin config's error that way, so the launch
+# must run the queued callbacks before it reads v:errmsg), and one that queues a 15-line vim.notify at
+# ERROR and then more prints than the warning shows lines (long-report-then-prints: lazy's report of a
+# failed plugin config is that long, and the log's last lines would hold only the prints, so the check
+# must echo v:errmsg last). Every launch's stderr goes to nvim-install-config-check.log in the state dir
+# under the sandbox HOME. The two clean cases must leave exactly their messages in the log, no warning,
+# no shown lines, and the "Config loads cleanly" line once. The three that error must leave their error
+# text in the log and in the lines shown indented under the first warning, exactly verify_config's two
+# warnings in WARNINGS (the list the summary repeats), in order, the first naming the log, and no
+# "Config loads cleanly" line. A sixth case (unwritable-state-dir) points XDG_STATE_HOME at a file, so
+# the log cannot be created: verify_config must skip the launch with one warning naming the log, and
+# print no "Config loads cleanly" line. hermetic_env unsets XDG_CONFIG_HOME, XDG_DATA_HOME,
+# XDG_STATE_HOME (only unwritable-state-dir sets it again), and XDG_CACHE_HOME, so Neovim reads that
+# config and writes its data and state under the sandbox HOME. It keeps XDG_CONFIG_DIRS and
+# XDG_DATA_DIRS, which each case points at an empty scratch dir under $TMP, and points VIM at that dir
+# too, because T35 checks verify_config's detection on a config it writes and the host's sysinit.vim and
+# plugins must not count (XDG_CONFIG_DIRS can list a dir under the real HOME, Arch's
+# /etc/xdg/nvim/sysinit.vim adds /usr/share/vim/vimfiles to the runtimepath, and with no
+# nvim/sysinit.vim in XDG_CONFIG_DIRS Neovim reads the system vimrc, $VIM/sysinit.vim): a host plugin or
+# system vimrc that errors would fail the clean cases, and pass the three that error for the wrong
+# reason. Neovim still finds its own runtime: each case sets VIMRUNTIME to the dir t35_nvim_runtime
+# reads once, since Neovim would otherwise take a VIM that holds no runtime dir as the runtime itself
+# (starting.txt, $VIMRUNTIME). TMPDIR is a scratch dir under $TMP too, and NVIM_APPNAME and VIMINIT
+# (which would make Neovim read another config) and NVIM_LOG_FILE (which would put its log elsewhere)
+# are unset. Without nvim on PATH, or when nvim reports no runtime dir, T35 fails and says so.
+t35_fail=""
+t35_loads="Config loads cleanly"
+t35_log_name="nvim-install-config-check.log"
+# verify_config prints the log's last lines with this indent, under its first warning
+t35_shown_indent="      "
+# As long as lazy.nvim's report of a failed plugin config (15 lines of v:errmsg), queued, then followed
+# by more prints (25) than verify_config shows lines, so the report stays shown only when the check
+# echoes v:errmsg after them
+t35_long_report_head="long report: config failed"
+t35_long_report_init="$(
+  cat <<EOF
+local report = { "$t35_long_report_head" }
+for frame = 2, 15 do report[frame] = "  - report frame " .. frame end
+vim.schedule(function() vim.notify(table.concat(report, "\n"), vim.log.levels.ERROR) end)
+vim.schedule(function() for line = 1, 25 do print("after the report " .. line) end end)
+EOF
+)"
+# Prints the runtime dir nvim finds on its own, read as starting.txt shows with VIM and VIMRUNTIME
+# unset, so neither the caller's values nor a case's scratch VIM decide it; fails when that dir holds
+# no doc/help.txt
+t35_nvim_runtime() {
+  local runtime
+  # shellcheck disable=SC2016  # $VIMRUNTIME is for nvim's :echo to expand, not the shell
+  runtime="$(env -u VIM -u VIMRUNTIME nvim --clean --headless --cmd 'echo $VIMRUNTIME|q' 2>&1)" || return 1
+  [[ -f "$runtime/doc/help.txt" ]] || return 1
+  printf '%s\n' "$runtime"
+}
+if ! type -P nvim >/dev/null; then
+  t35_fail="[nvim not on PATH] "
+elif ! t35_runtime="$(
+  sandbox T35-runtime ""
+  t35_nvim_runtime
+)"; then
+  t35_fail="[nvim reports no runtime dir that holds doc/help.txt] "
+else
+  # Each case sets its init.lua, its kind (clean, error, or skipped), and what its kind checks: the
+  # exact log a clean case leaves, or the text a case that errors must leave in the log and the shown
+  # lines. Only unwritable-state-dir sets XDG_STATE_HOME (to a file).
+  for id in clean messages error deferred long-report-then-prints unwritable-state-dir; do
+    t35_home="$(sandbox_home "T35-$id")"
+    t35_state_home="$t35_home/.local/state" t35_state_home_is_file=false
+    t35_init='-- no settings' t35_want_log="" t35_error=""
+    case "$id" in
+      clean) t35_kind=clean ;;
+      messages)
+        t35_init=$'print("loading")\nvim.notify("loaded", vim.log.levels.INFO)'
+        t35_kind=clean t35_want_log=$'loading\nloaded'
+        ;;
+      error) t35_init='error("broken config")' t35_kind=error t35_error="broken config" ;;
+      deferred)
+        t35_init='vim.schedule(function() error("queued failure") end)'
+        t35_kind=error t35_error="queued failure"
+        ;;
+      long-report-then-prints)
+        t35_init="$t35_long_report_init"
+        t35_kind=error t35_error="$t35_long_report_head"
+        ;;
+      unwritable-state-dir)
+        t35_state_home="$t35_home/state-file" t35_state_home_is_file=true
+        t35_kind=skipped
+        ;;
+    esac
+    t35_log="$t35_state_home/nvim/$t35_log_name"
+    case "$t35_kind" in
+      clean) t35_want_warnings="" t35_want_loads_lines=1 ;;
+      error)
+        t35_want_warnings="Config reported errors at startup (full log: $t35_log)"
+        t35_want_warnings+=$'\nLaunch nvim to see them'
+        t35_want_loads_lines=0
+        ;;
+      skipped)
+        t35_want_warnings="Skipped the config check: could not write its log $t35_log"
+        t35_want_loads_lines=0
+        ;;
+    esac
+    out="$( (
+      sandbox "T35-$id" ""
+      load_script
+      unset NVIM_APPNAME VIMINIT NVIM_LOG_FILE
+      TMPDIR="$TMP/T35-$id-tmp"
+      XDG_CONFIG_DIRS="$TMP/T35-$id-system-dirs"
+      XDG_DATA_DIRS="$TMP/T35-$id-system-dirs"
+      VIM="$TMP/T35-$id-system-dirs"
+      VIMRUNTIME="$t35_runtime"
+      export TMPDIR XDG_CONFIG_DIRS XDG_DATA_DIRS VIM VIMRUNTIME
+      mkdir -p "$TMPDIR" "$XDG_CONFIG_DIRS" "$HOME/.config/nvim"
+      if [[ "$t35_state_home_is_file" == true ]]; then
+        XDG_STATE_HOME="$t35_state_home"
+        export XDG_STATE_HOME
+        : >"$XDG_STATE_HOME"
+      fi
+      printf '%s\n' "$t35_init" >"$HOME/.config/nvim/init.lua"
+      verify_config
+      for warning in "${WARNINGS[@]}"; do
+        printf 'WARNING %s\n' "$warning"
+      done
+      echo DONE
+    ) </dev/null 2>&1)"
+    t35_rc=$?
+    t35_shown="$(sed -n "s/^$t35_shown_indent//p" <<<"$out")"
+    t35_problems=""
+    [[ "$(sed -n 's/^WARNING //p' <<<"$out")" == "$t35_want_warnings" ]] \
+      || t35_problems+="want warnings '${t35_want_warnings//$'\n'/; }'; "
+    [[ "$(grep -cF "$t35_loads" <<<"$out")" -eq "$t35_want_loads_lines" ]] \
+      || t35_problems+="want $t35_want_loads_lines '$t35_loads' line(s); "
+    case "$t35_kind" in
+      clean)
+        [[ -f "$t35_log" && "$(<"$t35_log")" == "$t35_want_log" ]] \
+          || t35_problems+="want the log $t35_log to hold exactly '${t35_want_log//$'\n'/; }'; "
+        [[ -z "$t35_shown" ]] || t35_problems+="want no shown lines; "
+        ;;
+      error)
+        if [[ ! -f "$t35_log" ]]; then
+          t35_problems+="want the log $t35_log; "
+        elif ! grep -qF -- "$t35_error" "$t35_log"; then
+          t35_problems+="want '$t35_error' in the log; "
+        fi
+        grep -qF -- "$t35_error" <<<"$t35_shown" \
+          || t35_problems+="want '$t35_error' in the shown lines; "
+        ;;
+      skipped)
+        [[ ! -e "$t35_log" && -z "$t35_shown" ]] || t35_problems+="want no log and no shown lines; "
+        ;;
+    esac
+    done_ok "$t35_rc" "$out" && [[ -z "$t35_problems" ]] \
+      || t35_fail+="[$id: ${t35_problems}got: $(tr '\n' ' ' <<<"$out")] "
+  done
+fi
+expect_none T35-config-errors "$t35_fail"
+
+# T35b: verify_config creates the dirs on its log's path private to the user (0700), as Neovim creates
+# its own, whatever the caller's umask: with NVIM_LOG_FILE set, Neovim's launch creates none of them, so
+# on a fresh account they are the ones verify_config made, and Neovim's undo files (undofile) later land
+# under them. The case runs verify_config with the real nvim on a fresh sandbox HOME, with umask 022,
+# NVIM_LOG_FILE at a scratch file outside HOME, and T35's isolation from the host's system dirs, and
+# requires ~/.local, ~/.local/state, and ~/.local/state/nvim to be 0700. Without the runtime dir T35 read
+# (no nvim on PATH, or none reported), it fails and says so.
+t35b_fail=""
+if [[ -z "${t35_runtime:-}" ]]; then
+  t35b_fail="[no nvim runtime dir from T35: nvim is missing or reports none] "
+else
+  out="$( (
+    sandbox T35b-private-state ""
+    load_script
+    umask 022
+    unset NVIM_APPNAME VIMINIT
+    TMPDIR="$TMP/T35b-tmp" NVIM_LOG_FILE="$TMP/T35b-nvim.log" VIMRUNTIME="$t35_runtime"
+    XDG_CONFIG_DIRS="$TMP/T35b-system-dirs" XDG_DATA_DIRS="$TMP/T35b-system-dirs" VIM="$TMP/T35b-system-dirs"
+    export TMPDIR NVIM_LOG_FILE VIMRUNTIME XDG_CONFIG_DIRS XDG_DATA_DIRS VIM
+    mkdir -p "$TMPDIR" "$XDG_CONFIG_DIRS" "$HOME/.config/nvim"
+    printf '%s\n' '-- no settings' >"$HOME/.config/nvim/init.lua"
+    verify_config >/dev/null
+    stat -c 'MODE %a %n' "$HOME/.local" "$HOME/.local/state" "$HOME/.local/state/nvim"
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" || t35b_fail+="[rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  t35b_modes="$(sed -n 's/^MODE //p' <<<"$out")"
+  [[ "$(grep -c '^700 ' <<<"$t35b_modes")" -eq 3 ]] || t35b_fail+="[want 700 for each: ${t35b_modes//$'\n'/; }] "
+fi
+expect_none T35b-config-check-state-dir-private "$t35b_fail"
+
+# T36: on dnf, pkg_is_installed finds a package by what an installed package provides, as dnf install
+# resolves a name, and not only by the installed package names. Fedora 44's nodejs is a Provides of
+# nodejs22, so rpm -q nodejs fails with nodejs22 installed, and a check by name alone made every rerun
+# install nodejs again. rpm is a stub (T36_BIN) that answers as Fedora's rpm does for nodejs22, which
+# also provides nodejs, and ripgrep, which provides only itself; a name nothing provides stays missing.
+t36_fail=""
+for tc in nodejs:installed ripgrep:installed not-a-package:missing; do
+  t36_name="${tc%%:*}" t36_want="${tc#*:}"
+  out="$( (
+    sandbox "T36-$t36_name" "$T36_BIN"
+    load_script
+    set_pkg_manager dnf
+    T36_INSTALLED="nodejs22:nodejs ripgrep"
+    export T36_INSTALLED
+    if pkg_is_installed "$t36_name"; then
+      echo "found installed"
+    else
+      echo "found missing"
+    fi
+    echo DONE
+  ) </dev/null 2>&1)"
+  done_ok $? "$out" && grep -qxF "found $t36_want" <<<"$out" \
+    || t36_fail+="[$t36_name: want $t36_want, got: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T36-dnf-installed-by-provides "$t36_fail"
+
+# T37: every supported package manager reaches each package step: for pacman, dnf, apt-get and apk,
+# each step of install_deps that branches on PKG_MGR (T37_STEPS) makes at least one install_pkgs or
+# warn_manual call, and the plan screen (t2_plan) has a step 2 line. A case statement runs no arm for a
+# manager its labels leave out, so that step would do nothing for that manager and nothing would say
+# so. The steps run sourced, on an empty PATH, with install_pkgs and warn_manual stubbed to log the
+# step that called them to the manager's event log, and has_system_typescript stubbed to succeed, so no
+# host command decides the outcome. A warn does not count: install_linters' hadolint hint runs for
+# every manager, whatever its arm did.
+T37_STEPS=(install_build_tools install_runtimes install_language_servers install_formatters install_linters
+  install_tui_tools)
+# Runs T37_STEPS for package manager $1, each install_pkgs or warn_manual call appending the name of
+# the step running to event_log T37-$1, and prints the steps' stderr, then DONE
+t37_case() {
+  (
+    sandbox "T37-$1" ""
+    t37_log="$(event_log "T37-$1")"
+    : >"$t37_log"
+    load_script
+    set_pkg_manager "$1"
+    must_override install_pkgs
+    must_override warn_manual
+    must_override has_system_typescript
+    # shellcheck disable=SC2329  # the steps call it
+    install_pkgs() { printf '%s\n' "$t37_running" >>"$t37_log"; }
+    # shellcheck disable=SC2329  # the steps call it
+    warn_manual() { printf '%s\n' "$t37_running" >>"$t37_log"; }
+    # shellcheck disable=SC2329  # install_language_servers calls it
+    has_system_typescript() { return 0; }
+    for t37_running in "${T37_STEPS[@]}"; do
+      PATH="$EMPTY_BIN" "$t37_running" >/dev/null
+    done
+    echo DONE
+  ) </dev/null 2>&1
+}
+t37_fail=""
+for t37_mgr in pacman dnf apt-get apk; do
+  out="$(t37_case "$t37_mgr")"
+  rc=$?
+  t37_log="$(event_log "T37-$t37_mgr")"
+  if done_ok $rc "$out"; then
+    for t37_step in "${T37_STEPS[@]}"; do
+      grep -qxF "$t37_step" "$t37_log" || t37_fail+="[$t37_mgr: $t37_step made no install or manual call] "
+    done
+  else
+    t37_fail+="[$t37_mgr: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  fi
+  out="$(t2_plan "T37-$t37_mgr" "$t37_mgr" false)"
+  grep -qE '^ +2\. Install ' <<<"$out" \
+    || t37_fail+="[$t37_mgr: no step 2 line on the plan screen: $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T37-every-manager-reaches-each-step "$t37_fail"
+
+# T38: pkg_installed_nvim prints the nvim binary the installed neovim package lists, from each manager's
+# file list: pacman -Qlq, rpm -ql, dpkg-query -L, and apk info -L, which prints paths relative to /,
+# after a header line or, at a higher verbosity, each after the package name and ": ", so it prints that
+# entry as an absolute path too. Of two bin/nvim entries it prints the first. A list with no bin/nvim in
+# it, only near misses (an sbin/nvim, a bin/nvim-qt), or a list command that fails (even one that
+# printed the list first), makes it fail with nothing on stdout. It runs sourced, with set_pkg_manager,
+# on a PATH of T38_BIN alone, so no real package manager can answer: the list command there is a stub
+# (tests/lib/stubs/t38-pkg-files) that logs each call to the case's event log, and each case checks that
+# the one call was its manager's.
+# Runs pkg_installed_nvim for manager $1 in case $2, which picks the file list: absolute (absolute paths,
+# /usr/bin/nvim among them, and another bin/nvim after it), relative (apk's form: a header line, then
+# paths relative to /), prefixed (apk's form at a higher verbosity: each path relative to / after
+# "neovim: "), no-nvim (absolute paths, none of them a bin/nvim, though /usr/sbin/nvim and
+# /usr/bin/nvim-qt come close), or query-fails (the absolute list, printed by a list command that then
+# fails). Prints "STATUS ok" or "STATUS failed", then "PRINTED [<its stdout>]", then DONE.
+t38_case() {
+  (
+    sandbox "T38-$1-$2" ""
+    load_script
+    set_pkg_manager "$1"
+    case "$2" in
+      absolute | query-fails)
+        T38_PKG_FILES=$'/usr/\n/usr/bin/\n/usr/bin/nvim\n/usr/lib/nvim/bin/nvim\n/usr/lib/nvim/parser/c.so\n/usr/share/nvim/runtime/syntax/vim.vim'
+        ;;
+      relative)
+        T38_PKG_FILES=$'neovim-0.12.6-r0 contains:\nusr/bin/nvim\nusr/lib/nvim/parser/c.so\nusr/share/nvim/runtime/syntax/vim.vim\n'
+        ;;
+      prefixed)
+        T38_PKG_FILES=$'neovim: usr/bin/nvim\nneovim: usr/lib/nvim/parser/c.so\nneovim: usr/share/nvim/runtime/syntax/vim.vim\n'
+        ;;
+      no-nvim)
+        T38_PKG_FILES=$'/usr/\n/usr/bin/\n/usr/bin/nvim-qt\n/usr/lib/nvim/parser/c.so\n/usr/sbin/nvim\n/usr/share/nvim/runtime/syntax/vim.vim'
+        ;;
+      *)
+        echo "t38_case: unknown case $2"
+        exit 1
+        ;;
+    esac
+    if [[ "$2" == query-fails ]]; then
+      T38_QUERY_FAILS=1
+      export T38_QUERY_FAILS
+    fi
+    T38_LOG="$(event_log "T38-$1-$2")"
+    : >"$T38_LOG"
+    export T38_LOG T38_PKG_FILES
+    if t38_printed="$(PATH="$T38_BIN" pkg_installed_nvim)"; then
+      echo "STATUS ok"
+    else
+      echo "STATUS failed"
+    fi
+    echo "PRINTED [$t38_printed]"
+    echo DONE
+  ) </dev/null 2>&1
+}
+# Manager and the call that lists the neovim package's files on it
+for t38_tc in "pacman:pacman -Qlq neovim" "dnf:rpm -ql neovim" "apt-get:dpkg-query -L neovim" \
+  "apk:apk info -L neovim"; do
+  t38_mgr="${t38_tc%%:*}" t38_call="${t38_tc#*:}"
+  # Case id and the path pkg_installed_nvim must print (empty: it must fail); only apk prints the
+  # relative and prefixed forms, and every manager's case runs the absolute one
+  t38_cases=(absolute:/usr/bin/nvim no-nvim: query-fails:)
+  if [[ "$t38_mgr" == apk ]]; then
+    t38_cases+=(relative:/usr/bin/nvim prefixed:/usr/bin/nvim)
+  fi
+  problems=""
+  for t38_spec in "${t38_cases[@]}"; do
+    t38_id="${t38_spec%%:*}" t38_want="${t38_spec#*:}"
+    out="$(t38_case "$t38_mgr" "$t38_id")"
+    rc=$?
+    t38_log="$(event_log "T38-$t38_mgr-$t38_id")"
+    t38_want_status=failed
+    if [[ -n "$t38_want" ]]; then
+      t38_want_status=ok
+    fi
+    t38_problems=""
+    done_ok $rc "$out" || t38_problems+="rc=$rc; "
+    grep -qxF "STATUS $t38_want_status" <<<"$out" || t38_problems+="want status $t38_want_status; "
+    grep -qxF "PRINTED [$t38_want]" <<<"$out" || t38_problems+="want printed [$t38_want]; "
+    [[ "$(cat "$t38_log")" == "$t38_call" ]] \
+      || t38_problems+="want the one call '$t38_call', got '$(tr '\n' ';' <"$t38_log")'; "
+    [[ -z "$t38_problems" ]] || problems+="[$t38_id: ${t38_problems}got: $(tail -n4 <<<"$out" | tr '\n' ' ')] "
+  done
+  expect_none "T38-pkg-installed-nvim $t38_mgr" "$problems"
+done
 
 # T21 (last): no test reached a refusing DENY_BIN stub
 if [[ -e "$TMP/refused.log" ]]; then

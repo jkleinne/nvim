@@ -38,14 +38,20 @@ setup_colors
 log_step() { printf '%s\n' "$1" >>"${EVENT_LOG:?}"; }
 
 # What run_main_stubbed does with each function main calls. Run as they are: setup_colors (it only sets
-# the output variables), forget_sudo_credentials (under test, against the recording sudo), and two
-# helpers main uses itself, cleanup (its EXIT trap, under test) and info. Stubbed by a function that
-# logs the step's name, unless the driver handles the step: the rest.
-DRIVER_RUNS_REAL=(setup_colors forget_sudo_credentials cleanup info)
+# the output variables), forget_sudo_credentials (under test, against the recording sudo), parse_args (so
+# the arguments a driver passes take effect; its own error and usage calls stay inside it, out of the
+# step scan), and two helpers main uses itself, cleanup (its EXIT trap, under test) and info. Stubbed by
+# a function that logs the step's name, unless the driver handles the step: the rest. Every name in the
+# two lists must be a function main calls: run_main_stubbed stops the driver on one that is not.
+DRIVER_RUNS_REAL=(setup_colors forget_sudo_credentials parse_args cleanup info)
 DRIVER_STUBBED=(
-  usage require_non_root detect_os detect_arch detect_pkg_manager detect_shell confirm_proceed
-  install_neovim install_deps install_user_tools setup_config setup_path verify_install print_summary
+  require_non_root detect_os detect_arch detect_pkg_manager detect_shell confirm_proceed
+  install_neovim install_deps put_install_dir_first_on_path install_user_tools setup_config setup_path
+  verify_nvim verify_config print_summary
 )
+# The arguments run_main_stubbed passes to main: none by default. A driver sets the array before calling
+# it; bash arrays do not export, so a driver that needs arguments splits a scalar the suite exports.
+DRIVER_MAIN_ARGS=()
 
 # Succeeds when $1 is one of the remaining arguments
 is_one_of() {
@@ -76,13 +82,29 @@ main_steps() {
   done
 }
 
+# Stops the driver when the list named $1 holds a name that is not among the remaining arguments (the
+# functions main calls): such an entry is left over from a step main no longer has
+stop_on_stale_entries() {
+  local list_name="$1" entries="$1[@]" name
+  shift
+  for name in "${!entries}"; do
+    if ! is_one_of "$name" "$@"; then
+      echo "run_main_stubbed: $list_name lists $name, but main does not call it; remove it from driver-lib.sh"
+      exit 1
+    fi
+  done
+}
+
 # Runs main with each of its steps stubbed, except the ones in DRIVER_RUNS_REAL and the ones the driver
 # handles (its arguments: steps it overrode, or lets run as they are). The steps come from main itself,
 # so a step added to main never runs for real by accident: one this library does not know stops the
-# driver, and so does a handled step that main no longer calls.
+# driver, and so does a handled step that main no longer calls, and a name in either list that main no
+# longer calls.
 run_main_stubbed() {
   local step steps=()
   mapfile -t steps < <(main_steps)
+  stop_on_stale_entries DRIVER_RUNS_REAL "${steps[@]}"
+  stop_on_stale_entries DRIVER_STUBBED "${steps[@]}"
   for step in "$@"; do
     if ! is_one_of "$step" "${steps[@]}"; then
       echo "run_main_stubbed: the driver handles $step, but main does not call it"
@@ -101,5 +123,5 @@ run_main_stubbed() {
     fi
     eval "$step() { log_step $step; }"
   done
-  main
+  main "${DRIVER_MAIN_ARGS[@]}"
 }

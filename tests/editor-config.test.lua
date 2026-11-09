@@ -5,26 +5,27 @@
 --
 -- Hermetic: XDG_STATE_HOME, XDG_DATA_HOME, and XDG_CACHE_HOME point at a scratch dir (removed at the
 -- end) before anything calls stdpath, so the real trust database and data dirs are never read or
--- written; setting them inside this nvim is enough, because stdpath reads the environment on each
--- call (checked below before any test runs). The scratch dir is a resolved path: Neovim resolves
--- symlinks in the names of existing files, and TMPDIR may be a symlink. It must not be inside a
--- project (a .terraform or .git above it would change the roots the cases expect), and
--- 'runtimepath' holds only $VIMRUNTIME (--clean keeps the system site dirs, where an lsp/*.lua
--- would change what vim.lsp.config resolves) until L15c, the last case, prepends a scratch
--- lazy.nvim dir. The plugins are stub modules in package.loaded; the lsp_gates modules are the real
--- ones. Every case starts with PATH set to an empty scratch dir and Arch's TypeScript path
--- (lsp_gates.typescript.ARCH_TSSERVER) pointing at a missing scratch path; the cases that depend on
--- which commands exist set PATH to scratch dirs of stub commands (they exit 1 and no test runs
--- them), and the TypeScript cases point ARCH_TSSERVER at a scratch package. The trust cases use the
--- real vim.secure functions on the scratch trust database. Stubbed per case and restored after it:
--- vim.notify, vim.fn.confirm (a trust prompt is recorded and cancelled, so it never waits for
--- input), vim.secure.read (wrapped to record its calls), vim.lsp.enable and vim.cmd.doautoall
--- (recorded instead of run in the :TerraformTrust cases), vim.secure.trust (L10f), vim.uv.getuid
--- (L8b, L9k, L10c, L10h), vim.uv.os_get_passwd (L10c), HOME, and EDITOR_TEST_ALIAS (L9m, L9n,
--- L10i); the gates' per-session notices are reset. L10g wraps vim.lsp's functions around one call
--- and restores them itself. L15c stubs the lazy module and removes the stub itself; it leaves
--- vim.loader enabled, with its cache in the scratch dir. Nothing is installed or downloaded, and no
--- language server starts. Exits nonzero when a test fails.
+-- written; setting them inside this nvim is enough, because stdpath reads the environment on each call
+-- (checked below before any test runs). The scratch dir is a resolved path: Neovim resolves symlinks in
+-- the names of existing files, and TMPDIR may be a symlink. It must not be inside a project (a
+-- .terraform or .git above it would change the roots the cases expect), and 'runtimepath' holds only
+-- $VIMRUNTIME (--clean keeps the system site dirs, where an lsp/*.lua would change what vim.lsp.config
+-- resolves) until L15c, the last case, prepends a scratch lazy.nvim dir. The plugins are stub modules
+-- in package.loaded; the lsp_gates modules are the real ones, except that L1b and F5 put another server
+-- inventory in place of lsp_gates.servers for one config() run and then put the real one back
+-- (load_lsp_with_inventory). Every case starts with PATH set to an empty scratch dir and Arch's
+-- TypeScript path (lsp_gates.typescript.ARCH_TSSERVER) pointing at a missing scratch path; the cases
+-- that depend on which commands exist set PATH to scratch dirs of stub commands (they exit 1 and no
+-- test runs them), and the TypeScript cases point ARCH_TSSERVER at a scratch package. The trust cases
+-- use the real vim.secure functions on the scratch trust database. Stubbed per case and restored after
+-- it: vim.notify, vim.fn.confirm (a trust prompt is recorded and cancelled, so it never waits for
+-- input), vim.secure.read (wrapped to record its calls), vim.lsp.enable and vim.cmd.doautoall (recorded
+-- instead of run in the :TerraformTrust cases), vim.secure.trust (L10f), vim.uv.getuid (L8b, L9k, L10c,
+-- L10h), vim.uv.os_get_passwd (L10c), HOME, and EDITOR_TEST_ALIAS (L9m, L9n, L10i); the gates'
+-- per-session notices are reset. L10g wraps vim.lsp's functions around one call and restores them
+-- itself. L15c stubs the lazy module and removes the stub itself; it leaves vim.loader enabled, with
+-- its cache in the scratch dir. Nothing is installed or downloaded, and no language server starts.
+-- Exits nonzero when a test fails.
 
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:gsub("^@", ""), ":p:h:h")
 -- Resolved before any path is built from it, so those paths match the (resolved) buffer names
@@ -153,16 +154,30 @@ local system_cmds = {
   ts_ls = { "typescript-language-server", "--stdio" },
   yamlls = { "yaml-language-server", "--stdio" },
 }
+-- Stand-ins for a system server a distro does not package, enabled only when that server is not enabled
+local fallback_specs = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } }
 local retired_names = { "ansiblels", "docker_compose_language_service", "docker_language_server", "sqlls" }
 local never_names = { "esbonio", "golangci_lint_ls", "terraform_lsp", "tflint", "tofu_ls", "tvm_ffi_navigator" }
 local server_names = vim.tbl_keys(system_cmds)
 table.sort(server_names)
+local fallback_names = vim.tbl_keys(fallback_specs)
+table.sort(fallback_names)
 local server_bins = {}
 for _, name in ipairs(server_names) do
   server_bins[#server_bins + 1] = system_cmds[name][1]
 end
 -- Every config a case can enable or change
-local lsp_names = concat(mason_names, server_names, retired_names, never_names)
+local lsp_names = concat(mason_names, server_names, fallback_names, retired_names, never_names)
+-- Another inventory, which L1b swaps in for lua/lsp_gates/servers.lua. The fallback keeps the name
+-- pylsp (restore() resets the configs of the names this suite knows) but replaces another server and
+-- runs another command
+local other_inventory = {
+  mason = { "gopls" },
+  system = { bashls = { "other-bash-server", "start" } },
+  fallbacks = { pylsp = { replaces = "bashls", cmd = { "other-pylsp", "--x" } } },
+  retired = { "sqlls" },
+  never = { "tflint" },
+}
 
 -- A scratch dir holding a stub executable for each command, for use as the whole PATH
 local function bin_dir(name, commands)
@@ -185,6 +200,17 @@ local bins = {
   -- manager's shim
   servers_tsserver = bin_dir("servers-tsserver", vim.list_extend({ "tsserver" }, server_bins)),
   terraform = bin_dir("terraform", { "terraform" }),
+  -- The fallback's command alone, and beside the command of the server it replaces
+  pylsp = bin_dir("pylsp", { fallback_specs.pylsp.cmd[1] }),
+  pylsp_and_pyright = bin_dir("pylsp-and-pyright", { fallback_specs.pylsp.cmd[1], system_cmds.pyright[1] }),
+  -- L1b's other inventory: its fallback's command alone, and beside the command of the server it replaces
+  other_pylsp = bin_dir("other-pylsp", { other_inventory.fallbacks.pylsp.cmd[1] }),
+  other_pylsp_and_bashls = bin_dir(
+    "other-pylsp-and-bashls",
+    { other_inventory.fallbacks.pylsp.cmd[1], other_inventory.system.bashls[1] }
+  ),
+  -- F5: ts_ls's command and the fallback's
+  ts_ls_and_pylsp = bin_dir("ts-ls-and-pylsp", { system_cmds.ts_ls[1], fallback_specs.pylsp.cmd[1] }),
 }
 
 local typescript_package_json = '{"name":"typescript","version":"5.0.0"}'
@@ -283,6 +309,16 @@ local function load_spec(name)
   local spec = dofile(root .. "/lua/plugins/" .. name .. ".lua")
   spec.config()
   return spec
+end
+
+-- load_spec "lsp" with inventory in place of lsp_gates.servers, which goes back afterwards. Returns
+-- pcall's results.
+local function load_lsp_with_inventory(inventory)
+  local real = require "lsp_gates.servers"
+  package.loaded["lsp_gates.servers"] = inventory
+  local ok, err = pcall(load_spec, "lsp")
+  package.loaded["lsp_gates.servers"] = real
+  return ok, err
 end
 
 -- The real vim.secure.read wrapped to record its calls, a vim.fn.confirm that records a trust prompt
@@ -575,11 +611,11 @@ end
 -- ---------------------------------------------------------------------------
 
 -- L1: Mason installs only the native servers, and its automatic enable skips the system servers,
--- the retired ones, and the ones that never start (with or without a system TypeScript), so only
--- lsp.lua's gates start the system servers and a leftover Mason copy of the others is never enabled
--- automatically
+-- the fallbacks, the retired ones, and the ones that never start (with or without a system
+-- TypeScript), so only lsp.lua's gates start the system servers and fallbacks and a leftover Mason
+-- copy of the others is never enabled automatically
 case("L1-mason-list", function()
-  local want_exclude = concat(retired_names, never_names, server_names)
+  local want_exclude = concat(retired_names, never_names, server_names, fallback_names)
   table.sort(want_exclude)
   local problems = {}
   for _, present in ipairs { true, false } do
@@ -602,16 +638,24 @@ case("L1-mason-list", function()
 end)
 
 -- L1b: lsp.lua takes the server inventory from lua/lsp_gates/servers.lua (data only, also read by
--- the installer's tests): the module holds the inventory above, lsp.lua's Mason list, system
--- commands, retired list, and never-start list equal it, and a different inventory in its place
--- changes them
+-- the installer's tests): the module holds the inventory above; each of its fallbacks replaces one of
+-- its system servers; lsp.lua's Mason list, system commands, fallback commands, retired list, and
+-- never-start list equal the module's; and a different inventory in its place changes them
 case("L1b-servers-module", function()
   local servers = require "lsp_gates.servers"
   local problems = {}
   want(problems, vim.deep_equal(servers.mason, mason_names), "module mason " .. show(servers.mason))
   want(problems, vim.deep_equal(servers.system, system_cmds), "module system " .. show(servers.system))
+  want(problems, vim.deep_equal(servers.fallbacks, fallback_specs), "module fallbacks " .. show(servers.fallbacks))
   want(problems, vim.deep_equal(servers.retired, retired_names), "module retired " .. show(servers.retired))
   want(problems, vim.deep_equal(servers.never, never_names), "module never " .. show(servers.never))
+  for name, spec in vim.spairs(servers.fallbacks) do
+    want(
+      problems,
+      servers.system[spec.replaces] ~= nil,
+      "module fallback " .. name .. " replaces " .. show(spec.replaces) .. ", not a module system server"
+    )
+  end
 
   -- Problems unless lsp.lua's lists (from its last config run) equal inventory
   local function lists_problems(label, inventory)
@@ -622,13 +666,18 @@ case("L1b-servers-module", function()
       vim.deep_equal(opts.ensure_installed, inventory.mason),
       label .. "ensure_installed " .. show(opts.ensure_installed)
     )
-    local want_exclude = concat(vim.tbl_keys(inventory.system), inventory.retired, inventory.never)
+    local want_exclude =
+      concat(vim.tbl_keys(inventory.system), vim.tbl_keys(inventory.fallbacks), inventory.retired, inventory.never)
     table.sort(want_exclude)
     local exclude = vim.tbl_get(opts, "automatic_enable", "exclude")
     want(list_problems, vim.deep_equal(exclude, want_exclude), label .. "exclude " .. show(exclude))
     for _, name in ipairs(server_names) do
       local cmd = (vim.lsp.config[name] or {}).cmd
       want(list_problems, vim.deep_equal(cmd, inventory.system[name]), label .. name .. " cmd " .. show(cmd))
+    end
+    for name, spec in pairs(inventory.fallbacks) do
+      local cmd = (vim.lsp.config[name] or {}).cmd
+      want(list_problems, vim.deep_equal(cmd, spec.cmd), label .. name .. " cmd " .. show(cmd))
     end
     local never_start = concat(inventory.retired, inventory.never)
     for _, name in ipairs(concat(retired_names, never_names)) do
@@ -648,18 +697,29 @@ case("L1b-servers-module", function()
 
   restore()
   begin_case()
-  local other = {
-    mason = { "gopls" },
-    system = { bashls = { "other-bash-server", "start" } },
-    retired = { "sqlls" },
-    never = { "tflint" },
-  }
-  package.loaded["lsp_gates.servers"] = other
-  local ok, err = pcall(load_spec, "lsp")
-  package.loaded["lsp_gates.servers"] = servers
+  local ok, err = load_lsp_with_inventory(other_inventory)
   want(problems, ok, "config() with another inventory: " .. tostring(err))
   if ok then
-    vim.list_extend(problems, lists_problems("another inventory: ", other))
+    vim.list_extend(problems, lists_problems("another inventory: ", other_inventory))
+  end
+
+  -- The fallback gate reads that inventory too: the fallback's command, and the server it replaces
+  local gate_runs = {
+    { label = "fallback command alone", path = bins.other_pylsp, want_enabled = { "pylsp" } },
+    {
+      label = "fallback command beside its primary's",
+      path = bins.other_pylsp_and_bashls,
+      want_enabled = { "bashls" },
+    },
+  }
+  for _, run in ipairs(gate_runs) do
+    restore()
+    begin_case()
+    vim.env.PATH = run.path
+    local loaded, load_err = load_lsp_with_inventory(other_inventory)
+    want(problems, loaded, run.label .. ": config() with another inventory: " .. tostring(load_err))
+    local enabled = vim.tbl_filter(vim.lsp.is_enabled, { "bashls", "pylsp" })
+    want(problems, vim.deep_equal(enabled, run.want_enabled), run.label .. ": enabled " .. show(enabled))
   end
   return joined(problems)
 end)
@@ -763,6 +823,275 @@ case("L3-system-servers-absent", function()
   if #enabled > 0 then
     return "enabled: " .. table.concat(enabled, ", ")
   end
+end)
+
+-- F1 to F7i: a fallback (servers.fallbacks) stands in for a system server a distro does not package.
+-- pylsp, Fedora's stand-in for pyright, is enabled only when its command is on PATH and pyright is not
+-- enabled, always gets its list cmd, and runs with settings that keep it from running a project's code.
+-- F1 to F6 check this through lsp.lua. F7 to F7i call the choice itself (lsp_gates.fallbacks) with
+-- literal tables and a fake executable predicate, so they need no stub commands on PATH.
+-- F1: pylsp on PATH and pyright absent enables pylsp
+case("F1-fallback-enabled-without-primary", function()
+  vim.env.PATH = bins.pylsp
+  load_spec "lsp"
+  local problems = {}
+  want(problems, vim.lsp.is_enabled "pylsp", "pylsp not enabled")
+  want(problems, not vim.lsp.is_enabled "pyright", "pyright enabled")
+  return joined(problems)
+end)
+
+-- F2: with both on PATH, pyright is enabled and pylsp is not
+case("F2-primary-wins", function()
+  vim.env.PATH = bins.pylsp_and_pyright
+  load_spec "lsp"
+  local problems = {}
+  want(problems, vim.lsp.is_enabled "pyright", "pyright not enabled")
+  want(problems, not vim.lsp.is_enabled "pylsp", "pylsp enabled")
+  return joined(problems)
+end)
+
+-- F3: with neither on PATH, pylsp is not enabled but keeps its list cmd, so an explicit :lsp enable
+-- pylsp spawns nothing (Neovim refuses a list cmd whose binary is missing), as L2b asserts for the
+-- system servers
+case("F3-fallback-cmd-pinned-when-absent", function()
+  load_spec "lsp"
+  local problems = {}
+  want(problems, not vim.lsp.is_enabled "pylsp", "pylsp enabled")
+  local cmd = (vim.lsp.config.pylsp or {}).cmd
+  want(problems, vim.deep_equal(cmd, fallback_specs.pylsp.cmd), "pylsp cmd " .. show(cmd))
+  return joined(problems)
+end)
+
+-- F4: pylsp's jedi runs only the system interpreter (never an active venv's), imports no module for
+-- completion (the default list is { "numpy" }; the empty Lua table must reach pylsp as the JSON array
+-- []), the linters and formatters pylsp bundles and the add-ons Fedora packages for it (ruff, black)
+-- are off (ruff and black do that work through nvim-lint and conform), its import preloading is off
+-- through init_options (pylsp decides that at initialize, before the settings arrive), and its
+-- signature formatting is off in both the settings and init_options (pylsp runs the formatter as
+-- `<python> -m black` from Neovim's cwd, so a repo's black.py there would run in its place)
+case("F4-pylsp-settings", function()
+  load_spec "lsp"
+  local config = vim.lsp.config.pylsp or {}
+  local plugins = vim.tbl_get(config, "settings", "pylsp", "plugins") or {}
+  local problems = {}
+  local environment = vim.tbl_get(plugins, "jedi", "environment")
+  want(problems, environment == "/usr/bin/python3", "jedi.environment " .. show(environment))
+  local auto_import = vim.tbl_get(plugins, "jedi", "auto_import_modules")
+  want(
+    problems,
+    auto_import ~= nil and vim.json.encode(auto_import) == "[]",
+    "jedi.auto_import_modules " .. show(auto_import)
+  )
+  for _, name in ipairs { "pycodestyle", "pyflakes", "mccabe", "autopep8", "yapf", "ruff", "black" } do
+    local enabled = vim.tbl_get(plugins, name, "enabled")
+    want(problems, enabled == false, name .. ".enabled " .. show(enabled))
+  end
+  local preload = vim.tbl_get(config, "init_options", "pylsp", "plugins", "preload", "enabled")
+  want(problems, preload == false, "init_options preload.enabled " .. show(preload))
+  local formatter = vim.tbl_get(config, "settings", "pylsp", "signature", "formatter")
+  want(problems, formatter == false, "signature.formatter " .. show(formatter))
+  local init_formatter = vim.tbl_get(config, "init_options", "pylsp", "signature", "formatter")
+  want(problems, init_formatter == false, "init_options signature.formatter " .. show(init_formatter))
+  return joined(problems)
+end)
+
+-- F5: a primary that is present but gated off lets its fallback run. Here pylsp replaces ts_ls, whose
+-- gate is a system TypeScript: both commands are on PATH, and pylsp runs only without the TypeScript
+case("F5-fallback-runs-when-primary-gated-off", function()
+  vim.env.PATH = bins.ts_ls_and_pylsp
+  local inventory = {
+    mason = {},
+    system = { ts_ls = system_cmds.ts_ls },
+    fallbacks = { pylsp = { replaces = "ts_ls", cmd = fallback_specs.pylsp.cmd } },
+    retired = {},
+    never = {},
+  }
+  local problems = {}
+  for _, present in ipairs { false, true } do
+    arch_typescript(present)
+    local ok, err = load_lsp_with_inventory(inventory)
+    local label = present and "with TypeScript: " or "without TypeScript: "
+    want(problems, ok, label .. "config(): " .. tostring(err))
+    local enabled = vim.tbl_filter(vim.lsp.is_enabled, { "ts_ls", "pylsp" })
+    local want_enabled = present and { "ts_ls" } or { "pylsp" }
+    want(problems, vim.deep_equal(enabled, want_enabled), label .. "enabled " .. show(enabled))
+    vim.lsp.enable(lsp_names, false)
+  end
+  return joined(problems)
+end)
+
+-- F6: running the config again (:Lazy reload) once pyright is on PATH leaves pylsp disabled, because
+-- vim.lsp.enable only adds names: the pylsp that the first run enabled would otherwise run beside
+-- pyright. The case does not restore between the two runs.
+case("F6-fallback-disabled-on-reload", function()
+  local problems = {}
+  vim.env.PATH = bins.pylsp
+  load_spec "lsp"
+  want(problems, vim.lsp.is_enabled "pylsp", "first run: pylsp not enabled")
+  vim.env.PATH = bins.pylsp_and_pyright
+  load_spec "lsp"
+  want(problems, vim.lsp.is_enabled "pyright", "second run: pyright not enabled")
+  want(problems, not vim.lsp.is_enabled "pylsp", "second run: pylsp still enabled")
+  return joined(problems)
+end)
+
+-- F6b: running the config again once pyright is gone from PATH leaves pyright disabled, because
+-- vim.lsp.enable only adds names: the pyright that the first run enabled would otherwise start beside
+-- pylsp, the fallback chosen now, as soon as its binary is back. The case does not restore between the
+-- two runs.
+case("F6b-replaced-primary-disabled-on-reload", function()
+  local problems = {}
+  vim.env.PATH = bins.pylsp_and_pyright
+  load_spec "lsp"
+  want(problems, vim.lsp.is_enabled "pyright", "first run: pyright not enabled")
+  vim.env.PATH = bins.pylsp
+  load_spec "lsp"
+  want(problems, vim.lsp.is_enabled "pylsp", "second run: pylsp not enabled")
+  want(problems, not vim.lsp.is_enabled "pyright", "second run: pyright still enabled")
+  return joined(problems)
+end)
+
+-- An executable predicate for lsp_gates.fallbacks.choose that calls exactly the named commands
+-- executable, whatever PATH holds
+local function executable_among(commands)
+  return function(binary)
+    return vim.list_contains(commands, binary)
+  end
+end
+
+-- Problems unless lsp_gates.fallbacks.choose, given run.fallbacks, run.enabled, and a predicate that
+-- calls run.executable's commands executable, returns run.chosen and run.passed_over. The module is
+-- required here, in a case, so a missing one fails these cases instead of stopping the run.
+local function choice_problems(run)
+  local fallbacks = require "lsp_gates.fallbacks"
+  local chosen, passed_over = fallbacks.choose(run.fallbacks, run.enabled, executable_among(run.executable))
+  local problems = {}
+  want(problems, vim.deep_equal(chosen, run.chosen), "chosen " .. show(chosen))
+  want(problems, vim.deep_equal(passed_over, run.passed_over), "passed over " .. show(passed_over))
+  return problems
+end
+
+-- F7: a fallback whose command is executable and whose primary is not enabled is chosen; another
+-- enabled server does not count, and PATH (an empty dir here) plays no part
+case("F7-choose-runnable-fallback", function()
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } },
+    enabled = { "bashls" },
+    executable = { "pylsp" },
+    chosen = { "pylsp" },
+    passed_over = {},
+  })
+end)
+
+-- F7b: an enabled primary never runs beside its fallback, even with the fallback's command executable
+case("F7b-choose-passes-over-when-primary-enabled", function()
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } },
+    enabled = { "bashls", "pyright" },
+    executable = { "pylsp" },
+    chosen = {},
+    passed_over = { "pylsp" },
+  })
+end)
+
+-- F7c: a fallback whose command is not executable is passed over, even with its primary not enabled
+case("F7c-choose-passes-over-when-not-executable", function()
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } },
+    enabled = {},
+    executable = { "pyright-langserver" },
+    chosen = {},
+    passed_over = { "pylsp" },
+  })
+end)
+
+-- F7d: with several fallbacks both lists are sorted, whatever order pairs visits them in
+case("F7d-choose-sorts-both-lists", function()
+  return joined(choice_problems {
+    fallbacks = {
+      zeta_ls = { replaces = "pyright", cmd = { "zeta_ls" } },
+      omega_ls = { replaces = "bashls", cmd = { "omega_ls" } },
+      gamma_ls = { replaces = "yamlls", cmd = { "gamma_ls" } },
+      mid_ls = { replaces = "ts_ls", cmd = { "mid_ls" } },
+      beta_ls = { replaces = "jsonls", cmd = { "beta_ls" } },
+      alpha_ls = { replaces = "dockerls", cmd = { "alpha_ls" } },
+    },
+    enabled = { "pyright", "jsonls" },
+    executable = { "zeta_ls", "omega_ls", "mid_ls", "beta_ls", "alpha_ls" },
+    chosen = { "alpha_ls", "mid_ls", "omega_ls" },
+    passed_over = { "beta_ls", "gamma_ls", "zeta_ls" },
+  })
+end)
+
+-- F7e: no fallbacks gives two empty lists
+case("F7e-choose-empty-fallbacks", function()
+  return joined(choice_problems {
+    fallbacks = {},
+    enabled = { "pyright" },
+    executable = { "pylsp" },
+    chosen = {},
+    passed_over = {},
+  })
+end)
+
+-- F7f: choose changes neither the fallbacks table nor the enabled list (lsp.lua adds the chosen
+-- names to its own list afterwards)
+case("F7f-choose-leaves-inputs-unchanged", function()
+  local run = {
+    fallbacks = {
+      pylsp = { replaces = "pyright", cmd = { "pylsp" } },
+      other_ls = { replaces = "bashls", cmd = { "other-server" } },
+    },
+    enabled = { "bashls" },
+    executable = { "pylsp", "other-server" },
+    chosen = { "pylsp" },
+    passed_over = { "other_ls" },
+  }
+  local fallbacks_before, enabled_before = vim.deepcopy(run.fallbacks), vim.deepcopy(run.enabled)
+  local problems = choice_problems(run)
+  want(problems, vim.deep_equal(run.fallbacks, fallbacks_before), "fallbacks now " .. show(run.fallbacks))
+  want(problems, vim.deep_equal(run.enabled, enabled_before), "enabled now " .. show(run.enabled))
+  return joined(problems)
+end)
+
+-- F7g: only the predicate says what is executable: with pylsp on PATH and pyright not enabled, a
+-- predicate that calls nothing executable passes pylsp over
+case("F7g-choose-ignores-path", function()
+  vim.env.PATH = bins.pylsp
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "pyright", cmd = { "pylsp" } } },
+    enabled = {},
+    executable = {},
+    chosen = {},
+    passed_over = { "pylsp" },
+  })
+end)
+
+-- F7h: the predicate is asked about the first word of a fallback's command, never the server's name
+-- or the whole command: a fallback whose name alone is executable is passed over
+case("F7h-choose-checks-the-command-binary", function()
+  return joined(choice_problems {
+    fallbacks = {
+      other_ls = { replaces = "pyright", cmd = { "other-server", "--stdio" } },
+      plain_ls = { replaces = "bashls", cmd = { "plain-server" } },
+    },
+    enabled = {},
+    executable = { "other-server", "plain_ls" },
+    chosen = { "other_ls" },
+    passed_over = { "plain_ls" },
+  })
+end)
+
+-- F7i: a primary that is no server at all (named in no inventory) counts as not enabled, as an absent
+-- one does
+case("F7i-choose-treats-unknown-primary-as-absent", function()
+  return joined(choice_problems {
+    fallbacks = { pylsp = { replaces = "unknown_ls", cmd = { "pylsp" } } },
+    enabled = { "bashls", "pyright" },
+    executable = { "pylsp" },
+    chosen = { "pylsp" },
+    passed_over = {},
+  })
 end)
 
 -- L4: ts_ls needs a system TypeScript package, so it never loads a repo's node_modules/typescript

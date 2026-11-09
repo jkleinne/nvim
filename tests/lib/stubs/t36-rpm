@@ -1,0 +1,38 @@
+#!/bin/sh
+# T36's rpm: answers rpm -q NAME and rpm -q --whatprovides CAPABILITY as Fedora's rpm does, for the
+# installed packages in $T36_INSTALLED. Each word there is a package, NAME or NAME:CAPABILITY:..., that
+# provides its own name and each CAPABILITY after it. Anything else fails with status 2, which
+# pkg_is_installed reads as missing, so a change in how the script calls rpm fails T36's installed cases.
+
+# Prints the installed package named $1 and succeeds, or fails
+installed_package() {
+  for package in ${T36_INSTALLED:?}; do
+    if [ "${package%%:*}" = "$1" ]; then
+      printf '%s\n' "$1"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Prints the installed package that provides capability $1 and succeeds, or fails
+providing_package() {
+  for package in ${T36_INSTALLED:?}; do
+    case ":$package:" in
+      *":$1:"*)
+        printf '%s\n' "${package%%:*}"
+        return 0
+        ;;
+    esac
+  done
+  return 1
+}
+
+if [ $# -eq 2 ] && [ "$1" = -q ] && [ "${2#-}" = "$2" ]; then
+  installed_package "$2" || { echo "package $2 is not installed"; exit 1; }
+elif [ $# -eq 3 ] && [ "$1" = -q ] && [ "$2" = --whatprovides ]; then
+  providing_package "$3" || { echo "no package provides $3"; exit 1; }
+else
+  echo "STUB RPM: unexpected rpm $*" >&2
+  exit 2
+fi

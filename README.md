@@ -35,7 +35,7 @@ My personal Neovim configuration
 
 ## Requirements
 
-This configuration targets **Arch Linux**. Other Linux distributions work on a best-effort basis through the [bootstrap script](#method-b-bootstrap-script-recommended), which lists the optional tools it cannot install. macOS and Windows are not supported.
+This configuration targets **Arch Linux**. Fedora is supported through the [bootstrap script](#method-b-bootstrap-script-recommended), which installs everything Fedora packages and lists the rest; other Linux distributions are best-effort through the same script. macOS and Windows are not supported.
 
 ### Arch Linux
 
@@ -58,6 +58,22 @@ Run `sudo -k` afterwards, so the cached sudo credentials do not reach the plugin
 yay -S hadolint-bin
 ```
 
+### Fedora
+
+One dnf command installs everything Fedora packages. Fedora 44 and newer package Neovim 0.12, while Fedora 43's is 0.11.6: there the bootstrap script ([Method B](#method-b-bootstrap-script-recommended)) installs the 0.11.6 package, finds it older than 0.12, and then also installs Neovim from the official release tarball and uses the tarball's nvim; if you install by hand, leave `neovim` out of the dnf command on Fedora 43 (it would still install 0.11.6) and get Neovim 0.12 from the [Neovim releases](https://github.com/neovim/neovim/releases) instead. The script installs the same packages for you and picks the clipboard tool from your session; on an X11 session, replace `wl-clipboard` with `xclip`:
+
+```bash
+sudo dnf install --setopt=install_weak_deps=False neovim git ripgrep gcc make curl tar gzip unzip \
+  wl-clipboard nodejs golang nodejs-bash-language-server python3-lsp-server \
+  shfmt black golang-x-tools-goimports ShellCheck yamllint ruff golangci-lint hadolint fortune-mod
+```
+
+The option keeps dnf from also installing recommended packages, `npm` among them through Fedora's `nodejs`; the script does the same.
+
+Run `sudo -k` afterwards, so the cached sudo credentials do not reach the plugin builds on Neovim's first launch (the bootstrap script does this itself).
+
+Fedora has no package for `lazygit` or `lazydocker`: the script installs both with `go install` at pinned versions into Go's bin directory (`~/go/bin` by default), and tells you when that directory is not on your `PATH`. It lists `stylua`, `selene`, `prettier`, `tflint` and `terraform` as manual steps. Of the Node-based language servers Fedora packages only `bash-language-server`, so `dockerls`, `jsonls`, `ts_ls` and `yamlls` stay off unless you install their commands yourself (`ts_ls` also needs a system TypeScript; the script says so in a warning), and `python-lsp-server` (`pylsp`) stands in for `pyright` (see [Language servers](#what-each-package-is-for)). Install a [Nerd Font](https://www.nerdfonts.com/) yourself.
+
 ### What each package is for
 
 - **Core:** Neovim 0.12+, Git, and ripgrep (Telescope live grep).
@@ -65,9 +81,10 @@ yay -S hadolint-bin
 - **Clipboard:** `wl-clipboard` (Wayland) or `xclip` (X11). Without one, yanks do not reach the system clipboard.
 - **Runtimes:** Node.js runs the Node-based language servers (npm is not needed). Mason uses Go to build `gopls` and `sqls`. Neovim starts its processes with `GOTOOLCHAIN=local`, replacing any value it inherits, so Mason's builds and gopls never download a newer Go toolchain. Shells in `:terminal` and `:!` inherit it too, unless your shell's startup files set it again. When your Go is older than a server needs (Debian 13's Go 1.24 is), Mason's build fails with Go's own error: install a newer Go (on Debian 13, from trixie-backports), then run `:MasonInstall gopls sqls`.
 - **Language servers:**
-  - **Sources:** Mason installs the native servers (`gopls`, `lua_ls`, `sqls`, `terraformls`) the first time you open a file. The Node-based servers (`bashls`, `dockerls`, `jsonls`, `pyright`, `ts_ls`, `yamlls`) come from the system packages above and are enabled only when installed. "System" means the first matching binary on Neovim's `PATH`, whatever installed it. Mason copies of these servers are never enabled automatically: `lsp.lua`'s checks decide, though a Mason copy still runs if it is the one on `PATH` (see [Upgrading](#upgrading-from-an-older-version-of-this-config)). docker-language-server is not used: it sends telemetry, crash reports, and Dockerfile image names to Docker by default.
+  - **Sources:** Mason installs the native servers (`gopls`, `lua_ls`, `sqls`, `terraformls`) the first time you open a file. The Node-based servers (`bashls`, `dockerls`, `jsonls`, `pyright`, `ts_ls`, `yamlls`) come from the system packages above and are enabled only when installed. On Fedora, which packages no pyright, `python-lsp-server` (`pylsp`) stands in for it, enabled only when `pylsp` is installed and `pyright-langserver` is not. "System" means the first matching binary on Neovim's `PATH`, whatever installed it. Mason copies of these servers are never enabled automatically: `lsp.lua`'s checks decide, though a Mason copy still runs if it is the one on `PATH` (see [Upgrading](#upgrading-from-an-older-version-of-this-config)). docker-language-server is not used: it sends telemetry, crash reports, and Dockerfile image names to Docker by default.
   - **`:lsp enable`:** a repo's `node_modules` copies of the Node-based servers are never used, not even when you run `:lsp enable <name>` for one of them yourself. A bare `:lsp enable` (no name) enables every lspconfig server for the buffer's filetype, and some of those prefer a repo's `node_modules/.bin`. The known lspconfig servers that would run a repo's code with tools this config installs never start, not even then: `tflint` (plugins named in a repo's `.tflint.hcl`), `golangci_lint_ls` (a repo's `.golangci.yml`), `terraform_lsp` and `tofu_ls` (Terraform providers), and `esbonio` and `tvm_ffi_navigator` (a repo's Python modules through `python -m`).
   - **`ts_ls`:** enabled only with a real TypeScript package: Arch's `typescript` (a dependency of `typescript-language-server`), or the package your `tsserver` belongs to; a version manager's shim does not count. The package is checked again each time a buffer needs `ts_ls`, so once it is removed, `ts_ls` starts for no further buffers. Its automatic type acquisition is off, so tsserver never runs npm to download `@types` packages.
+  - **`pylsp`:** like the system servers' commands, `pylsp` is resolved on `PATH`, so a pylsp installed in an active venv runs from there, as that venv's black and ruff do. jedi, its completion engine, starts a Python interpreter as a subprocess and imports the modules its `auto_import_modules` list names instead of analyzing them. This config pins that interpreter to `/usr/bin/python3`, so an active `VIRTUAL_ENV` or `CONDA_PREFIX` never makes jedi run a project's interpreter (and that interpreter's site hooks). It also empties the list, whose default imports `numpy`. Because of the pin, packages installed only in a project's venv get no completion. pylsp's startup preloading of libraries (numpy and pandas among them) is off, as is its signature formatting in hover and completion (it runs black from Neovim's working directory, where a repo's `black.py` would run instead), and so are its bundled linters and formatters (pycodestyle, pyflakes, mccabe, autopep8, yapf) and two of the add-ons Fedora packages, python-lsp-ruff and python-lsp-black; ruff and black do that work. What remains: pylsp enables any other add-on installed beside it; pylsp's own process honors an inherited `PYTHONPATH`, even one that reaches the project directory (pylsp drops it only for jedi's interpreter); and jedi still imports the compiled modules it meets while inferring, though only from that interpreter's own module path, not from the project directory.
   - **`lua_ls`:** declines its workspace plugin prompts, so a repo's `.luarc.json` plugin never loads. That answer also declines its auto-require prompts: accepting a completion for a module the file does not require yet inserts only the name, without a `require` line. Its plugin approvals live in `lua_ls/trusted` under Neovim's log directory (`~/.local/state/nvim`), which starts empty and which this config never adds to.
   - **terraform-ls:** when the `terraform` CLI is installed, terraform-ls stays off until you allow its directory, because it runs provider binaries from `.terraform` directories. Neovim never prompts for this: run `:TerraformTrust` from a file buffer under the directory (a new file must be saved first). The directory is the nearest ancestor with `.terraform` (else `.git`, else the file's own directory), and trusting it covers the `.terraform` directories below it. `:TerraformTrust` refuses `/`, your home directory and its parents, world-writable directories, and directories owned by another user. terraform-ls starts only in directories you own that are not world-writable, so `:TerraformTrust!` overrides a refusal only for those (your home directory, for example), and trusting such a directory covers every project below it. A file whose path has a `$NAME` that Neovim would expand (a directory literally named `$HOME`, for example) never starts terraform-ls. To revoke, run `:trust ++remove <directory>`, then `:lsp stop terraformls`.
 - **No phoning home:** terraform's update check is off (`CHECKPOINT_DISABLE`), and yamlls and jsonls never download schemas, so SchemaStore and remote `$schema` URLs give no completion or validation (local schema files still work). terraform-ls may still look up public module metadata on registry.terraform.io for registry `module` sources; this config has no switch for that.
@@ -115,9 +132,9 @@ mv ~/.cache/nvim ~/.cache/nvim_backup
 
 #### Method B: Bootstrap Script (Recommended)
 
-The `nvim-install.sh` script detects your distribution and installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), the Node-based language servers (Arch only), formatters, linters, TUI tools, and clones the configuration. On Arch it installs the same packages as the command under [Requirements](#requirements), except the Nerd Font (install it with `sudo pacman -S ttf-jetbrains-mono-nerd`). Run it as your normal user; it calls `sudo` when it needs to. It asks before it changes anything, so it needs a terminal to answer from: piped into `bash` (as in `curl ... | bash`), it stops at the first question.
+The `nvim-install.sh` script detects your distribution and installs Neovim, build tools, a clipboard tool, runtimes (Node, Go), the language servers its repos package (on Arch the Node-based servers; on Fedora `bash-language-server` and `python-lsp-server`), formatters, linters, TUI tools, and clones the configuration. On Arch it installs the same packages as the command under [Requirements](#requirements), except the Nerd Font (install it with `sudo pacman -S ttf-jetbrains-mono-nerd`); on Fedora, the same as the dnf command there, plus `lazygit` and `lazydocker` with `go install`. Run it as your normal user; it calls `sudo` when it needs to. It asks before it changes anything, so it needs a terminal to answer from: piped into `bash` (as in `curl ... | bash`), it stops at the first question.
 
-**Supported platforms:** Arch Linux (pacman) is first-class. Debian/Ubuntu (apt), Fedora/RHEL (dnf), and Alpine (apk) are best-effort.
+**Supported platforms:** Arch Linux (pacman) is first-class and Fedora (dnf) is supported. Debian/Ubuntu (apt) and Alpine (apk) are best-effort. RHEL and RHEL-like distributions (CentOS, Rocky Linux, AlmaLinux) take the same dnf path and the same supported tier, but their repos may lack some of the packages the script installs.
 
 ```bash
 git clone https://github.com/jkleinne/nvim ~/.config/nvim
@@ -125,30 +142,37 @@ cd ~/.config/nvim
 ./nvim-install.sh
 ```
 
+Pass `--packages-only` to install the system packages and stop, for setups that provision system packages apart from the user's home. Then run the script again without it where Neovim will run. With every package already present and Neovim 0.12 or newer first on `PATH`, or in a tarball install it can reuse (see below), that run installs no system package again and runs nothing as root; it goes on to the user-level tools the repos lack (none on Arch), the config and the checks.
+
 The script will:
 - On Arch, upgrade the system first (`pacman -Syu`, with pacman's own confirmation) when anything needs installing, since installing against a newer package database without upgrading is a partial upgrade
-- Install Neovim 0.12+ (prefers your system package manager, falls back to the GitHub release tarball)
+- Use the first nvim on `PATH` when it is Neovim 0.12+, or else a reusable earlier tarball install (see below), and only otherwise install Neovim 0.12+ (prefers your system package manager, falls back to the GitHub release tarball in `/opt/nvim`). When the package's nvim is new enough but another nvim comes first on `PATH`, the run stops and names both instead of installing the tarball, so you can remove the other one or put the package's directory ahead of it (for one in `/usr/local/bin`, only remove it, since putting a directory ahead of `/usr/local/bin` would demote every local override there). When `PATH` reaches this script's own earlier tarball install first, through `/opt/nvim/bin` or its `/usr/local/bin/nvim` link, as after a rise in the minimum version, the run says so and gives the steps instead: remove that link with `sudo rm` if it is there, and the line that puts `/opt/nvim/bin` on `PATH` in your shell config (the run quotes it, as the script writes it for your shell; the script's own copy follows the line `# Neovim (added by nvim-install.sh)`), then open a new shell. A later run that does not find that tarball's nvim on `PATH` reuses it instead of installing again, but only when root owns everything in `/opt/nvim` and every directory on the way to it, and none of them is writable by group or others. Each symlink on the way is followed one at a time, and the directory that holds it is checked too. A symlink in `/opt/nvim` counts as what it points to (the directories above a target outside `/opt/nvim` are not checked), and a broken or looping one stops the reuse. Before it downloads, a tarball install checks every directory on the way to `/opt` the same way (up to the first that is missing, which root then creates), and stops, naming the one that fails: another account could otherwise swap `/opt/nvim`, or a link on the way to it, for a link of its own while root installs into it. It also stops when it cannot check the way: a directory on it that you cannot search, or a link to nothing. A run that reuses it, or whose tarball's nvim `PATH` does not reach first (it could not be linked into `/usr/local/bin`, that directory is not on `PATH`, or another nvim comes earlier), puts `/opt/nvim/bin` first on its own `PATH` and uses that nvim at once; the full run also adds `/opt/nvim/bin` to your shell config for new shells, or prints the line to add when it cannot
 - Ask before moving an existing config that is not this repo aside, and move it only after the clone succeeds
-- Install build dependencies, a clipboard tool, runtimes, formatters, linters, TUI tools, and on Arch the Node-based language servers
-- On best-effort platforms, install the user-level tools their repos lack (`go install`, `uv tool install`) last, after forgetting any cached sudo credentials
+- Install build dependencies, a clipboard tool, runtimes, formatters, linters, TUI tools, and the language servers the distro packages (on Arch the Node-based servers; on Fedora `bash-language-server` and `python-lsp-server`)
 - Forget cached sudo credentials, including ones from before the run (such as a `sudo pacman -S` you just ran), before it clones the config and launches Neovim, which installs plugins and runs their build steps; with passwordless sudo (`NOPASSWD`), forgetting the ticket protects nothing
+- After forgetting them, install the user-level tools the distro's repos lack: on Fedora, `lazygit` and `lazydocker` with `go install`; on best-effort platforms, also `shfmt`, `goimports` and `golangci-lint` with `go install`, and `black`, `ruff` and `yamllint` with `uv tool install` (at the latest release), run with `UV_PYTHON_DOWNLOADS=never` so uv never downloads a Python: a tool uv would need one for is skipped with a warning. On both, `stylua`, `prettier`, `terraform`, `selene` and `tflint` stay manual steps, and on best-effort platforms `hadolint` does too
+- Pin each of its `go install`s to an exact release and run it with `GOTOOLCHAIN=local`, so the script never downloads a Go toolchain: a tool that needs a newer Go than the distro ships is skipped with a warning. Every pinned tool but lazydocker needs Go 1.26 or newer. Fedora 43 and 44 ship 1.26; Debian 13 ships 1.24, so install Go 1.26 or newer there first, for example from trixie-backports. `go install` keeps your own Go settings: `GOPROXY` and `GOFLAGS` apply, and Go's checksum database (`sum.golang.org` by default) verifies the pinned modules only as your `GOSUMDB`, `GOPRIVATE` and `GONOSUMDB` allow, so one that names another database or matches these modules changes or skips that check
+- Check the config through the headless Neovim launch it runs after the clone: when that launch reports an error message, the script warns "Config reported errors at startup" and shows the last lines of the launch's messages, which end with that error. Each run keeps the launch's full messages in `nvim-install-config-check.log` in Neovim's state directory (`~/.local/state/nvim`). The check catches errors in the config, not a failed plugin build: lazy.nvim prints build output during the run but does not report a failed build, so watch that output, and rerun a failed build in nvim with `:Lazy build <plugin>`
 - Detect your shell and update PATH if needed (bash, zsh, fish)
 - Skip anything already installed
-- Stop if a required package (build tools, core tools, runtimes) fails, and list optional tools it could not install in the summary at the end (best-effort platforms get manual steps there)
+- Stop if a required package (build tools, core tools, runtimes) fails, and list optional tools it could not install in the summary at the end (Fedora and the best-effort platforms get manual steps there)
+- End by asking you to open a file in nvim once: Mason installs the native language servers then, not during the run. mason.nvim cancels installs still running when Neovim exits, so leave nvim open until they finish (`:Mason` shows their status)
 
 Run `./nvim-install.sh --help` for details.
 
-The installer's tests run with `bash tests/install-script.test.sh` (the scripts that run the installer's `main` for them, their shared helpers and stub commands, and the reader that gets the server list through `nvim --clean`, are in `tests/lib/`; the suite refuses to run when its temp dir is on a `noexec` mount, so point `TMPDIR` elsewhere then); set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it runs `sudo -k` itself first, so no cached sudo ticket reaches the run, and it needs network: Neovim's first launch installs the plugins into scratch directories), and `REQUIRE_ALL=1` to fail instead of skipping when the root-guard test cannot run (it needs `fakeroot` or `unshare -r`). The LSP and linter settings that keep repo code from running and tools from downloading anything are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
+The installer's tests run with `bash tests/install-script.test.sh` (the scripts that run the installer's `main` for them, their shared helpers and stub commands, and the reader that gets the server list through `nvim --clean`, are in `tests/lib/`; the suite refuses to run when its temp dir is on a `noexec` mount, so point `TMPDIR` elsewhere then); set `RUN_FULL=1` on a fully provisioned Arch machine to include an end-to-end run (it runs `sudo -k` itself first, so no cached sudo ticket reaches the run, and it needs network: Neovim's first launch installs the plugins into scratch directories), and `REQUIRE_ALL=1` to fail instead of skipping when the tests that need a fake root cannot run (the root-guard test and the checks on root-owned install trees; they need `fakeroot` or `unshare -r`). The LSP and linter settings that keep repo code from running and tools from downloading anything are tested with `nvim --clean --headless -l tests/editor-config.test.lua` (no plugins or network needed).
+
+`RUN_FEDORA=1` adds to the installer's tests an end-to-end run of the dnf path in a throwaway `fedora:44` container (`tests/lib/fedora-container.sh`): a `--packages-only` run, then a full run that must install nothing again, with checks that every package name the script asks dnf for there resolves (not the clipboard tools, which the script asks for only in a graphical session, nor names the container already has, such as tar), Neovim comes from dnf, the language servers land on `PATH` without npm, the Go tools build, and the config check passes. Packages are installed only inside the container. It needs rootless podman with subuid and subgid ranges for your user, and network; the image stays in podman's storage until `podman rmi docker.io/library/fedora:44`.
 
 ### 3. First Launch and Verification
 
-Open Neovim. The `lazy.nvim` plugin manager will automatically start installing the plugins, including compiling telescope-fzf-native and LuaSnip components. Mason installs the native language servers the first time you open a file.
+Open Neovim. After a manual installation (Method A), the `lazy.nvim` plugin manager starts installing the plugins on this first launch, including compiling telescope-fzf-native and LuaSnip components; after the bootstrap script (Method B), the script's own launch has already done this. Mason installs the native language servers the first time you open a file.
 
 ```bash
 nvim
 ```
 
-After the plugins are installed, run `:checkhealth` to ensure all dependencies are met and identify any issues.
+Once the plugins are installed, run `:checkhealth` to check the dependencies and find any issues.
 
 ```
 :checkhealth
@@ -161,7 +185,7 @@ The configuration files are organized as follows:
 ```
 ~/.config/nvim/
 ├── lua/                   # Lua configuration directory
-│   ├── lsp_gates/         # Server list, TypeScript and terraform-ls trust checks used by plugins/lsp.lua
+│   ├── lsp_gates/         # Server list, fallback choice, TypeScript and terraform-ls trust checks used by plugins/lsp.lua
 │   ├── plugins/           # Individual plugin configurations
 │   │   ├── lsp.lua
 │   │   ├── telescope.lua
@@ -170,7 +194,7 @@ The configuration files are organized as follows:
 │   └── settings.lua        # General settings and options
 ├── init.lua                # Main entry point
 ├── lazy-lock.json          # Lock file for lazy.nvim
-├── nvim-install.sh         # Bootstrap script (Arch Linux; other distros best-effort)
+├── nvim-install.sh         # Bootstrap script (Arch first-class, Fedora supported; other distros best-effort)
 ├── tests/                  # Installer and editor config tests
 ├── tflint.hcl              # tflint config used instead of repos' own
 └── ...

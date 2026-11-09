@@ -1,7 +1,8 @@
 #!/bin/sh
-# T17's go: logs "go <args>" to $EVENT_LOG, answers go env GOBIN with $SUITE_TMP/T17-gobin, and installs
-# nothing
+# T17's go: logs "go <args>" and then "go-env GOTOOLCHAIN=<its value, or unset>" to $EVENT_LOG, answers
+# go env GOBIN with $SUITE_TMP/T17-gobin, and installs nothing
 printf 'go %s\n' "$*" >>"${EVENT_LOG:?}"
+printf 'go-env GOTOOLCHAIN=%s\n' "${GOTOOLCHAIN-unset}" >>"$EVENT_LOG"
 case "$*" in
   "env GOBIN") printf '%s\n' "${SUITE_TMP:?}/T17-gobin" ;;
   "install "*) ;;

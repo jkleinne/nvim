@@ -1,9 +1,14 @@
 #!/bin/sh
-# T17's uv: logs "uv <args>" to $EVENT_LOG, answers uv tool dir --bin with $SUITE_TMP/T17-uvbin, and
+# T17's uv: logs "uv <args>" and then "uv-env UV_PYTHON_DOWNLOADS=<its value, or unset>" to $EVENT_LOG,
+# answers uv tool dir --bin with $SUITE_TMP/T17-uvbin (or fails it when T17_UV_DIR_FAILS is set), and
 # installs nothing
 printf 'uv %s\n' "$*" >>"${EVENT_LOG:?}"
+printf 'uv-env UV_PYTHON_DOWNLOADS=%s\n' "${UV_PYTHON_DOWNLOADS-unset}" >>"$EVENT_LOG"
 case "$*" in
-  "tool dir --bin") printf '%s\n' "${SUITE_TMP:?}/T17-uvbin" ;;
+  "tool dir --bin")
+    [ -z "${T17_UV_DIR_FAILS:-}" ] || exit 1
+    printf '%s\n' "${SUITE_TMP:?}/T17-uvbin"
+    ;;
   "tool install "*) ;;
   *) echo "STUB UV: refusing $*" >&2; exit 1 ;;
 esac

@@ -1,0 +1,24 @@
+#!/bin/sh
+# T38's package file list, installed as pacman, rpm, dpkg-query, and apk (the name it runs as says which
+# manager it stands in for). It logs "<name> <args>" to $T38_LOG, then answers only the call that lists
+# the neovim package's files on that manager (pacman -Qlq neovim, rpm -ql neovim, dpkg-query -L neovim,
+# apk info -L neovim): it prints $T38_PKG_FILES, the list as that manager prints it, one entry per line,
+# and exits 0, or, when $T38_QUERY_FAILS is set, prints the list and exits 1, so a caller that ignores
+# the status shows. Any other call, or another name, fails with status 2 and a STUB message, so a change
+# in how the script lists a package's files fails T38. An unset or empty list is a test mistake: :?
+# stops the stub with a message on its stderr.
+name="${0##*/}"
+printf '%s %s\n' "$name" "$*" >>"${T38_LOG:?}"
+case "$name:$#:$*" in
+  "pacman:2:-Qlq neovim" | "rpm:2:-ql neovim" | "dpkg-query:2:-L neovim" | "apk:3:info -L neovim") ;;
+  *)
+    echo "STUB PKG-FILES: unexpected $name $*" >&2
+    exit 2
+    ;;
+esac
+files="${T38_PKG_FILES:?}"
+printf '%s\n' "$files"
+if [ -n "${T38_QUERY_FAILS:-}" ]; then
+  echo "STUB PKG-FILES: $name fails, as T38_QUERY_FAILS asks" >&2
+  exit 1
+fi

@@ -1,10 +1,15 @@
 #!/bin/sh
-# nvim for T26 and T22: --version prints version $T26_VERSION; anything else fails. cat writes the
-# lines in one write: printf may write them one at a time, and get_nvim_version's head -n1 can exit
-# between the writes, which kills this stub with SIGPIPE and fails the pipeline under pipefail.
-if [ "$1" = --version ]; then
+# nvim for T26 and T22: --version prints version $T26_VERSION, and fails when that is broken (a binary
+# that cannot run: an AppImage on a host without FUSE, or a broken version manager shim); anything else
+# fails. cat writes the lines in one write: printf may write them one at a time, and get_nvim_version's
+# head -n1 can exit between the writes, which kills this stub with SIGPIPE and fails the pipeline under
+# pipefail. An unset or empty version is a test mistake: :? stops the stub with a message on its own
+# stderr, which get_nvim_version discards. It is read before the heredoc, where :? would fail only cat
+# and the stub would still exit 0.
+version="${T26_VERSION:?}"
+if [ "$1" = --version ] && [ "$version" != broken ]; then
   cat <<EOF
-NVIM v${T26_VERSION:?}
+NVIM v$version
 Build type: Release
 EOF
   exit 0
