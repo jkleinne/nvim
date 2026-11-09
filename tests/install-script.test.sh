@@ -2117,6 +2117,40 @@ for mode in true false; do
 done
 expect_none T22f-summary-modes "$t22f_fail"
 
+# T22l: the packages-only summary's closing hint names the user tools only where the full run installs
+# some: on pacman, whose repos package every tool (install_user_tools does nothing there), it names only
+# the config clone; on dnf, apt-get and apk, both. Each case sets its manager with set_pkg_manager, as
+# detect_pkg_manager would, and runs print_summary in packages-only mode, so the hint line must be there
+# once, with nothing after it.
+t22l_fail=""
+t22l_hint_start='==> Run this script again without --packages-only where Neovim will run, to'
+for mgr in pacman dnf apt-get apk; do
+  case "$mgr" in
+    pacman) t22l_steps="clone the config" ;;
+    dnf | apt-get | apk) t22l_steps="install the user tools and clone the config" ;;
+    *)
+      t22l_fail+="[$mgr: unknown case] "
+      continue
+      ;;
+  esac
+  out="$( (
+    sandbox "T22l-$mgr" "$T26_BIN"
+    T26_VERSION=0.12.3
+    export T26_VERSION
+    load_script
+    set_pkg_manager "$mgr"
+    # shellcheck disable=SC2030  # print_summary, in the script sourced into this subshell, reads them
+    PACKAGES_ONLY=true NEED_PATH_SETUP=false NVIM_INSTALL_METHOD="$mgr"
+    print_summary
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  done_ok $rc "$out" || t22l_fail+="[$mgr: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "
+  [[ "$(grep -cxF -- "$t22l_hint_start $t22l_steps." <<<"$out")" -eq 1 ]] \
+    || t22l_fail+="[$mgr: want one '$t22l_hint_start $t22l_steps.', got: $(grep -F -- "$t22l_hint_start" <<<"$out")] "
+done
+expect_none T22l-packages-only-hint-per-manager "$t22l_fail"
+
 # T22j: a full run's summary says whether the shell config has the NVIM_INSTALL_DIR/bin entry, which only
 # setup_path knows, so each case runs the real setup_path, then the real print_summary, with T26's stub
 # nvim (version 0.12.0) first on PATH, NEED_PATH_SETUP true, and the reused method, and checks

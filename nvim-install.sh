@@ -1105,13 +1105,19 @@ install_tui_tools() {
   esac
 }
 
+# Succeeds when the full run has user tools to install (install_user_tools): every manager's repos but
+# pacman's lack some, so the packages-only summary promises them only where that step does something
+has_user_tools() {
+  [[ "$PKG_MGR" != pacman ]]
+}
+
 # The tools a distro's repos lack, installed as the user into Go's and uv's bin directories: on dnf,
 # lazygit and lazydocker from go install; on apt-get and apk, also the formatters and linters, from go
 # install and uv tool install. Each Go module is pinned by its GO_TOOL_* constant. They fetch and build
 # code from the network, so main runs this only after forget_sudo_credentials, and it runs no root
 # command. pacman installs all of them.
 install_user_tools() {
-  if [[ "$PKG_MGR" == pacman ]]; then
+  if ! has_user_tools; then
     return
   fi
 
@@ -1453,6 +1459,7 @@ verify_config() {
 
 print_summary() {
   local installed_version title="Neovim Bootstrap Complete" config="$NVIM_CONFIG_DIR"
+  local full_run_steps="clone the config"
   installed_version="$(get_nvim_version 2>/dev/null || echo "unknown")"
   if [[ "$PACKAGES_ONLY" == true ]]; then
     title="Neovim Packages Installed"
@@ -1500,7 +1507,10 @@ print_summary() {
   printf '%s\n' "${BOLD}${GREEN}====================================${RESET}"
   printf '\n'
   if [[ "$PACKAGES_ONLY" == true ]]; then
-    info "Run this script again without --packages-only where Neovim will run, to install the user tools and clone the config."
+    if has_user_tools; then
+      full_run_steps="install the user tools and $full_run_steps"
+    fi
+    info "Run this script again without --packages-only where Neovim will run, to $full_run_steps."
   else
     info "Open a file in nvim once so Mason installs its language servers."
   fi
