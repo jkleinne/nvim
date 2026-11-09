@@ -476,7 +476,10 @@ install_neovim_tarball() {
 
   success "Downloaded $(du -h "$tarball" | cut -f1 | xargs)"
 
-  if [[ -d "$NVIM_INSTALL_DIR" ]]; then
+  # Any entry there, a link to nothing too, which -d misses: root's mkdir -p would then fail on the link,
+  # or, once what it names exists, make nothing and leave the commands below to follow it. rm -rf
+  # removes a link, never what it names
+  if [[ -e "$NVIM_INSTALL_DIR" || -L "$NVIM_INSTALL_DIR" ]]; then
     warn "Existing installation at $NVIM_INSTALL_DIR will be replaced."
     if ! confirm "  Remove $NVIM_INSTALL_DIR?"; then
       error "Cannot install without removing existing directory."

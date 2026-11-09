@@ -2450,7 +2450,8 @@ done
 # the umask's mode, which sudo never lowers), the link dir check (test -w), and the symlink, all through
 # as_root, each root command after the first preceded by the ticket check (sudo -n -v); keep, an existing
 # dir and answer n: exit 1 with "Cannot install without removing" and no root command; replace, answer y:
-# the same as fresh with rm -rf of the dir first; no-symlink: the link dir check fails, so the same as
+# the same as fresh with rm -rf of the dir first; dangling-link, the install dir a link to nothing, which
+# is not a dir, and answer y: the same as replace (rm -rf removes the link, not what it names); no-symlink: the link dir check fails, so the same as
 # fresh without the symlink, with a warning that names the link dir, and the real
 # install_dir_nvim_is_first_on_path finds no install dir nvim on PATH, so NEED_PATH_SETUP is set;
 # writable-link-dir: this user can write the link dir, so the same as fresh without the link dir check.
@@ -2460,17 +2461,17 @@ done
 # and to succeed, except in two cases that end with exit 1, no download, and no root command:
 # parent-not-root-only, where it names a dir that fails, which the message names, and
 # parent-check-fails, where it could not finish, which the message says.
-# A user who can write even a mode a-w dir (root) skips fresh, replace, and no-symlink, where the script
-# would make no link dir check. The install method is tarball, and the install leaves PATH as it was:
-# only put_install_dir_first_on_path, which main runs after the privileged phase and each case runs
-# next, changes it. In no-symlink it puts the dir's bin first, where verify_nvim then finds its nvim
-# (T26's install dir stub, standing in for the one the recording sudo never extracted); the cases that
-# link leave PATH as it was. Those override install_dir_nvim_is_first_on_path to succeed, as a real link
-# would: nothing was really linked here, and T25b runs the real check on real files.
+# A user who can write even a mode a-w dir (root) skips fresh, replace, dangling-link, and no-symlink,
+# where the script would make no link dir check. The install method is tarball, and the install leaves
+# PATH as it was: only put_install_dir_first_on_path, which main runs after the privileged phase and each
+# case runs next, changes it. In no-symlink it puts the dir's bin first, where verify_nvim then finds its
+# nvim (T26's install dir stub, standing in for the one the recording sudo never extracted); the cases
+# that link leave PATH as it was. Those override install_dir_nvim_is_first_on_path to succeed, as a real
+# link would: nothing was really linked here, and T25b runs the real check on real files.
 # The scratch link dir (the script's NVIM_LINK_DIR) of T25 case $1
 t25_link_dir() { printf '%s\n' "$TMP/T25-$1/link-dir"; }
-# Runs T25 case $1 (fresh, keep, replace, no-symlink, writable-link-dir, parent-not-root-only, or
-# parent-check-fails)
+# Runs T25 case $1 (fresh, keep, replace, dangling-link, no-symlink, writable-link-dir,
+# parent-not-root-only, or parent-check-fails)
 t25_case() {
   local id="$1" fail_on="" link_dir
   link_dir="$(t25_link_dir "$id")"
@@ -2483,9 +2484,13 @@ t25_case() {
     export TMPDIR
     mkdir -p "$TMPDIR"
     dir="$TMP/T25-$id/opt-nvim"
-    if [[ "$id" == keep || "$id" == replace ]]; then
-      mkdir -p "$dir"
-    fi
+    case "$id" in
+      keep | replace) mkdir -p "$dir" ;;
+      dangling-link)
+        mkdir -p "${dir%/*}"
+        ln -s "$TMP/T25-$id/gone" "$dir"
+        ;;
+    esac
     # Nothing is ever created in the link dir (the recording sudo never runs ln), so the suite's cleanup
     # removes it even when it stays read-only
     mkdir -p "$link_dir"
@@ -2551,7 +2556,7 @@ t25_case() {
     }
     case "$id" in
       keep) run_errexit tarball_and_report <<<n ;;
-      replace) run_errexit tarball_and_report <<<y ;;
+      replace | dangling-link) run_errexit tarball_and_report <<<y ;;
       *) run_errexit tarball_and_report </dev/null ;;
     esac
     echo "tarball rc=$RC"
@@ -2566,7 +2571,7 @@ t25_want_log() {
   link_dir="$(t25_link_dir "$1")"
   case "$1" in
     keep | parent-*) return ;;
-    replace) cmds+=("rm -rf $2") ;;
+    replace | dangling-link) cmds+=("rm -rf $2") ;;
   esac
   cmds+=("mkdir -p -m 0700 $2" "tar -C $2 --no-same-owner --strip-components=1 -xzf $3" "chown -R 0:0 $2" "chmod -R go-w $2"
     "chmod -R a+rX $2")
@@ -2581,7 +2586,7 @@ t25_want_log() {
     check="-n -v"
   done
 }
-for id in fresh keep replace no-symlink writable-link-dir parent-not-root-only parent-check-fails; do
+for id in fresh keep replace dangling-link no-symlink writable-link-dir parent-not-root-only parent-check-fails; do
   out="$(t25_case "$id")"
   rc=$?
   if report_skip_if_writable "T25-tarball $id" "$out" \
