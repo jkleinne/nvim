@@ -1,21 +1,24 @@
 #!/usr/bin/env bash
 # T33's end-to-end run (RUN_FEDORA=1 in tests/install-script.test.sh): provisions a fedora:44 container
 # and runs the script in it as a user with passwordless sudo, first with --packages-only and then in
-# full. What it proves: the dnf package names resolve on a real Fedora 44 (neither run prints the
-# "install failed, skipping" warning an optional package gets); Neovim 0.12 comes from dnf (the
-# --packages-only run reports "installed via dnf", rpm knows the neovim package, and the user's nvim is
-# /usr/bin/nvim, so a tarball fallback linked into /usr/local/bin fails); --packages-only stops where it
-# says (it builds no Go tool and runs no config check); the full run finds every package the
-# --packages-only run installed and installs none again (it prints no "Installing" step), though
-# nodejs is a Provides of nodejs22 on Fedora 44; with dnf set to install weak dependencies, as a
-# default host has it, the script's own --setopt=install_weak_deps=False still keeps npm out (no
-# nodejs*npm* package, no npm on PATH); pylsp and bash-language-server land on PATH; the Go tools build
-# into ~/go/bin (T32 owns the pins, and --version shows "unversioned"); and the full run's config check
-# passes (the "Config loads cleanly" line, not verify_config's warning), which means Neovim's first
-# headless launch of this checkout's config gave no error message (verify_config's v:errmsg check).
-# That covers errors raised while init.lua, lazy's setup (its plugin installs and builds), and the start
-# plugins run, and errors those queue with vim.schedule. It does not cover timers, the plugins lazy
-# loads later, or VimEnter.
+# full. What it proves: every dnf package name the script asks for there resolves on a real Fedora 44
+# (neither run prints the "install failed, skipping" warning an optional package gets), which leaves out
+# names the container already has (tar, from the provision step, and any the image ships) and the
+# clipboard tools: neither WAYLAND_DISPLAY nor DISPLAY reaches the script (`su -` clears them, and
+# podman run, with containers.conf's defaults, passes neither from the host), so install_clipboard asks
+# for neither wl-clipboard nor xclip; Neovim 0.12 comes from dnf (the --packages-only run reports
+# "installed via dnf", rpm knows the neovim package, and the user's nvim is /usr/bin/nvim, so a tarball
+# fallback linked into /usr/local/bin fails); --packages-only stops where it says (it builds no Go tool
+# and runs no config check); the full run finds every package the --packages-only run installed and
+# installs none again (it prints no "Installing" step), though nodejs is a Provides of nodejs22 on
+# Fedora 44; with dnf set to install weak dependencies, as a default host has it, the script's own
+# --setopt=install_weak_deps=False still keeps npm out (no nodejs*npm* package, no npm on PATH); pylsp
+# and bash-language-server land on PATH; the Go tools build into ~/go/bin (T32 owns the pins, and
+# --version shows "unversioned"); and the full run's config check passes (the "Config loads cleanly"
+# line, not verify_config's warning), which means Neovim's first headless launch of this checkout's
+# config gave no error message (verify_config's v:errmsg check). That covers errors raised while
+# init.lua, lazy's setup (its plugin installs and builds), and the start plugins run, and errors those
+# queue with vim.schedule. It does not cover timers, the plugins lazy loads later, or VimEnter.
 # $1 is the repository root: a directory that holds nvim-install.sh and has no ':' in its resolved path.
 # podman reads a -v source that does not start with . or / as a named volume (created, and not removed
 # by --rm), and a ':' would split the spec (podman-run(1)). So each refusal says what was attempted and
