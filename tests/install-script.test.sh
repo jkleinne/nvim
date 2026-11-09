@@ -672,7 +672,7 @@ else
   eof_rc=$?
   absent="$(missing_patterns plan "$out" 'OS: +linux' 'Architecture: +(x86_64|arm64)' 'Package manager: +pacman' \
     'Support tier: +first-class' '0\. Upgrade the system first \(pacman -Syu' \
-    "1\\. Use the Neovim $(ere_escape "${t2_min_version%.*}")\\+ on PATH" 'Cancelled\.')"
+    "1\\. Use the Neovim $(ere_escape "${t2_min_version%.*}")\\+ first on PATH" 'Cancelled\.')"
   tier_notice="$(grep -m1 -E ' is (first-class|supported|best-effort): ' <<<"$out")"
   [[ -z "$t2_fail" && $rc -eq 0 && -z "$absent" && -z "$tier_notice" && $eof_rc -eq 1 ]] \
     && grep -qF 'No answer (stdin is closed or not a terminal); run the script from a terminal' <<<"$eof_out" \
@@ -698,10 +698,10 @@ t2_plan() {
 # T2b: the plan screen for dnf names the supported tier and its notice (which names no distro, since RHEL
 # and CentOS reach this tier too, and gives the tarball fallback for a repo Neovim that is missing or
 # older than the script's MIN_NVIM_VERSION), names in step 1 that constant's major.minor and, ahead of
-# dnf, the nvim on PATH and in the script's NVIM_INSTALL_DIR (install_neovim tries both first), lists the
-# language servers in step 2, has no upfront upgrade and no best-effort text, shows the shell t2_plan
-# sets and Mode: full with the clone step, and "n" cancels with exit 0. The constant must be X.Y.Z, since
-# step 1 and the usage name its major.minor and the tests derive theirs the same way.
+# dnf, the nvim first on PATH and the one in the script's NVIM_INSTALL_DIR (install_neovim tries both
+# first), lists the language servers in step 2, has no upfront upgrade and no best-effort text, shows the
+# shell t2_plan sets and Mode: full with the clone step, and "n" cancels with exit 0. The constant must
+# be X.Y.Z, since step 1 and the usage name its major.minor and the tests derive theirs the same way.
 t2_fail=""
 out="$(t2_plan dnf dnf false)"
 rc=$?
@@ -713,7 +713,7 @@ t2_fail+="$(missing_patterns dnf "$out" 'Support tier: +supported' 'Shell: +bash
   'dnf is supported' \
   "Neovim comes from the release tarball when the repo's is missing or older than $(ere_escape "$t2_min_version")" \
   'lazygit and lazydocker come from go install at pinned versions in the full run' \
-  "1\\. Use the Neovim $(ere_escape "${t2_min_version%.*}")\\+ on PATH or in $(ere_escape "$t2_install_dir"), or install it \\(prefer dnf, tarball fallback\\)$" \
+  "1\\. Use the Neovim $(ere_escape "${t2_min_version%.*}")\\+ first on PATH or in $(ere_escape "$t2_install_dir"), or install it \\(prefer dnf, tarball fallback\\)$" \
   '2\. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools$' \
   '3\. Clone config' 'Cancelled\.')"
 [[ $rc -eq 0 ]] || t2_fail+="[dnf: rc=$rc $(tail -n2 <<<"$out" | tr '\n' ' ')] "

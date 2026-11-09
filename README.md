@@ -142,7 +142,7 @@ cd ~/.config/nvim
 ./nvim-install.sh
 ```
 
-Pass `--packages-only` to install the system packages and stop, for setups that provision system packages apart from the user's home. Then run the script again without it where Neovim will run. With every package already present and Neovim 0.12 or newer on `PATH`, or in a tarball install it can reuse (see below), that run installs no system package again and runs nothing as root; it goes on to the user-level tools, the config and the checks.
+Pass `--packages-only` to install the system packages and stop, for setups that provision system packages apart from the user's home. Then run the script again without it where Neovim will run. With every package already present and Neovim 0.12 or newer first on `PATH`, or in a tarball install it can reuse (see below), that run installs no system package again and runs nothing as root; it goes on to the user-level tools, the config and the checks.
 
 The script will:
 - On Arch, upgrade the system first (`pacman -Syu`, with pacman's own confirmation) when anything needs installing, since installing against a newer package database without upgrading is a partial upgrade

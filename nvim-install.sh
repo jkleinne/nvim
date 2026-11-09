@@ -375,7 +375,7 @@ confirm_proceed() {
   fi
   # install_neovim keeps the first nvim on PATH when it is new enough, then a new enough one in
   # $NVIM_INSTALL_DIR, and installs only when neither is usable, so the step names both first
-  printf '  %s\n' "1. Use the Neovim $MIN_NVIM_MAJOR_MINOR+ on PATH or in $NVIM_INSTALL_DIR, or install it (prefer $PKG_MGR, tarball fallback)"
+  printf '  %s\n' "1. Use the Neovim $MIN_NVIM_MAJOR_MINOR+ first on PATH or in $NVIM_INSTALL_DIR, or install it (prefer $PKG_MGR, tarball fallback)"
   case "$PKG_MGR" in
     pacman | dnf)
       printf '  %s\n' "2. Install build tools, clipboard, runtimes, language servers, formatters, linters, TUI tools"
