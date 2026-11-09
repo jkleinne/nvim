@@ -12,6 +12,12 @@ readonly NVIM_CONFIG_DIR="$HOME/.config/nvim"
 readonly NVIM_INSTALL_DIR="/opt/nvim"
 # Where install_neovim_tarball links the tarball's nvim, so it is on PATH without a shell config entry
 readonly NVIM_LINK_DIR="/usr/local/bin"
+# The comment line setup_path writes above the $NVIM_INSTALL_DIR/bin entry it adds to the shell config,
+# so the user can find that entry; the stop for an earlier tarball install ahead of the package names it
+readonly NVIM_PATH_ENTRY_MARKER="# Neovim (added by nvim-install.sh)"
+# The name of the Neovim package in each supported manager's repos: install_neovim installs it, and
+# pkg_installed_nvim reads its file list for the nvim binary it installed
+readonly NVIM_PACKAGE="neovim"
 readonly NVIM_RELEASE_BASE="https://github.com/neovim/neovim/releases/latest/download"
 # Arch's TypeScript (a dependency of typescript-language-server), the first place the editor's ts_ls
 # gate looks; has_system_typescript makes the same check
@@ -410,6 +416,19 @@ install_dir_nvim_is_first_on_path() {
   [[ "$first_nvim" -ef "$NVIM_INSTALL_DIR/bin/nvim" ]]
 }
 
+# Succeeds when the nvim path $1 is one of this script's own paths to its tarball install's nvim: that
+# nvim in $NVIM_INSTALL_DIR/bin, or the $NVIM_LINK_DIR link to it. Those are what
+# print_install_dir_nvim_ahead_of_package tells the user to undo; a link to that nvim anywhere else is
+# one the user made, and print_shadowed_package_nvim's step to remove it fits better. It compares the
+# dirs by -ef, so a PATH entry that names one of them through a link to the dir still counts, and
+# requires the file to be that nvim, so another nvim in $NVIM_LINK_DIR (an AppImage the user put there,
+# say) does not.
+is_own_install_nvim_path() {
+  local nvim_dir="${1%/*}"
+  [[ "$1" -ef "$NVIM_INSTALL_DIR/bin/nvim" ]] || return 1
+  [[ "$nvim_dir" -ef "$NVIM_INSTALL_DIR/bin" || "$nvim_dir" -ef "$NVIM_LINK_DIR" ]]
+}
+
 install_neovim_tarball() {
   local filename="nvim-${OS}-${ARCH}.tar.gz"
   local url="${NVIM_RELEASE_BASE}/${filename}"
@@ -534,11 +553,68 @@ reuse_install_dir_nvim() {
   NEED_PATH_SETUP=true
 }
 
+# Prints, as errors, why the run stops when the package's nvim $1 (version $2) is new enough but PATH
+# reaches another nvim first ($3), one not on this script's own paths (is_own_install_nvim_path), such
+# as a link the user made to its install, or none ($3 empty), and what to change so the package's nvim
+# comes first. install_neovim stops there rather than install the release tarball, whose nvim would go
+# ahead of the working one from the package. For an nvim in $NVIM_LINK_DIR the only step is to remove
+# it: putting the package's dir ahead of $NVIM_LINK_DIR on PATH would demote every local override
+# there, not just this nvim.
+print_shadowed_package_nvim() {
+  local package_nvim="$1" package_version="$2" first_nvim="$3"
+  if [[ -z "$first_nvim" ]]; then
+    error "Neovim $package_version from $PKG_MGR is at $package_nvim, but PATH reaches no nvim."
+    error "Add ${package_nvim%/*} to PATH, then run this script again."
+    return
+  fi
+  error "Neovim $package_version from $PKG_MGR is at $package_nvim, but PATH reaches $first_nvim first."
+  if [[ "${first_nvim%/*}" -ef "$NVIM_LINK_DIR" ]]; then
+    error "Remove $first_nvim, then run this script again."
+    return
+  fi
+  error "Remove $first_nvim, or put ${package_nvim%/*} ahead of ${first_nvim%/*} on PATH, then run this script again."
+}
+
+# Prints, as errors, why the run stops when the package's nvim $1 (version $2) is new enough but PATH
+# reaches the nvim of this script's earlier tarball install in $NVIM_INSTALL_DIR first ($3), through one
+# of the script's own paths to it (is_own_install_nvim_path), as after a MIN_NVIM_VERSION bump, and the
+# steps that take that install out of the way: removing its $NVIM_LINK_DIR link if that link is there
+# (with sudo, since install_neovim_tarball made it as root), and the line that puts $NVIM_INSTALL_DIR/bin
+# on PATH in the shell config, then a new shell. The link step does not wait for PATH to reach the link
+# first: with both the link and the entry in place, PATH reaches the bin dir first, and removing only
+# the entry would leave the link ahead of the package for the next run. It names that line as path_line
+# gives it for the user's shell, the line setup_path writes, or prints for the user to add when it
+# cannot (then without its marker line), so a user who added it by hand can find it too. It does not
+# suggest putting the package's dir ahead of $NVIM_LINK_DIR on PATH, which would demote every local
+# override there, not just this nvim.
+print_install_dir_nvim_ahead_of_package() {
+  local package_nvim="$1" package_version="$2" first_nvim="$3" path_entry
+  path_entry="$(path_line prepend "$NVIM_INSTALL_DIR/bin")"
+  error "Neovim $package_version from $PKG_MGR is at $package_nvim, but PATH reaches $first_nvim first, and that nvim is this script's earlier tarball install in $NVIM_INSTALL_DIR."
+  if [[ "$NVIM_LINK_DIR/nvim" -ef "$NVIM_INSTALL_DIR/bin/nvim" ]]; then
+    error "Remove its link in $NVIM_LINK_DIR: sudo rm $NVIM_LINK_DIR/nvim"
+  fi
+  error "Remove the $NVIM_INSTALL_DIR/bin entry from your shell config, if it has one: the line '$path_entry', which follows the line '$NVIM_PATH_ENTRY_MARKER' where this script added it."
+  error "Then open a new shell and run this script again."
+}
+
 # Tries, in order: a new enough nvim on PATH, the one an earlier tarball install left in
-# $NVIM_INSTALL_DIR, the package manager's, and the release tarball. The nvim on PATH has its version
-# read inside a condition, before and after the package install, where errexit does not apply, so one
-# that fails --version (an AppImage on a host without FUSE, or a broken version manager shim) is passed
-# over with a warning that names it, as one that is too old is, instead of ending the run.
+# $NVIM_INSTALL_DIR, the package manager's, and the release tarball. The nvim on PATH and the package's
+# have their versions read inside a condition, where errexit does not apply, so one that fails --version
+# (an AppImage on a host without FUSE, or a broken version manager shim) is passed over with a warning
+# that names it, and one that is too old with a warning that names its version, instead of ending the
+# run. reuse_install_dir_nvim reads the install dir's the same way but passes over one that fails or is
+# too old without a warning. After the package install, the nvim judged is the one the package lists
+# (pkg_installed_nvim), not the first one on PATH, which can be another file ahead of it. When the
+# package lists none (or its list cannot be read), or its nvim fails --version or is too old, a warning
+# says so and the tarball follows. When its nvim is new enough but PATH does not reach it first, the run
+# stops before the tarball, which would only put an unmanaged nvim ahead of a working one, with errors
+# that name the package's nvim and say what to change. When PATH reaches this script's own earlier
+# tarball install in $NVIM_INSTALL_DIR first, through its bin dir or the $NVIM_LINK_DIR link
+# (is_own_install_nvim_path), they say how to take that install out of the way
+# (print_install_dir_nvim_ahead_of_package); when it reaches another nvim, a link the user made to that
+# install included, to remove that one or reorder PATH (only to remove it when it is in $NVIM_LINK_DIR),
+# and when it reaches none, to add the package's dir (print_shadowed_package_nvim).
 install_neovim() {
   section "Neovim"
 
@@ -560,19 +636,25 @@ install_neovim() {
   fi
 
   info "Installing Neovim via $PKG_MGR..."
-  if pkg_install neovim; then
-    local pkg_version
-    if ! pkg_version="$(get_nvim_version)"; then
-      warn "Package manager installed Neovim, but $(command -v nvim || echo nvim) failed to report its version."
-    elif version_gte "$pkg_version" "$MIN_NVIM_VERSION"; then
-      success "Neovim $pkg_version installed via $PKG_MGR"
-      NVIM_INSTALL_METHOD="$PKG_MGR"
-      return
-    else
-      warn "Package manager installed Neovim $pkg_version, but $MIN_NVIM_VERSION+ is required."
-    fi
-  else
+  local package_nvim package_version first_nvim=""
+  if ! pkg_install "$NVIM_PACKAGE"; then
     warn "Package manager install failed. Falling back to GitHub release."
+  elif ! package_nvim="$(pkg_installed_nvim)"; then
+    warn "The $NVIM_PACKAGE package from $PKG_MGR lists no nvim binary, or its file list could not be read. Falling back to GitHub release."
+  elif ! package_version="$(get_nvim_version "$package_nvim")"; then
+    warn "Package manager installed Neovim, but $package_nvim failed to report its version."
+  elif ! version_gte "$package_version" "$MIN_NVIM_VERSION"; then
+    warn "Package manager installed Neovim $package_version, but $MIN_NVIM_VERSION+ is required."
+  elif first_nvim="$(command -v nvim)" && [[ "$first_nvim" -ef "$package_nvim" ]]; then
+    success "Neovim $package_version installed via $PKG_MGR"
+    NVIM_INSTALL_METHOD="$PKG_MGR"
+    return
+  elif is_own_install_nvim_path "$first_nvim"; then
+    print_install_dir_nvim_ahead_of_package "$package_nvim" "$package_version" "$first_nvim"
+    exit 1
+  else
+    print_shadowed_package_nvim "$package_nvim" "$package_version" "$first_nvim"
+    exit 1
   fi
 
   install_neovim_tarball
@@ -625,6 +707,28 @@ pkg_is_installed() {
     pacman)  pacman -Q "$1" &>/dev/null ;;
     apk)     apk info -e "$1" &>/dev/null ;;
   esac
+}
+
+# Prints the absolute path of the nvim binary the installed $NVIM_PACKAGE package lists: the first entry
+# of its file list that is bin/nvim or ends in /bin/nvim. Fails, printing nothing, when the list has none
+# or the query fails. install_neovim judges this binary after the package install, and not the first
+# nvim on PATH, which can be another one ahead of it (an old AppImage or a broken version manager shim in
+# ~/.local/bin), so a working package is not taken for an old or broken one. apk info -L prints paths
+# relative to /, which this prints absolute: after a header line by default, or, at a higher verbosity
+# (-v, or, with apk-tools 3, verbose in /etc/apk/config), each after the package name and ": ", which the
+# apk arm drops, so a verbose apk still finds a working package's nvim. The other managers print
+# absolute paths.
+pkg_installed_nvim() {
+  local files="" nvim_entries first_entry
+  case "$PKG_MGR" in
+    apt-get) files="$(dpkg-query -L "$NVIM_PACKAGE")" ;;
+    dnf)     files="$(rpm -ql "$NVIM_PACKAGE")" ;;
+    pacman)  files="$(pacman -Qlq "$NVIM_PACKAGE")" ;;
+    apk)     files="$(apk info -L "$NVIM_PACKAGE" | sed "s/^$NVIM_PACKAGE: //")" ;;
+  esac || return 1
+  nvim_entries="$(grep -E '(^|/)bin/nvim$' <<<"$files")" || return 1
+  first_entry="${nvim_entries%%$'\n'*}"
+  printf '/%s\n' "${first_entry#/}"
 }
 
 pkg_install() {
@@ -1261,7 +1365,7 @@ setup_path() {
   # Checked, so a shell config the user cannot write (its mode, a read-only filesystem, a link to a
   # read-only file, a full disk) leaves the manual step instead of ending the run under errexit, and the
   # checks and the summary still run. bash's own error stays, since it says why the write failed.
-  if ! printf '\n# Neovim (added by nvim-install.sh)\n%s\n' "$line" >> "$rc_file"; then
+  if ! printf '\n%s\n%s\n' "$NVIM_PATH_ENTRY_MARKER" "$line" >> "$rc_file"; then
     print_path_manual_step "Could not write the PATH entry to $rc_file." "$line"
     return
   fi
