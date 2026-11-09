@@ -1291,13 +1291,16 @@ setup_config() {
 # When this run's nvim is in $NVIM_INSTALL_DIR/bin and PATH did not reach it first (NEED_PATH_SETUP), puts
 # that dir first on this run's PATH and exports it, so verify_nvim, verify_config, and what they start run
 # that nvim now; setup_path adds the same entry to the shell config for new shells when it can. Only root
-# can write the tree (the tarball install chowns it, and reuse requires is_root_owned_tree), so the
-# commands this run starts afterwards cannot find one another account planted there. main runs this after
-# forget_sudo_credentials has closed the privileged phase, because as_root runs plain sudo, which
-# searches the caller's PATH unless sudoers sets secure_path: past the drop, as_root stops the run, and
-# cleanup's sudo -k runs only for a ticket still held, which the drop clears, so no root command and no
-# lookup of sudo ever searches this dir. Called before the drop, it stops the run, whether or not this
-# run needs the PATH change.
+# can write the tree's own entries (the tarball install chowns them and drops group and other write, and
+# reuse requires is_root_owned_tree). An account that can write a dir above the tree, or above the target
+# of a link in it that points outside it, could still put files of its own in their place: reuse checks
+# the dirs above the path the tree resolves to (so the dir that holds a linked $NVIM_INSTALL_DIR only when
+# that path is under it too, and a dir above such a target only when it is above that path too), and a
+# fresh tarball install checks none. main runs this after forget_sudo_credentials has closed the
+# privileged phase, because as_root runs plain sudo, which searches the caller's PATH unless sudoers sets
+# secure_path: past the drop, as_root stops the run, and cleanup's sudo -k runs only for a ticket still
+# held, which the drop clears, so no root command and no lookup of sudo ever searches this dir. Called
+# before the drop, it stops the run, whether or not this run needs the PATH change.
 put_install_dir_first_on_path() {
   if [[ "$PRIVILEGE_CLOSED" != true ]]; then
     error "put_install_dir_first_on_path: called before forget_sudo_credentials closed the privileged phase"
