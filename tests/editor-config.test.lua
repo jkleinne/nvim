@@ -5,26 +5,27 @@
 --
 -- Hermetic: XDG_STATE_HOME, XDG_DATA_HOME, and XDG_CACHE_HOME point at a scratch dir (removed at the
 -- end) before anything calls stdpath, so the real trust database and data dirs are never read or
--- written; setting them inside this nvim is enough, because stdpath reads the environment on each
--- call (checked below before any test runs). The scratch dir is a resolved path: Neovim resolves
--- symlinks in the names of existing files, and TMPDIR may be a symlink. It must not be inside a
--- project (a .terraform or .git above it would change the roots the cases expect), and
--- 'runtimepath' holds only $VIMRUNTIME (--clean keeps the system site dirs, where an lsp/*.lua
--- would change what vim.lsp.config resolves) until L15c, the last case, prepends a scratch
--- lazy.nvim dir. The plugins are stub modules in package.loaded; the lsp_gates modules are the real
--- ones. Every case starts with PATH set to an empty scratch dir and Arch's TypeScript path
--- (lsp_gates.typescript.ARCH_TSSERVER) pointing at a missing scratch path; the cases that depend on
--- which commands exist set PATH to scratch dirs of stub commands (they exit 1 and no test runs
--- them), and the TypeScript cases point ARCH_TSSERVER at a scratch package. The trust cases use the
--- real vim.secure functions on the scratch trust database. Stubbed per case and restored after it:
--- vim.notify, vim.fn.confirm (a trust prompt is recorded and cancelled, so it never waits for
--- input), vim.secure.read (wrapped to record its calls), vim.lsp.enable and vim.cmd.doautoall
--- (recorded instead of run in the :TerraformTrust cases), vim.secure.trust (L10f), vim.uv.getuid
--- (L8b, L9k, L10c, L10h), vim.uv.os_get_passwd (L10c), HOME, and EDITOR_TEST_ALIAS (L9m, L9n,
--- L10i); the gates' per-session notices are reset. L10g wraps vim.lsp's functions around one call
--- and restores them itself. L15c stubs the lazy module and removes the stub itself; it leaves
--- vim.loader enabled, with its cache in the scratch dir. Nothing is installed or downloaded, and no
--- language server starts. Exits nonzero when a test fails.
+-- written; setting them inside this nvim is enough, because stdpath reads the environment on each call
+-- (checked below before any test runs). The scratch dir is a resolved path: Neovim resolves symlinks in
+-- the names of existing files, and TMPDIR may be a symlink. It must not be inside a project (a
+-- .terraform or .git above it would change the roots the cases expect), and 'runtimepath' holds only
+-- $VIMRUNTIME (--clean keeps the system site dirs, where an lsp/*.lua would change what vim.lsp.config
+-- resolves) until L15c, the last case, prepends a scratch lazy.nvim dir. The plugins are stub modules
+-- in package.loaded; the lsp_gates modules are the real ones, except that L1b and F5 put another server
+-- inventory in place of lsp_gates.servers for one config() run and then put the real one back
+-- (load_lsp_with_inventory). Every case starts with PATH set to an empty scratch dir and Arch's
+-- TypeScript path (lsp_gates.typescript.ARCH_TSSERVER) pointing at a missing scratch path; the cases
+-- that depend on which commands exist set PATH to scratch dirs of stub commands (they exit 1 and no
+-- test runs them), and the TypeScript cases point ARCH_TSSERVER at a scratch package. The trust cases
+-- use the real vim.secure functions on the scratch trust database. Stubbed per case and restored after
+-- it: vim.notify, vim.fn.confirm (a trust prompt is recorded and cancelled, so it never waits for
+-- input), vim.secure.read (wrapped to record its calls), vim.lsp.enable and vim.cmd.doautoall (recorded
+-- instead of run in the :TerraformTrust cases), vim.secure.trust (L10f), vim.uv.getuid (L8b, L9k, L10c,
+-- L10h), vim.uv.os_get_passwd (L10c), HOME, and EDITOR_TEST_ALIAS (L9m, L9n, L10i); the gates'
+-- per-session notices are reset. L10g wraps vim.lsp's functions around one call and restores them
+-- itself. L15c stubs the lazy module and removes the stub itself; it leaves vim.loader enabled, with
+-- its cache in the scratch dir. Nothing is installed or downloaded, and no language server starts.
+-- Exits nonzero when a test fails.
 
 local root = vim.fn.fnamemodify(debug.getinfo(1, "S").source:gsub("^@", ""), ":p:h:h")
 -- Resolved before any path is built from it, so those paths match the (resolved) buffer names
