@@ -2427,6 +2427,11 @@ done
 # fresh without the symlink, with a warning that names the link dir, and the real
 # install_dir_nvim_is_first_on_path finds no install dir nvim on PATH, so NEED_PATH_SETUP is set;
 # writable-link-dir: this user can write the link dir, so the same as fresh without the link dir check.
+# Before the download, the step asks is_root_only_with_ancestors about the dir that holds the install
+# dir. The case dirs are this user's, so the real check (T26b tests it) would refuse every case: each
+# case overrides it to log the dir it is asked about to the event log, which must be the log's first
+# line, and to succeed, except in parent-not-root-only, where it fails: exit 1 with a message that names
+# that dir, no download, and no root command.
 # A user who can write even a mode a-w dir (root) skips fresh, replace, and no-symlink, where the script
 # would make no link dir check. The install method is tarball, and the install leaves PATH as it was:
 # only put_install_dir_first_on_path, which main runs after the privileged phase and each case runs
@@ -2436,7 +2441,7 @@ done
 # would: nothing was really linked here, and T25b runs the real check on real files.
 # The scratch link dir (the script's NVIM_LINK_DIR) of T25 case $1
 t25_link_dir() { printf '%s\n' "$TMP/T25-$1/link-dir"; }
-# Runs T25 case $1 (fresh, keep, replace, no-symlink, or writable-link-dir)
+# Runs T25 case $1 (fresh, keep, replace, no-symlink, writable-link-dir, or parent-not-root-only)
 t25_case() {
   local id="$1" fail_on="" link_dir
   link_dir="$(t25_link_dir "$id")"
@@ -2460,8 +2465,9 @@ t25_case() {
       chmod u+w "$link_dir"
     else
       chmod a-w "$link_dir"
-      # keep exits before the link step, so it runs even for a user who can write the dir
-      if [[ "$id" != keep ]]; then
+      # keep and parent-not-root-only exit before the link step, so they run even for a user who can
+      # write the dir
+      if [[ "$id" != keep && "$id" != parent-not-root-only ]]; then
         exit_if_writable "$link_dir"
       fi
     fi
@@ -2474,6 +2480,12 @@ t25_case() {
       # shellcheck disable=SC2329  # install_neovim_tarball calls it
       install_dir_nvim_is_first_on_path() { return 0; }
     fi
+    must_override is_root_only_with_ancestors
+    # shellcheck disable=SC2329  # install_neovim_tarball calls it
+    is_root_only_with_ancestors() {
+      echo "ROOT_ONLY_CHECK $1" >>"$EVENT_LOG"
+      [[ "$id" != parent-not-root-only ]]
+    }
     detect_os
     detect_arch
     # shellcheck disable=SC2031  # detect_arch, in the script sourced into this subshell, sets it
@@ -2518,7 +2530,7 @@ t25_want_log() {
   local cmds=() cmd check=-v link_dir
   link_dir="$(t25_link_dir "$1")"
   case "$1" in
-    keep) return ;;
+    keep | parent-not-root-only) return ;;
     replace) cmds+=("rm -rf $2") ;;
   esac
   cmds+=("mkdir -p -m 0700 $2" "tar -C $2 --no-same-owner --strip-components=1 -xzf $3" "chown -R 0:0 $2" "chmod -R go-w $2"
@@ -2534,7 +2546,7 @@ t25_want_log() {
     check="-n -v"
   done
 }
-for id in fresh keep replace no-symlink writable-link-dir; do
+for id in fresh keep replace no-symlink writable-link-dir parent-not-root-only; do
   out="$(t25_case "$id")"
   rc=$?
   if report_skip_if_writable "T25-tarball $id" "$out" \
@@ -2544,14 +2556,27 @@ for id in fresh keep replace no-symlink writable-link-dir; do
   t25_dir="$TMP/T25-$id/opt-nvim"
   t25_link_dir_path="$(t25_link_dir "$id")"
   t25_log="$(sudo_log "T25-$id")"
-  t25_curl="$(grep '^curl ' "$(event_log "T25-$id")" 2>/dev/null)"
+  t25_events="$(event_log "T25-$id")"
+  t25_curl="$(grep '^curl ' "$t25_events" 2>/dev/null)"
   t25_file="$(sed -n 's/^curl -o \([^ ]*\) .*/\1/p' <<<"$t25_curl")"
   t25_arch="$(sed -n 's/^ARCH=//p' <<<"$out")"
   problems=""
   done_ok $rc "$out" || problems+="[rc=$rc] "
-  [[ "$t25_curl" == "curl -o $TMP/T25-$id-tmp/"*" https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$t25_arch.tar.gz" ]] \
-    || problems+="[download: '$t25_curl'] "
-  if [[ "$id" == keep ]]; then
+  t25_first_event="$(head -n1 "$t25_events" 2>/dev/null)"
+  [[ "$t25_first_event" == "ROOT_ONLY_CHECK ${t25_dir%/*}" ]] \
+    || problems+="[want the dir that holds the install dir checked first, got: '$t25_first_event'] "
+  if [[ "$id" != parent-not-root-only \
+    && "$t25_curl" != "curl -o $TMP/T25-$id-tmp/"*" https://github.com/neovim/neovim/releases/latest/download/nvim-linux-$t25_arch.tar.gz" ]]; then
+    problems+="[download: '$t25_curl'] "
+  fi
+  if [[ "$id" == parent-not-root-only ]]; then
+    grep -qxF "tarball rc=1" <<<"$out" || problems+="[want exit 1] "
+    grep -qF "Not installing Neovim in $t25_dir: ${t25_dir%/*} (as it resolves) or a directory above it" <<<"$out" \
+      || problems+="[no message that names the dir that holds the install dir] "
+    [[ -z "$t25_curl" ]] || problems+="[downloaded: '$t25_curl'] "
+    t25_root="$(grep -vxF -- -v "$t25_log")"
+    [[ -z "$t25_root" ]] || problems+="[root commands ran: $(tr '\n' ';' <<<"$t25_root")] "
+  elif [[ "$id" == keep ]]; then
     grep -qxF "tarball rc=1" <<<"$out" || problems+="[want exit 1] "
     grep -qF "Cannot install without removing" <<<"$out" || problems+="[no 'Cannot install without removing' message] "
     t25_root="$(grep -vxF -- -v "$t25_log")"
@@ -2587,7 +2612,8 @@ done
 # install_dir_nvim_is_first_on_path on real files, on a copy of the script whose NVIM_INSTALL_DIR and
 # NVIM_LINK_DIR are scratch paths. T25_BIN's curl gives the tarball, and as_root is overridden to run
 # what it is given (the recording sudo would leave no link to find), leaving out chown, which a normal
-# user cannot run on the tree, and chmod, which changes nothing PATH sees. After the step T26's install
+# user cannot run on the tree, and chmod, which changes nothing PATH sees. is_root_only_with_ancestors is
+# overridden to succeed, as in T25: the scratch dirs are this user's. After the step T26's install
 # dir stub takes the place of the extracted nvim, as in T25's no-symlink, to give it a version. The nvim
 # ahead of the link dir is T26_BIN's stub, wrapped to leave a mark, since the check must not run it: it
 # can be a broken one. Each case's PATH holds only stub dirs and T25B_TOOLS_BIN, so a host's nvim never
@@ -2620,6 +2646,9 @@ t25b_case() {
         *) "$@" ;;
       esac
     }
+    must_override is_root_only_with_ancestors
+    # shellcheck disable=SC2329  # install_neovim_tarball calls it
+    is_root_only_with_ancestors() { return 0; }
     PATH="$T25_BIN:$T25B_TOOLS_BIN:$DENY_BIN"
     if [[ "$link_dir_on_path" == yes ]]; then
       PATH="$link_dir:$PATH"
@@ -3192,7 +3221,7 @@ done
 expect_none T26d-install-dir-path-step "$t26d_fail"
 
 # T26b: is_root_owned_tree, which install_neovim asks before it reuses NVIM_INSTALL_DIR, and
-# are_root_only_dirs, which is_root_owned_tree asks about each dir above the tree. Without a wrapper,
+# are_root_only_dirs, which is asked about each dir above the tree. Without a wrapper,
 # is_root_owned_tree fails on a tree the user owns, on a symlink to one (the check resolves it, as the
 # nvim lookup and PATH do, instead of skipping it as a symlink), on a missing tree in a dir that exists
 # (readlink resolves it and find fails on it, and find's error, with nothing printed, must not pass for
@@ -3324,7 +3353,7 @@ else
   echo "found not root-owned"
 fi
 echo DONE'
-# Prints PARENT_DIR <dir> for each dir above $1 (which must exist), resolved, up to /, sorted
+# Prints PARENT_DIR <dir> for each dir above $1 (whose dir must exist), resolved, up to /, sorted
 t26b_parent_dirs() {
   local dir
   dir="$(readlink -f -- "$1")" || return 1
@@ -3381,6 +3410,75 @@ if [[ ${#FAKE_ROOT_WRAPPERS[@]} -gt 0 ]]; then
 else
   report_no_fake_root T26b-root-owned-tree-fake-root
 fi
+# is_root_only_with_ancestors, which the tarball install asks about the dir that will hold
+# NVIM_INSTALL_DIR, and is_root_owned_tree about the dir that holds the resolved tree. With
+# are_root_only_dirs replaced by one that prints each dir it is asked about (PARENT_DIR <dir>) and
+# succeeds, it asks about the dir it is given and each dir above it, up to /: resolved for a link
+# to a dir (the target's), for a missing dir (from the nearest dir above that exists), and for a broken
+# link (the path it names, which the real are_root_only_dirs then fails on), not walked past. It fails on
+# a relative path, asking about nothing, and, with the real are_root_only_dirs, on a dir the user owns.
+# Prints PARENT_DIR <dir> for $1 (whose dir must exist) resolved, and for each dir above it, sorted
+t26b_dir_and_parent_dirs() {
+  { printf 'PARENT_DIR %s\n' "$(readlink -f -- "$1")"; t26b_parent_dirs "$1"; } | sort
+}
+t26b_fail=""
+for id in existing linked missing broken-link relative user-owned; do
+  t26b_case="$TMP/T26b-ancestors-$id"
+  out="$( (
+    sandbox "T26b-ancestors-$id" ""
+    load_script
+    if [[ "$id" != user-owned ]]; then
+      must_override are_root_only_dirs
+      # shellcheck disable=SC2329  # is_root_only_with_ancestors calls it
+      are_root_only_dirs() { printf 'PARENT_DIR %s\n' "$@"; }
+    fi
+    mkdir -p "$t26b_case/target"
+    t26b_checked="$t26b_case/target"
+    case "$id" in
+      linked)
+        ln -s target "$t26b_case/link"
+        t26b_checked="$t26b_case/link"
+        ;;
+      missing) t26b_checked="$t26b_case/gone/deeper" ;;
+      broken-link)
+        ln -s gone "$t26b_case/link"
+        t26b_checked="$t26b_case/link"
+        ;;
+      relative)
+        cd "$t26b_case" || exit 1
+        t26b_checked=target
+        ;;
+    esac
+    if is_root_only_with_ancestors "$t26b_checked"; then
+      echo "found root-only"
+    else
+      echo "found not root-only"
+    fi
+    echo DONE
+  ) </dev/null 2>&1)"
+  rc=$?
+  t26b_want_dirs=""
+  case "$id" in
+    existing | linked)
+      want="root-only"
+      t26b_want_dirs="$(t26b_dir_and_parent_dirs "$t26b_case/target")"
+      ;;
+    missing)
+      want="root-only"
+      t26b_want_dirs="$(t26b_dir_and_parent_dirs "$t26b_case")"
+      ;;
+    broken-link)
+      want="root-only"
+      t26b_want_dirs="$(t26b_dir_and_parent_dirs "$t26b_case/gone")"
+      ;;
+    *) want="not root-only" ;;
+  esac
+  done_ok $rc "$out" && grep -qxF "found $want" <<<"$out" && ! grep -qF 'command not found' <<<"$out" \
+    || t26b_fail+="[$id: want $want, got: $(tail -n3 <<<"$out" | tr '\n' ' ')] "
+  [[ "$(grep '^PARENT_DIR ' <<<"$out" | sort)" == "$t26b_want_dirs" ]] \
+    || t26b_fail+="[$id: want the dirs: $(tr '\n' ' ' <<<"$t26b_want_dirs"), got: $(grep '^PARENT_DIR ' <<<"$out" | tr '\n' ' ')] "
+done
+expect_none T26b-root-only-with-ancestors "$t26b_fail"
 
 # T27: main runs whenever the script is executed rather than sourced: from a string, as
 # bash -c "$(curl ...)" runs it, and from standard input, as curl ... | bash does (here bash -s with

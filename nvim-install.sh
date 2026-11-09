@@ -435,6 +435,16 @@ is_own_install_nvim_path() {
 install_neovim_tarball() {
   local filename="nvim-${OS}-${ARCH}.tar.gz"
   local url="${NVIM_RELEASE_BASE}/${filename}"
+  local install_parent="${NVIM_INSTALL_DIR%/*}"
+
+  # Each root command below names $NVIM_INSTALL_DIR, and tar -C and chmod -R follow a link there: an
+  # account that could rename an entry in a dir above it could swap it for a link to a tree of its
+  # choosing between two of those commands, and have root extract into that tree and open it for reading
+  if ! is_root_only_with_ancestors "${install_parent:-/}"; then
+    error "Not installing Neovim in $NVIM_INSTALL_DIR: ${install_parent:-/} (as it resolves) or a directory above it is not owned by root or is writable by group or others"
+    error "Another account could replace $NVIM_INSTALL_DIR while root installs into it. Make root the only account that can write those directories, then run this script again."
+    exit 1
+  fi
 
   create_tmpdir
   local tarball="${SCRIPT_TMPDIR}/${filename}"
@@ -512,30 +522,53 @@ are_root_only_dirs() {
   [[ -z "$first_offender" ]]
 }
 
+# Succeeds when only root can rename, remove, or replace an entry in the dir $1 or in any dir above it,
+# so a path through them names what root put there until root changes it. $1 must be absolute. When $1
+# does not exist, the nearest dir above it that does, or that is a link, stands in: no other account can
+# create what root's mkdir -p then creates below it, though those dirs get the mode of the umask sudo
+# runs that mkdir with. That dir is resolved with readlink -f, as the nvim lookup and PATH resolve it
+# (a broken link resolves to the missing path it names, which are_root_only_dirs fails on), and it and
+# each dir above it, up to /, must pass are_root_only_dirs. Fails for a relative $1 and on a readlink
+# error.
+is_root_only_with_ancestors() {
+  local dir="$1" resolved
+  local dirs=()
+  if [[ "$dir" != /* ]]; then
+    return 1
+  fi
+  while [[ ! -e "$dir" && ! -L "$dir" ]]; do
+    dir="${dir%/*}"
+    dir="${dir:-/}"
+  done
+  resolved="$(readlink -f -- "$dir")" || return 1
+  dir="$resolved"
+  while [[ "$dir" != / ]]; do
+    dirs+=("$dir")
+    dir="${dir%/*}"
+    dir="${dir:-/}"
+  done
+  dirs+=(/)
+  are_root_only_dirs "${dirs[@]}"
+}
+
 # Succeeds when only root can change the tree at $1, as the tarball install leaves it, or the dirs above
 # it. That tree's bin may go first on PATH, where a file another account could write or put in place
 # could shadow commands such as sudo. $1 is resolved first, as the nvim lookup and PATH resolve it, with
-# readlink -f (GNU coreutils and BusyBox both take it with --, which BusyBox's realpath does not). Each
-# dir above the resolved path, up to /, must pass are_root_only_dirs, and every entry of the tree must be
-# owned by uid 0 with no group or other write bit. find -L checks each symlink in the tree through to its
-# target and descends a linked dir, so no link can lead to a file or dir another account can write. A
-# broken link (the only kind find -L reports as -type l) fails, since its target, which may lie outside
-# the tree, could later appear with anyone's contents. Any readlink or find error (a link loop, an
-# unreadable entry, or no tree) counts as not root-owned. Not checked: the dirs above a link's target
-# outside the tree, and a dir that holds a symlink on the way to the tree unless it is also above the
-# resolved path (/opt, when /opt/nvim is itself a link). GNU find and BusyBox's find (with the features
-# Alpine builds in) both take every option used here, -L and -maxdepth included.
+# readlink -f (GNU coreutils and BusyBox both take it with --, which BusyBox's realpath does not). The
+# dirs above the resolved path, up to /, must pass is_root_only_with_ancestors, and every entry of the
+# tree must be owned by uid 0 with no group or other write bit. find -L checks each symlink in the tree
+# through to its target and descends a linked dir, so no link can lead to a file or dir another account
+# can write. A broken link (the only kind find -L reports as -type l) fails, since its target, which may
+# lie outside the tree, could later appear with anyone's contents. Any readlink or find error (a link
+# loop, an unreadable entry, or no tree) counts as not root-owned. Not checked: the dirs above a link's
+# target outside the tree, and a dir that holds a symlink on the way to the tree unless it is also above
+# the resolved path (/opt, when /opt/nvim is itself a link). GNU find and BusyBox's find (with the
+# features Alpine builds in) both take every option used here, -L and -maxdepth included.
 is_root_owned_tree() {
-  local tree dir first_offender
-  local parent_dirs=()
+  local tree tree_parent first_offender
   tree="$(readlink -f -- "$1")" || return 1
-  dir="${tree%/*}"
-  while [[ -n "$dir" ]]; do
-    parent_dirs+=("$dir")
-    dir="${dir%/*}"
-  done
-  parent_dirs+=(/)
-  are_root_only_dirs "${parent_dirs[@]}" || return 1
+  tree_parent="${tree%/*}"
+  is_root_only_with_ancestors "${tree_parent:-/}" || return 1
   first_offender="$(find -L "$tree" \( -type l -o ! -user 0 -o -perm /go=w \) -print -quit)" || return 1
   [[ -z "$first_offender" ]]
 }
@@ -1317,11 +1350,13 @@ setup_config() {
 # of a link in it that points outside it, could still put files of its own in their place: reuse checks
 # the dirs above the path the tree resolves to (so the dir that holds a linked $NVIM_INSTALL_DIR only when
 # that path is under it too, and a dir above such a target only when it is above that path too), and a
-# fresh tarball install checks none. main runs this after forget_sudo_credentials has closed the
-# privileged phase, because as_root runs plain sudo, which searches the caller's PATH unless sudoers sets
-# secure_path: past the drop, as_root stops the run, and cleanup's sudo -k runs only for a ticket still
-# held, which the drop clears, so no root command and no lookup of sudo ever searches this dir. Called
-# before the drop, it stops the run, whether or not this run needs the PATH change.
+# fresh tarball install, before it installs, checks the dir that holds $NVIM_INSTALL_DIR and the dirs
+# above it, as that dir resolves (is_root_only_with_ancestors), and no dir above a link target outside the
+# tree. main runs this after forget_sudo_credentials has closed the privileged phase, because as_root runs
+# plain sudo, which searches the caller's PATH unless sudoers sets secure_path: past the drop, as_root
+# stops the run, and cleanup's sudo -k runs only for a ticket still held, which the drop clears, so no
+# root command and no lookup of sudo ever searches this dir. Called before the drop, it stops the run,
+# whether or not this run needs the PATH change.
 put_install_dir_first_on_path() {
   if [[ "$PRIVILEGE_CLOSED" != true ]]; then
     error "put_install_dir_first_on_path: called before forget_sudo_credentials closed the privileged phase"
