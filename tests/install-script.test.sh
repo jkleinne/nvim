@@ -1979,11 +1979,13 @@ expect_none "T20-server-list-sync (e) dnf" "$problems"
 
 
 # The nvim versions T26's stubs print where a case needs one on a given side of the script's
-# MIN_NVIM_VERSION: the minimum itself (new enough, as a version equal to it is), a newer one, and three
-# older ones, kept apart so a case can tell whose version an output shows (an old nvim on PATH, an old one
-# in the install dir, and the old one a package install leaves). T22's main run and T26's cases take them
-# by name. A bump of the minimum that leaves one on the wrong side fails T26-fixture-versions, which names
-# it, beside the cases that use it.
+# MIN_NVIM_VERSION: the minimum itself (new enough, as a version equal to it is), one at least as new,
+# and three older ones, all different so a case can tell whose version an output shows (an old nvim on
+# PATH, an old one in the install dir, and the old one a package install leaves). For a stub only the
+# install dir holds (T25, T25b), a version at least as new that no real nvim has, so only that stub
+# passes verify_nvim. T22's main run and the T25 and T26 cases take them by name. A bump of the minimum
+# that leaves one on the wrong side, or old ones that are no longer all different, fails
+# T26-fixture-versions, which names it, beside the cases that use it.
 t26_fixture_problems=""
 T26_MIN_VERSION="$(script_constant MIN_NVIM_VERSION)" \
   || t26_fixture_problems+="[the script sets no MIN_NVIM_VERSION] "
@@ -1991,16 +1993,23 @@ T26_NEW_VERSION=0.12.6
 T26_OLD_PATH_VERSION=0.11.4
 T26_OLD_INSTALL_DIR_VERSION=0.11.6
 T26_OLD_PACKAGE_VERSION=0.11.5
+T26_INSTALL_DIR_ONLY_VERSION=0.98.7
 t26_fixture_problems+="$( (
   sandbox T26-fixture-versions ""
   load_script
   problems=""
-  version_gte "$T26_NEW_VERSION" "$MIN_NVIM_VERSION" \
-    || problems+="[T26_NEW_VERSION $T26_NEW_VERSION is older than MIN_NVIM_VERSION $MIN_NVIM_VERSION] "
-  for name in T26_OLD_PATH_VERSION T26_OLD_INSTALL_DIR_VERSION T26_OLD_PACKAGE_VERSION; do
+  t26_old_names=(T26_OLD_PATH_VERSION T26_OLD_INSTALL_DIR_VERSION T26_OLD_PACKAGE_VERSION)
+  for name in T26_NEW_VERSION T26_INSTALL_DIR_ONLY_VERSION; do
+    version_gte "${!name}" "$MIN_NVIM_VERSION" \
+      || problems+="[$name ${!name} is older than MIN_NVIM_VERSION $MIN_NVIM_VERSION] "
+  done
+  for name in "${t26_old_names[@]}"; do
     ! version_gte "${!name}" "$MIN_NVIM_VERSION" \
       || problems+="[$name ${!name} is not older than MIN_NVIM_VERSION $MIN_NVIM_VERSION] "
   done
+  t26_old_versions="$(for name in "${t26_old_names[@]}"; do printf '%s\n' "${!name}"; done)"
+  [[ "$(sort -u <<<"$t26_old_versions" | wc -l)" -eq "${#t26_old_names[@]}" ]] \
+    || problems+="[the old versions are not all different: $(tr '\n' ' ' <<<"$t26_old_versions")] "
   printf '%s' "$problems"
 ) </dev/null 2>&1)"
 expect_none T26-fixture-versions "$t26_fixture_problems"
@@ -2548,7 +2557,7 @@ t25_case() {
       if [[ "$id" == no-symlink ]]; then
         copy_stub "$dir/bin" nvim t26-install-dir-nvim
         # A version no real nvim later on PATH has, so only the install dir's stub passes the check
-        T26_INSTALL_DIR_VERSION=0.98.7
+        T26_INSTALL_DIR_VERSION="$T26_INSTALL_DIR_ONLY_VERSION"
         export T26_INSTALL_DIR_VERSION
         echo "NVIM_FOUND=$(type -P nvim)"
         verify_nvim
@@ -2638,7 +2647,8 @@ for id in fresh keep replace dangling-link no-symlink writable-link-dir parent-n
       grep -qxF "PATH after the step: install dir first" <<<"$out" \
         || problems+="[put_install_dir_first_on_path did not put the install dir's bin first] "
       grep -qxF "NVIM_FOUND=$t25_dir/bin/nvim" <<<"$out" || problems+="[nvim on PATH is not the install dir's] "
-      grep -qF 'Neovim 0.98.7 on PATH' <<<"$out" || problems+="[verify_nvim did not pass on the install dir's nvim] "
+      grep -qF "Neovim $T26_INSTALL_DIR_ONLY_VERSION on PATH" <<<"$out" \
+        || problems+="[verify_nvim did not pass on the install dir's nvim] "
     else
       grep -qxF "NEED_PATH_SETUP=false" <<<"$out" || problems+="[NEED_PATH_SETUP set although the symlink was made] "
       ! grep -qF "Could not link nvim" <<<"$out" || problems+="[warned about a link that was made] "
@@ -2662,8 +2672,6 @@ done
 # ahead of the link dir is T26_BIN's stub, wrapped to leave a mark, since the check must not run it: it
 # can be a broken one. Each case's PATH holds only stub dirs and T25B_TOOLS_BIN, so a host's nvim never
 # counts.
-# A version the nvim ahead of the link dir never has, so only the install dir's stub passes verify_nvim
-t25b_install_dir_version=0.98.7
 # Runs T25b case $1: $2 = the version of the nvim in a dir ahead of the link dir, broken, or none; $3 =
 # whether the link dir is on PATH (yes or no)
 t25b_case() {
@@ -2716,7 +2724,8 @@ t25b_case() {
         echo "AHEAD_NVIM_RAN=yes"
       fi
       copy_stub "$dir/bin" nvim t26-install-dir-nvim
-      T26_INSTALL_DIR_VERSION="$t25b_install_dir_version"
+      # A version the nvim ahead of the link dir never has, so only the install dir's stub passes verify_nvim
+      T26_INSTALL_DIR_VERSION="$T26_INSTALL_DIR_ONLY_VERSION"
       export T26_INSTALL_DIR_VERSION
       # As main runs it, after the privileged phase (closed by the flag alone: the real
       # forget_sudo_credentials runs sudo -k)
@@ -2755,7 +2764,7 @@ for tc in "broken-nvim-ahead:broken:yes:true:install-dir" \
     grep -qxF "PATH after the step: unchanged" <<<"$out" || problems+="[want PATH unchanged after put_install_dir_first_on_path] "
     grep -qxF "NVIM_FOUND=$TMP/T25b-$id/link-dir/nvim" <<<"$out" || problems+="[nvim on PATH is not the link] "
   fi
-  grep -qF "Neovim $t25b_install_dir_version on PATH" <<<"$out" \
+  grep -qF "Neovim $T26_INSTALL_DIR_ONLY_VERSION on PATH" <<<"$out" \
     || problems+="[verify_nvim did not pass on the install dir's nvim] "
   [[ -z "$problems" ]] || problems+="; $(tail -n5 <<<"$out" | tr '\n' ' ')"
   expect_none "T25b-tarball-path-first $id" "$problems"
@@ -3168,7 +3177,7 @@ result T26e-own-install-entry-in-shell-form $? "rc=$rc; $(grep '^  x ' <<<"$out"
 # older nvim comes first on PATH: it exits 0, names reused as the install method, and its PATH line
 # gives that cause, not the tarball's. The setup is T26's (t26_load).
 out="$( (
-  t26_load packages-only-reuse "$T26_OLD_INSTALL_DIR_VERSION" "$T26_NEW_VERSION" root fail
+  t26_load packages-only-reuse "$T26_OLD_PATH_VERSION" "$T26_NEW_VERSION" root fail
   PACKAGES_ONLY=true
   # shellcheck disable=SC2329  # run_errexit calls it
   packages_only_end() {
