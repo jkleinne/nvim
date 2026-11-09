@@ -62,7 +62,8 @@ PKG_DB_SYNCED=false
 SUDO_TICKET_HELD=false
 PRIVILEGE_CLOSED=false
 USER_SHELL=""
-# --packages-only: stop after the system packages (no user tools, clone, PATH setup, or config check)
+# --packages-only: stop after the system packages (no user tools, clone, shell config PATH entry, or
+# config check); this run's own PATH step and nvim check still run, so a reused or tarball nvim is found
 PACKAGES_ONLY=false
 
 # ---------------------------------------------------------------------------
