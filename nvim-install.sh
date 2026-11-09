@@ -453,7 +453,7 @@ install_neovim_tarball() {
       exit 1
       ;;
     *)
-      error "Not installing Neovim in $NVIM_INSTALL_DIR: could not check the directories on the way to $install_parent (a link loop, a file on the way, or an error shown above)"
+      error "Not installing Neovim in $NVIM_INSTALL_DIR: could not check the directories on the way to $install_parent (a directory you cannot search, a link to nothing, a link loop, a file on the way, or an error shown above)"
       exit 1
       ;;
   esac
@@ -550,8 +550,10 @@ are_root_only_dirs() {
 # are_root_only_dirs, so once the walk passes, only root can make the path lead elsewhere. A missing name
 # ends the walk with success: root's mkdir -p creates it and what follows inside a dir that passed,
 # though with the mode of the umask sudo runs that mkdir with. Fails with status 2, printing nothing, for
-# a relative $1, a file on the way, more than MAX_PATH_LINKS links (a loop), a readlink error, and
-# status 2 from are_root_only_dirs. util-linux's namei -l lists the same hops, but as text for people,
+# a relative $1, a dir on the way the user cannot search (bash's -L, -d and -e are false on any lstat
+# error, so a name there would look missing), a link to nothing (root's mkdir -p would fail on it), a
+# file on the way, more than MAX_PATH_LINKS links (a loop), a readlink error, and status 2 from
+# are_root_only_dirs. util-linux's namei -l lists the same hops, but as text for people,
 # and BusyBox has no namei.
 first_unsafe_path_dir() {
   local dir=/ rest="$1" name entry target link_count=0
@@ -561,6 +563,7 @@ first_unsafe_path_dir() {
   while true; do
     # $dir is where the next name is looked up, or the dir the path names once no name is left
     are_root_only_dirs "$dir" || return
+    [[ -x "$dir" ]] || return 2
     rest="${rest#"${rest%%[!/]*}"}"
     if [[ -z "$rest" ]]; then
       return 0
@@ -579,6 +582,9 @@ first_unsafe_path_dir() {
     if [[ -L "$entry" ]]; then
       link_count=$((link_count + 1))
       if ((link_count > MAX_PATH_LINKS)); then
+        return 2
+      fi
+      if [[ ! -e "$entry" ]]; then
         return 2
       fi
       target="$(readlink -- "$entry")" || return 2

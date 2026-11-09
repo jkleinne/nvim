@@ -3487,10 +3487,10 @@ fi
 # in, and the path itself: for a dir, that dir and each dir above it; for a link in the middle of the
 # path, the dir that holds it (middle-link, a link in a dir of its own whose target goes up through ..),
 # as well as the dirs on the way to its target; for an absolute target, the dirs from / down to it; for
-# a missing dir, the dirs down to the one that would hold it, and none past it; for a broken link, the
-# dirs down to the one that holds it and, following it, the dir its missing target would be in. The walk
-# fails with status 2, printing nothing, on a relative path (asking about nothing), and, having asked
-# about the dirs down to the one it stopped in, on a link loop (past the link limit) and on a file on
+# a missing dir, the dirs down to the one that would hold it, and none past it. The walk fails with
+# status 2, printing nothing, on a relative path (asking about nothing), and, having asked about the
+# dirs down to the one it stopped in, on a link to nothing (broken-link, whose missing target lies in a
+# dir of its own that the walk must not reach), on a link loop (past the link limit), and on a file on
 # the way. Where are_root_only_dirs fails on the dir that holds the middle link (offender-in-middle),
 # the walk prints that dir, fails with status 1, and asks about nothing after it; with the real
 # are_root_only_dirs (user-owned), it prints a dir on the way and fails with status 1.
@@ -3574,8 +3574,8 @@ for id in existing middle-link absolute-link missing broken-link link-loop file-
       t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case")"
       ;;
     broken-link)
-      t26b_want_status=0
-      t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case/other")"
+      t26b_want_status=2
+      t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case")"
       ;;
     offender-in-middle)
       t26b_want_status=1
@@ -3603,6 +3603,42 @@ for id in existing middle-link absolute-link missing broken-link link-loop file-
   [[ -z "$problems" ]] || t26b_fail+="[$id: $problems] "
 done
 expect_none T26b-path-walk "$t26b_fail"
+# The walk on a path through a dir the user cannot search (mode 000) that holds a link: lstat fails
+# there as if the name were missing, so the walk must fail with status 2, printing nothing, having asked
+# about the dirs down to that dir and none past it (are_root_only_dirs replaced as above). A user who
+# can still search and write it (root) skips the case. The dir gets its mode back on exit, so the
+# suite's cleanup can remove it.
+t26b_case="$TMP/T26b-walk-unsearchable"
+out="$( (
+  sandbox T26b-walk-unsearchable ""
+  load_script
+  must_override are_root_only_dirs
+  # shellcheck disable=SC2329  # first_unsafe_path_dir calls it
+  are_root_only_dirs() { printf 'PARENT_DIR %s\n' "$@" >&2; }
+  mkdir -p "$t26b_case/locked" "$t26b_case/target"
+  ln -s ../target "$t26b_case/locked/inner"
+  trap 'chmod 0700 "$t26b_case/locked"' EXIT
+  chmod 000 "$t26b_case/locked"
+  exit_if_writable "$t26b_case/locked"
+  # The sourced script's errexit would end the subshell on a failing assignment
+  t26b_status=0
+  t26b_offender="$(first_unsafe_path_dir "$t26b_case/locked/inner")" || t26b_status=$?
+  echo "status=$t26b_status"
+  echo "offender=$t26b_offender"
+  echo DONE
+) </dev/null 2>&1)"
+rc=$?
+if ! report_skip_if_writable T26b-path-walk-unsearchable "$out" \
+  "this user can search and write the mode 000 dir, as root can"; then
+  problems=""
+  done_ok $rc "$out" || problems+="[rc=$rc] "
+  grep -qxF "status=2" <<<"$out" || problems+="[want status 2, got: $(grep '^status=' <<<"$out")] "
+  grep -qxF "offender=" <<<"$out" || problems+="[want nothing printed, got: $(grep '^offender=' <<<"$out")] "
+  t26b_want_dirs="$(t26b_dirs_down_to "$t26b_case/locked")"
+  [[ "$(grep '^PARENT_DIR ' <<<"$out" | sort -u)" == "$t26b_want_dirs" ]] \
+    || problems+="[want the dirs: $(tr '\n' ' ' <<<"$t26b_want_dirs"), got: $(grep '^PARENT_DIR ' <<<"$out" | sort -u | tr '\n' ' ')] "
+  expect_none T26b-path-walk-unsearchable "$problems"
+fi
 
 # T27: main runs whenever the script is executed rather than sourced: from a string, as
 # bash -c "$(curl ...)" runs it, and from standard input, as curl ... | bash does (here bash -s with
