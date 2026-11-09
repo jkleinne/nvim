@@ -2257,7 +2257,7 @@ for tc in "true:true" "false:true" "true:false" "false:false"; do
   out="$( (
     sandbox "T22g-$t22g_mode-$t22g_need" ""
     load_script
-    # shellcheck disable=SC2030  # verify_nvim, in the script sourced into this subshell, reads both
+    # shellcheck disable=SC2030  # local on purpose: each case's state, which verify_nvim must not depend on
     PACKAGES_ONLY="$t22g_mode" NEED_PATH_SETUP="$t22g_need"
     PATH="$EMPTY_BIN" run_errexit verify_nvim
     echo "inner rc=$RC"
